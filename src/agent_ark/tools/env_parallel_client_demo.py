@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import binascii
+import io
 import json
 import re
 from pathlib import Path
@@ -18,6 +21,11 @@ from typing import Any, Dict, List, Optional
 
 from agent_ark.ark_env.runtime_config import load_runtime_config
 from agent_ark.ark_env.serving.env_client import EnvHttpClient
+
+try:
+    from PIL import Image
+except ImportError:  # pragma: no cover - Pillow is an AgentArk dependency.
+    Image = None
 
 
 def _server_url(config: Dict[str, Any], override: Optional[str]) -> str:
@@ -32,16 +40,29 @@ def _server_url(config: Dict[str, Any], override: Optional[str]) -> str:
 def _obs_summary(payload: Dict[str, Any]) -> Dict[str, Any]:
     obs = payload.get("obs", {}) if isinstance(payload, dict) else {}
     vis = obs.get("vis", []) if isinstance(obs, dict) else []
+    messages = obs.get("messages", []) if isinstance(obs, dict) else []
     step_msg = obs.get("step_msg", "") if isinstance(obs, dict) else ""
     if isinstance(step_msg, str) and len(step_msg) > 240:
         step_msg = step_msg[:240] + "..."
 
+    frame_types: List[List[str]] = []
+    if isinstance(vis, list):
+        for frames in vis:
+            if isinstance(frames, list):
+                frame_types.append([type(frame).__name__ for frame in frames[:4]])
+            else:
+                frame_types.append([type(frames).__name__])
+
     return {
         "keys": sorted(obs.keys()) if isinstance(obs, dict) else [],
+        "vis_format": obs.get("vis_format") if isinstance(obs, dict) else None,
         "camera_count": len(vis) if isinstance(vis, list) else 0,
         "frames_per_camera": [len(frames) if isinstance(frames, list) else 0 for frames in vis]
         if isinstance(vis, list)
         else [],
+        "frame_types": frame_types,
+        "message_count": len(messages) if isinstance(messages, list) else 0,
+        "message_image_count": len(list(_iter_message_image_payloads(messages))),
         "step_msg": step_msg,
     }
 
@@ -50,6 +71,70 @@ def _safe_name(value: Optional[str]) -> str:
     text = str(value or "server-managed")
     text = re.sub(r"[^A-Za-z0-9_.-]+", "_", text).strip("_")
     return text[:80] or "item"
+
+
+def _iter_message_image_payloads(messages: Any):
+    if not isinstance(messages, list):
+        return
+    image_index = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+
+            payload = None
+            if part.get("type") == "image_url":
+                image_url = part.get("image_url", part.get("url"))
+                if isinstance(image_url, dict):
+                    payload = image_url.get("url")
+                else:
+                    payload = image_url
+            elif part.get("type") == "image":
+                payload = part.get("image_base64", part.get("image", part.get("data")))
+
+            if payload:
+                yield image_index, payload
+                image_index += 1
+
+
+def _save_frame_image(frame: Any, path: Path) -> bool:
+    if hasattr(frame, "save"):
+        frame.save(path)
+        return True
+
+    if isinstance(frame, str):
+        data = frame
+        if data.startswith("data:image/"):
+            _, _, data = data.partition(",")
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError):
+            return False
+        if Image is not None:
+            try:
+                img = Image.open(io.BytesIO(raw))
+                img.load()
+                img.save(path)
+                return True
+            except Exception:
+                pass
+        path.write_bytes(raw)
+        return True
+
+    shape = getattr(frame, "shape", None)
+    if shape is not None and Image is not None:
+        try:
+            Image.fromarray(frame).save(path)
+            return True
+        except Exception:
+            return False
+
+    return False
 
 
 def _save_obs_images(
@@ -66,15 +151,14 @@ def _save_obs_images(
 
     obs = payload.get("obs", {}) if isinstance(payload, dict) else {}
     vis = obs.get("vis", []) if isinstance(obs, dict) else []
-    if not isinstance(vis, list):
-        return []
+    messages = obs.get("messages", []) if isinstance(obs, dict) else []
 
     image_dir.mkdir(parents=True, exist_ok=True)
     paths: List[str] = []
     task_part = _safe_name(task_name)
     remaining = int(max_images_per_observation)
 
-    for cam_index, frames in enumerate(vis):
+    for cam_index, frames in enumerate(vis if isinstance(vis, list) else []):
         if remaining <= 0:
             break
         if not isinstance(frames, list) or not frames:
@@ -83,13 +167,24 @@ def _save_obs_images(
         for frame_offset, frame in enumerate(selected):
             if remaining <= 0:
                 break
-            if not hasattr(frame, "save"):
+            if frame is None:
                 continue
             path = image_dir / (
                 f"rollout_{rollout_index:04d}_{task_part}_{phase}_"
                 f"cam{cam_index}_img{frame_offset}.png"
             )
-            frame.save(path)
+            if _save_frame_image(frame, path):
+                paths.append(str(path))
+                remaining -= 1
+
+    for message_image_index, frame in _iter_message_image_payloads(messages):
+        if remaining <= 0:
+            break
+        path = image_dir / (
+            f"rollout_{rollout_index:04d}_{task_part}_{phase}_"
+            f"msg{message_image_index}.png"
+        )
+        if _save_frame_image(frame, path):
             paths.append(str(path))
             remaining -= 1
 
