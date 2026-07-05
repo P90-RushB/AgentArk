@@ -31,6 +31,10 @@ runtime builds, task mods, and example replay/evaluation records are available a
   mini-games, GUI-like tasks, and future task families that can be expressed as
   loadable mods with verifiable scoring.
 
+<p align="center">
+  <img src="docs/figures/agentark-figure1.png" alt="AgentArk overview" width="900">
+</p>
+
 ## Try AgentArk First
 
 You do not need to install the local runtime before seeing what AgentArk can do.
@@ -44,10 +48,6 @@ Start with the Hub and the Colab tutorials:
 | [03_online_evaluation_tutorial.ipynb](https://colab.research.google.com/drive/1hP1OxjbboxEa5rvySwo5UWLT_Wn-PxsK?usp=drive_link) | Run online API evaluation against AgentArk tasks. |
 | [04_rl_training_tutorial.ipynb](https://colab.research.google.com/drive/1ktAtXJLyi99FteZpdwnBcF6AiCSvOn4i?usp=drive_link) | Launch the RL training workflow around the AgentArk env server. |
 | [Hugging Face artifacts](https://huggingface.co/datasets/P90-RushB/AgentArk) | Download runtime builds, task mods, replay records, and registries. |
-
-<p align="center">
-  <img src="docs/figures/agentark-figure1.png" alt="AgentArk overview" width="900">
-</p>
 
 ## Documentation Map
 
