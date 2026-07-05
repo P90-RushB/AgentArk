@@ -1,15 +1,49 @@
 # AgentArk
 
-AgentArk is a Unity ML-Agents based environment stack for evaluating API
-models and training RL agents in multimodal tasks. The Unity runtime loads task
-mods at reset time. Agents receive visual observations plus task text, and their
-actions are either structured tool calls or generated C# code that the Unity
-side compiles and runs with Roslyn.
+AgentArk is an open environment framework for multimodal agents: models can see
+interactive tasks, write actions as code or tool calls, receive verifiable
+feedback, and improve through evaluation, replay, or RL.
+
+The goal is not to freeze one benchmark. AgentArk is built as infrastructure for
+continuously growing interactive tasks. Its base environment can load arbitrary
+task mods, while each mod defines its own scene, prompt, observations, actions,
+scoring rules, and termination conditions. Coding agents can help turn new task
+ideas into verified mods; the same tasks can then be used for multimodal model
+evaluation, trace replay, and reinforcement learning.
 
 This repository provides the Python package for runtime control, model
 evaluation, replay, environment serving, and RL training integration. Public
-runtime builds, task mods, and example replay/evaluation records are available
-at [P90-RushB/AgentArk on Hugging Face](https://huggingface.co/datasets/P90-RushB/AgentArk).
+runtime builds, task mods, and example replay/evaluation records are available at
+[P90-RushB/AgentArk on Hugging Face](https://huggingface.co/datasets/P90-RushB/AgentArk).
+
+## Try AgentArk First
+
+You do not need to install the local runtime before seeing what AgentArk can do.
+Start with the Hub and the Colab tutorials:
+
+| Entry | What it is for |
+| --- | --- |
+| [AgentArk Hub](https://p90-rushb.github.io/agentark-hub/) | Browse released tasks, preview media, public scoreboards, model results, and artifact links. |
+| [01_human_play_tutorial.ipynb](https://colab.research.google.com/drive/1OdGgcjtNUO5V4W935Qzm1760mO5V_vF1?usp=drive_link) | Play and debug AgentArk tasks manually from Colab. |
+| [02_model_replay_tutorial.ipynb](https://colab.research.google.com/drive/12rypa1bzmtErXMZ1GJAI8qGzCYAfViQI?usp=drive_link) | Replay saved model actions without calling a model API again. |
+| [03_online_evaluation_tutorial.ipynb](https://colab.research.google.com/drive/1hP1OxjbboxEa5rvySwo5UWLT_Wn-PxsK?usp=drive_link) | Run online API evaluation against AgentArk tasks. |
+| [04_rl_training_tutorial.ipynb](https://colab.research.google.com/drive/1ktAtXJLyi99FteZpdwnBcF6AiCSvOn4i?usp=drive_link) | Launch the RL training workflow around the AgentArk env server. |
+| [Hugging Face artifacts](https://huggingface.co/datasets/P90-RushB/AgentArk) | Download runtime builds, task mods, replay records, and registries. |
+
+## What AgentArk Enables
+
+- **Task scaling with coding agents.** New environments are packaged as task
+  mods, so designers, builders, and reviewers can expand the task library
+  without changing the core runtime.
+- **Multimodal task evaluation.** Models interact with visual and textual state,
+  receive score and error feedback, and produce replayable traces for analysis.
+- **Multimodal agent training.** The same runtime and task definitions can be
+  served over HTTP for RL frameworks, including the current verl GRPO
+  integration.
+- **A broad task surface.** AgentArk is designed for 2D and 3D scenes, physics
+  calibration, timing control, path planning, video-level observation,
+  mini-games, GUI-like tasks, and future task families that can be expressed as
+  loadable mods with verifiable scoring.
 
 <p align="center">
   <img src="docs/figures/agentark-figure1.png" alt="AgentArk overview" width="900">
@@ -22,11 +56,6 @@ at [P90-RushB/AgentArk on Hugging Face](https://huggingface.co/datasets/P90-Rush
 - Model evaluation and replay: [docs/evaluation-guide.md](docs/evaluation-guide.md)
 - RL training with verl: [docs/rl-training.md](docs/rl-training.md)
 - Runtime sandbox details: [docs/runtime-sandbox-migration.md](docs/runtime-sandbox-migration.md)
-
-To browse the currently released task set before downloading the runtime, visit
-[AgentArk Hub](https://p90-rushb.github.io/agentark-hub/). It is the public task
-catalog and aggregate leaderboard site for AgentArk tasks, with task pages,
-preview media, scoreboards, and links back to released artifacts.
 
 ## 1. Environment Setup
 
@@ -197,6 +226,25 @@ curl http://127.0.0.1:18080/v1/envs
 Then follow the verl integration guide to generate the dataset and launch GRPO
 training:
 [docs/rl-training.md](docs/rl-training.md).
+
+## Future Development
+
+The long-term goal of AgentArk is model-environment co-evolution: agents find
+their own capability gaps, propose new tasks, implement and verify task modules,
+train on those environments, and then generate harder tasks from their failures.
+
+Near-term development will focus on:
+
+- **1k+ task scale in 2026.** Grow the public task store from the current
+  starter suite to more than one thousand reproducible, trainable task mods.
+- **Dynamic curriculum.** Select tasks based on model success rates, error
+  types, task parameters, and capability coverage.
+- **Long-horizon memory.** Compress observations, actions, scores, and error
+  analysis for tasks with long interaction histories.
+- **Richer environment sources.** Combine generated assets, 3D generation, and
+  world models with AgentArk's verifiable task logic.
+- **Stronger Hub artifacts.** Improve task/runtime versioning, trace artifacts,
+  download links, and public model reports.
 
 ## Package Layout
 
