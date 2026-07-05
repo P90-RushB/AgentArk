@@ -1,0 +1,48 @@
+env_cfg:
+  env_path: "${AGENTARK_ENV_PATH}"
+  mod_path: "${AGENTARK_MOD_PATH}"
+  task_type: RLTask
+
+  env_config_overrides:
+    override_by_task: true
+    num_parallel_envs: 1
+
+replay:
+  # JSONL produced by run_api_agent or run_parallel_api_eval.
+  records_path: tmp/marble_stop_seed1.jsonl
+
+  # Select one or more saved records. record_index is zero-based; record_lines are one-based.
+  record_index: 0
+  # record_indices: [0, 1]
+  # record_lines: [1]
+  # case_id: marble-stop-seed-0001
+  # model_name: openrouter-model
+  # task_name: MarbleStop
+  # group_seed: 1
+  # env_id: 0
+  # limit: 1
+
+  # Reuse the saved max_attempts so the replay consumes the same rollout budget.
+  use_record_max_attempts: true
+
+  # Slow down replay enough for the browser viewer to be readable.
+  step_delay_s: 0.5
+
+  # Optional: save replay verification results.
+  # output_path: tmp/replay_results.jsonl
+  # append: false
+  stop_on_error: true
+  require_match: true
+
+hooks:
+  visualization:
+    enabled: true
+    host: 127.0.0.1
+    port: 18181
+    open_browser: true
+    text_max_chars: 6000
+    max_images_per_observation: 4
+    event_buffer_size: 1000
+    keep_open_on_end: true
+  human_interaction:
+    enabled: false

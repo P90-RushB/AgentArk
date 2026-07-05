@@ -1,0 +1,87 @@
+env_cfg:
+  env_path: "${AGENTARK_ENV_PATH}"
+  mod_path: "${AGENTARK_MOD_PATH}"
+  task_type: RLTask
+  # Required when eval.max_parallel_envs > 1 for the normal runtime path:
+  # every worker gets its own writable runtime/Mods directory while task assets
+  # are shared through Mods/all_tasks.
+  runtime_sandbox:
+    enabled: true
+
+    # runtime_platform: windows
+    # template_root: "${AGENTARK_RUNTIME_TEMPLATE_ROOT}"
+    # template_env_path: "${AGENTARK_ENV_PATH}"
+    # template_mod_path: "${AGENTARK_MOD_PATH}"
+    # shared_task_store_path: "${AGENTARK_TASK_STORE_PATH}"
+    # pool_root: "${AGENTARK_RUNTIME_POOL_ROOT}"
+    # pool_size: 2
+
+    runtime_platform: linux
+    template_root: "${AGENTARK_RUNTIME_TEMPLATE_ROOT}"
+    template_env_path: "${AGENTARK_ENV_PATH}"
+    template_mod_path: "${AGENTARK_MOD_PATH}"
+    shared_task_store_path: "${AGENTARK_TASK_STORE_PATH}"
+    pool_root: "${AGENTARK_RUNTIME_POOL_ROOT}"
+    pool_size: 8
+
+    auto_prepare: true
+    link_mode: auto
+  env_config_overrides:
+    override_by_task: true
+    num_parallel_envs: 1
+
+# Parallel API eval runs one task only, but can fan out many model/seed jobs.
+eval:
+  output_path: tmp/marble_stop_parallel_seed1_5.jsonl
+  stop_on_error: false
+  # When rerunning after an interruption, keep the existing output file and
+  # skip jobs whose task/seed/env/model result is already present with status=ok.
+  skip_existing_results: true
+  # Maximum number of independent ArkEnv instances running at the same time.
+  max_parallel_envs: 8
+  # The runner assigns worker_index_base + slot_index to each live env.
+  worker_index_base: 0
+  # Advanced opt-out only: set true when you have already isolated runtime files
+  # outside AgentArk's runtime_sandbox, or the env is known to be read-only.
+  allow_shared_runtime_parallel: false
+  fixed_env_id: 0
+  task_names:
+    - MarbleStop
+  group_seeds:
+    start: 1
+    end: 5
+
+hooks:
+  visualization:
+    enabled: false
+    host: 127.0.0.1
+    port: 18181
+    open_browser: false
+    text_max_chars: 6000
+    max_images_per_observation: 4
+    event_buffer_size: 500
+    keep_open_on_end: false
+  # Parallel eval is intended for unattended API/model runs.
+  human_interaction:
+    enabled: false
+
+models:
+  # Add more entries to compare multiple models. The Cartesian product of
+  # selected seeds/cases and models becomes the parallel job list.
+  - name: openrouter-model
+    provider: openrouter
+    model: replace-with-openrouter-model-id
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.0
+    timeout_s: 180
+    max_retries: 0
+
+  # - name: local-openai-compatible
+  #   provider: openai
+  #   model: replace-with-local-model-id
+  #   base_url: http://127.0.0.1:8081/v1
+  #   api_key: not-needed
+  #   temperature: 0.2
+  #   timeout_s: 180
+  #   max_retries: 0

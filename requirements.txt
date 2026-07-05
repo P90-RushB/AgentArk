@@ -1,0 +1,12 @@
+PyYAML>=6.0.1
+hydra-core
+omegaconf
+fastapi>=0.115.0
+uvicorn>=0.30.0
+requests>=2.31.0
+openai>=1.30.0
+numpy>=1.23.5,<1.24.0
+Pillow>=10.0.0
+mlagents_envs==1.1.0
+pandas>=2.0.0
+pyarrow>=12.0.0

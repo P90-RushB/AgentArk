@@ -1,0 +1,122 @@
+env_cfg:
+  env_path: "${AGENTARK_ENV_PATH}"
+  mod_path: "${AGENTARK_MOD_PATH}"
+  task_type: RLTask
+
+  # Single-task local evaluation: one agent, one env, one task per run.
+  env_config_overrides:
+    override_by_task: true
+    # Runtime-affecting fields belong here when you want to override Mods/config.yaml
+    # for this evaluation without changing the underlying runtime files.
+    num_parallel_envs: 1
+    # Linux/Xvfb 软件渲染（llvmpipe）专用环境变量。仅在 virtual_display 启动时注入，
+    # 不影响有桌面/有 GPU 的机器。大核机器上 llvmpipe 默认按 CPU 核数开渲染线程，
+    # Unity 建 GL 上下文时会因线程过多 SIGSEGV；限制线程数即可修复。
+    virtual_display_render_env:
+      GALLIUM_NUM_THREADS: 16
+    # Evaluation runs through the final attempt from the effective task runtime cfg,
+    # even if an earlier attempt succeeds.
+    # score_reward is the last attempt's total reward; success fields are diagnostics.
+    # max_attempts controls how many attempts are available before the evaluation is scored.
+    # The total rollout step budget is derived from: max_attempts * max_steps_per_attempt.
+    # max_attempts: 5
+    # max_steps_per_attempt: 1
+    # env_wrapper_cfg:
+    #   context_manager:
+    #     history:
+    #       # These history entries are previous ArkSubEnv attempts for the same task rollout.
+    #       max_history_attempts: 5
+    #       max_history_steps_per_attempt: 10
+    #       sample_mode: latest
+    #       # sample_size is the number of prior attempts injected at each reset.
+    #       sample_size: 3
+        # messages:
+          # Message rendering reuses history.* attempt/step limits.
+          # Optional message-context override for debugging. Default false keeps repeated
+          # history-start images instead of omitting them when they match the current reset image.
+          # dedupe_initial_history_images: false
+          # Default false: do not repeat the static task prompt when auto-reset starts a new attempt.
+          # repeat_task_prompt_on_auto_reset: false
+          # Same-seed ArkEnv auto-reset initial images are omitted automatically with a text note.
+
+eval:
+  output_path: tmp/marble_stop_seed1.jsonl
+  stop_on_error: true
+
+  # Keep env_id fixed when exact replay depends on runtime-side env_id.
+  fixed_env_id: 0
+  cases:
+    - case_id: marble-stop-seed-0001
+      task_name: MarbleStop
+      group_seed: 1
+      env_id: 0
+hooks:
+  visualization:
+    # Local browser chat view for the messages seen by the model and assistant responses.
+    # Full raw hook events are still retained by the local viewer server.
+    enabled: false
+    host: 127.0.0.1
+    port: 18181
+    open_browser: false
+    text_max_chars: 6000
+    max_images_per_observation: 4
+    event_buffer_size: 500
+    keep_open_on_end: false
+  human_interaction:
+    # When true, no LLM API call is made. Submit actions in the browser textbox instead.
+    # Enable visualization.open_browser together with this for local task debugging.
+    enabled: false
+    name: human-local
+    timeout_s: null
+
+models:
+  - name: openrouter-qwen37-plus
+    provider: openrouter
+    model: qwen/qwen3.7-plus
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.0
+
+  # - name: openrouter-gpt-5.5
+  #   provider: openrouter
+  #   model: openai/gpt-5.5
+  #   base_url: https://openrouter.ai/api/v1
+  #   api_key_env: OPENROUTER_API_KEY
+  #   temperature: 0.0
+
+  # - name: openrouter-gemini3.5-flash
+  #   provider: openrouter
+  #   model: google/gemini-3.5-flash
+  #   base_url: https://openrouter.ai/api/v1
+  #   api_key_env: OPENROUTER_API_KEY
+  #   temperature: 0.0
+
+  # - name: claude-opus-4.8
+  #   provider: openrouter
+  #   model: anthropic/claude-opus-4.8
+  #   base_url: https://openrouter.ai/api/v1
+  #   api_key_env: OPENROUTER_API_KEY
+  #   temperature: 0.0
+
+  # - name: grok-4.20
+  #   provider: openrouter
+  #   model: x-ai/grok-4.20
+  #   base_url: https://openrouter.ai/api/v1
+  #   api_key_env: OPENROUTER_API_KEY
+  #   temperature: 0.0
+
+  # Generic OpenAI-compatible endpoint. Use provider: openai to avoid
+  # OpenRouter/DashScope-specific extra_body fields.
+  # - name: local-openai-compatible
+  #   provider: openai
+  #   model: replace-with-local-model-id
+  #   base_url: http://127.0.0.1:8081/v1
+  #   api_key: not-needed
+  #   temperature: 0.2
+
+  # - name: dashscope-qwen3-vl-plus
+  #   provider: dashscope
+  #   model: qwen3-vl-plus
+  #   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  #   api_key_env: DASHSCOPE_API_KEY
+  #   temperature: 0.2

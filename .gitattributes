@@ -1,0 +1,10 @@
+* text=auto
+
+# Shell scripts must always use LF, even when checked out on Windows,
+# otherwise they fail to run on Linux (CRLF -> "set: invalid option").
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Windows batch scripts always use CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf

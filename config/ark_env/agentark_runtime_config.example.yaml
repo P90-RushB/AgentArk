@@ -1,0 +1,88 @@
+# Unified runtime config for AgentArk env server clients.
+# This file is shared by warmup / interaction demo / no-verl debug scripts.
+
+server:
+  host: http://127.0.0.1
+  port: 18080
+  timeout: 1200
+
+interaction:
+  # Default lifecycle for training: acquire from pool, release on finalize.
+  acquire_env: true
+  release_env_on_finalize: true
+
+  # Compatibility switches for explicit create/close flow.
+  auto_create_env: false
+  close_env_on_finalize: false
+
+  # Optional static reset-time overrides for env.start/reset.
+  # Dynamic multi-task rollout should still prefer extra_info.interaction_kwargs.
+  # start_options:
+  #   task_name: null
+  #   group_seed: null
+  #   unity_env_id: null
+
+warmup:
+  # How many envs to pre-create and keep alive in the server.
+  # Default training uses TRAIN_BATCH_SIZE=2 and ROLLOUT_N=8, so it leases 16 envs concurrently.
+  num_envs: 16
+
+  # Optionally do one no-op step after start.
+  step_once: false
+
+  # Keep envs alive for leasing by default.
+  close_envs_after_warmup: false
+  env_id_prefix: warmup-env
+
+  # Optional deterministic per-env fields.
+  port_assignment:
+    assign_worker_index: true
+    assign_env_id: false
+    assign_base_port: false
+    base_port_start: 5005
+    base_port_stride: 1
+    base_port_plan: []
+
+env_cfg:
+  env_path: "${AGENTARK_ENV_PATH}"
+  mod_path: "${AGENTARK_MOD_PATH}"
+  task_type: RLTask
+  # Retry acquire_start on a different idle env if reset fails/timeouts. This is
+  # server-side and applies to any RL framework using the HTTP API.
+  acquire_start_max_retries: 2
+  # Recycle each Unity runtime after this many completed interactions. This bounds
+  # long-running Roslyn/AppDomain dynamic assembly growth even when training on a
+  # single task. 0 disables proactive recycling.
+  max_interactions_per_runtime: 64
+  runtime_sandbox:
+    enabled: true
+    runtime_platform: linux
+    template_root: "${AGENTARK_RUNTIME_TEMPLATE_ROOT}"
+    template_env_path: "${AGENTARK_ENV_PATH}"
+    template_mod_path: "${AGENTARK_MOD_PATH}"
+    shared_task_store_path: "${AGENTARK_TASK_STORE_PATH}"
+    pool_root: "${AGENTARK_RUNTIME_POOL_ROOT}"
+    pool_size: 10
+    auto_prepare: true
+    link_mode: symlink
+  env_config_overrides:
+    num_parallel_envs: 1
+    virtual_display: true
+    # Linux/Xvfb 软件渲染（llvmpipe）专用环境变量。仅在 virtual_display 启动时注入，
+    # 不影响有桌面/有 GPU 的机器。大核机器上 llvmpipe 默认按 CPU 核数开渲染线程，
+    # Unity 建 GL 上下文时会因线程过多 SIGSEGV；限制线程数即可修复。
+    virtual_display_render_env:
+      GALLIUM_NUM_THREADS: 16
+    env_wrapper_cfg:
+      context_manager:
+        history:
+          max_history_attempts: 0
+          max_history_steps_per_attempt: 0
+          sample_size: 0
+        messages:
+          enabled: true
+          only_return_messages: true
+          append_only: true
+          return_mode: delta
+          history_only_on_attempt_start: true
+          repeat_task_prompt_on_auto_reset: false

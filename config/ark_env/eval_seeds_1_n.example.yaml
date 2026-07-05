@@ -1,0 +1,76 @@
+env_cfg:
+  env_path: "${AGENTARK_ENV_PATH}"
+  mod_path: "${AGENTARK_MOD_PATH}"
+  task_type: RLTask
+  env_config_overrides:
+    override_by_task: true
+    num_parallel_envs: 1
+
+eval:
+  output_path: tmp/marble_stop_seeds_1_5.jsonl
+  stop_on_error: false
+  skip_existing_results: true
+  fixed_env_id: 0
+  task_names:
+    - MarbleStop
+  # Range form:
+  # group_seeds:
+  #   start: 1
+  #   end: 20
+  # Explicit list form:
+  # group_seeds: [1, 2, 3, 10, 20]
+  group_seeds:
+    start: 1
+    end: 5
+hooks:
+  visualization:
+    enabled: false
+    host: 127.0.0.1
+    port: 18181
+    open_browser: false
+    text_max_chars: 6000
+    max_images_per_observation: 4
+    event_buffer_size: 500
+    keep_open_on_end: false
+  human_interaction:
+    # Set true with visualization enabled for browser-driven manual actions.
+    enabled: false
+    name: human-local
+    timeout_s: null
+
+models:
+  # Replace model/base_url/api_key_env with your OpenAI-compatible provider.
+  - name: openrouter-qwen37-plus
+    provider: openrouter
+    model: qwen/qwen3.7-plus
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.0
+
+  # - name: openrouter-gpt-5.5
+  #   provider: openrouter
+  #   model: openai/gpt-5.5
+  #   base_url: https://openrouter.ai/api/v1
+  #   api_key_env: OPENROUTER_API_KEY
+  #   temperature: 0.0
+
+  # - name: openrouter-gemini-3.5-flash
+  #   provider: openrouter
+  #   model: google/gemini-3.5-flash
+  #   base_url: https://openrouter.ai/api/v1
+  #   api_key_env: OPENROUTER_API_KEY
+  #   temperature: 0.0
+
+  # - name: claude-opus-4.8
+  #   provider: openrouter
+  #   model: anthropic/claude-opus-4.8
+  #   base_url: https://openrouter.ai/api/v1
+  #   api_key_env: OPENROUTER_API_KEY
+  #   temperature: 0.0
+
+  # - name: grok-4.20
+  #   provider: openrouter
+  #   model: x-ai/grok-4.20
+  #   base_url: https://openrouter.ai/api/v1
+  #   api_key_env: OPENROUTER_API_KEY
+  #   temperature: 0.0
