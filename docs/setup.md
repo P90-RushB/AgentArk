@@ -38,12 +38,13 @@ For source-tree debugging without installing the package, set `PYTHONPATH=src`.
 ## Runtime Download
 
 The current packaged runtime includes 32 starter tasks. Download the runtime for
-your OS.
+your OS with the Hugging Face CLI command `hf download`. Install the CLI first
+if `hf` is not available.
 
 Linux:
 
 ```bash
-conda run -n hf hf download P90-RushB/AgentArk \
+hf download P90-RushB/AgentArk \
   --type dataset \
   --include artifacts/envs/1.0.1/linux/AgentArk-env-1.0.1-linux.zip \
   --local-dir downloads/agentark-assets
@@ -52,14 +53,11 @@ conda run -n hf hf download P90-RushB/AgentArk \
 Windows PowerShell:
 
 ```powershell
-conda run -n hf hf download P90-RushB/AgentArk `
+hf download P90-RushB/AgentArk `
   --type dataset `
   --include artifacts/envs/1.0.1/windows/AgentArk-env-1.0.1-windows.zip `
   --local-dir downloads/agentark-assets
 ```
-
-If you do not use the `hf` conda environment, use any recent Hugging Face CLI
-and keep the same `hf download ... --type dataset ...` arguments.
 
 Direct links:
 
@@ -158,7 +156,7 @@ archives are listed in `registry/tasks.jsonl`, one row per task and platform.
 Download the registry:
 
 ```bash
-conda run -n hf hf download P90-RushB/AgentArk \
+hf download P90-RushB/AgentArk \
   --type dataset \
   --include registry/tasks.jsonl \
   --local-dir downloads/agentark-assets

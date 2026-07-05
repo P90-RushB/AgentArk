@@ -85,17 +85,18 @@ python -m pip install -e .
 ```
 
 Download a matching AgentArk runtime from Hugging Face. Current release:
-`env-1.0.1`. The packaged runtime includes 32 starter tasks.
+`env-1.0.1`. The packaged runtime includes 32 starter tasks. Use the Hugging
+Face CLI command `hf download`; install the CLI first if `hf` is not available.
 
 ```bash
 # Linux
-conda run -n hf hf download P90-RushB/AgentArk \
+hf download P90-RushB/AgentArk \
   --type dataset \
   --include artifacts/envs/1.0.1/linux/AgentArk-env-1.0.1-linux.zip \
   --local-dir downloads/agentark-assets
 
 # Windows
-conda run -n hf hf download P90-RushB/AgentArk \
+hf download P90-RushB/AgentArk \
   --type dataset \
   --include artifacts/envs/1.0.1/windows/AgentArk-env-1.0.1-windows.zip \
   --local-dir downloads/agentark-assets
