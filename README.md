@@ -52,6 +52,7 @@ Start with the Hub and the Colab tutorials:
 ## Documentation Map
 
 - Environment setup: [docs/setup.md](docs/setup.md)
+- System paper: [docs/paper/AgentArk.pdf](docs/paper/AgentArk.pdf)
 - Colab tutorials: [docs/tutorials](docs/tutorials)
 - Model evaluation and replay: [docs/evaluation-guide.md](docs/evaluation-guide.md)
 - RL training with verl: [docs/rl-training.md](docs/rl-training.md)
