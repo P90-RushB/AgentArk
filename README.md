@@ -16,20 +16,6 @@ evaluation, replay, environment serving, and RL training integration. Public
 runtime builds, task mods, and example replay/evaluation records are available at
 [P90-RushB/AgentArk on Hugging Face](https://huggingface.co/datasets/P90-RushB/AgentArk).
 
-## Try AgentArk First
-
-You do not need to install the local runtime before seeing what AgentArk can do.
-Start with the Hub and the Colab tutorials:
-
-| Entry | What it is for |
-| --- | --- |
-| [AgentArk Hub](https://p90-rushb.github.io/agentark-hub/) | Browse released tasks, preview media, public scoreboards, model results, and artifact links. |
-| [01_human_play_tutorial.ipynb](https://colab.research.google.com/drive/1OdGgcjtNUO5V4W935Qzm1760mO5V_vF1?usp=drive_link) | Play and debug AgentArk tasks manually from Colab. |
-| [02_model_replay_tutorial.ipynb](https://colab.research.google.com/drive/12rypa1bzmtErXMZ1GJAI8qGzCYAfViQI?usp=drive_link) | Replay saved model actions without calling a model API again. |
-| [03_online_evaluation_tutorial.ipynb](https://colab.research.google.com/drive/1hP1OxjbboxEa5rvySwo5UWLT_Wn-PxsK?usp=drive_link) | Run online API evaluation against AgentArk tasks. |
-| [04_rl_training_tutorial.ipynb](https://colab.research.google.com/drive/1ktAtXJLyi99FteZpdwnBcF6AiCSvOn4i?usp=drive_link) | Launch the RL training workflow around the AgentArk env server. |
-| [Hugging Face artifacts](https://huggingface.co/datasets/P90-RushB/AgentArk) | Download runtime builds, task mods, replay records, and registries. |
-
 ## What AgentArk Enables
 
 - **Task scaling with coding agents.** New environments are packaged as task
@@ -44,6 +30,20 @@ Start with the Hub and the Colab tutorials:
   calibration, timing control, path planning, video-level observation,
   mini-games, GUI-like tasks, and future task families that can be expressed as
   loadable mods with verifiable scoring.
+
+## Try AgentArk First
+
+You do not need to install the local runtime before seeing what AgentArk can do.
+Start with the Hub and the Colab tutorials:
+
+| Entry | What it is for |
+| --- | --- |
+| [AgentArk Hub](https://p90-rushb.github.io/agentark-hub/) | Browse released tasks, preview media, public scoreboards, model results, and artifact links. |
+| [01_human_play_tutorial.ipynb](https://colab.research.google.com/drive/1OdGgcjtNUO5V4W935Qzm1760mO5V_vF1?usp=drive_link) | Play and debug AgentArk tasks manually from Colab. |
+| [02_model_replay_tutorial.ipynb](https://colab.research.google.com/drive/12rypa1bzmtErXMZ1GJAI8qGzCYAfViQI?usp=drive_link) | Replay saved model actions without calling a model API again. |
+| [03_online_evaluation_tutorial.ipynb](https://colab.research.google.com/drive/1hP1OxjbboxEa5rvySwo5UWLT_Wn-PxsK?usp=drive_link) | Run online API evaluation against AgentArk tasks. |
+| [04_rl_training_tutorial.ipynb](https://colab.research.google.com/drive/1ktAtXJLyi99FteZpdwnBcF6AiCSvOn4i?usp=drive_link) | Launch the RL training workflow around the AgentArk env server. |
+| [Hugging Face artifacts](https://huggingface.co/datasets/P90-RushB/AgentArk) | Download runtime builds, task mods, replay records, and registries. |
 
 <p align="center">
   <img src="docs/figures/agentark-figure1.png" alt="AgentArk overview" width="900">
