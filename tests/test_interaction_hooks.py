@@ -3,11 +3,13 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from PIL import Image
 import requests
 
 from agent_ark.agent.api_agent import APIAgent
+from agent_ark.agent.codex_agent import CodexAgent
 from agent_ark.ark_env.ark_env import ArkRolloutContext
 from agent_ark.ark_env.context_manager import MessageContext
 from agent_ark.ark_env.serving.session_manager import EnvRuntime
@@ -233,6 +235,197 @@ class InteractionHookTest(unittest.TestCase):
         self.assertEqual(runtimes[0]['temperature'], 0.1)
         self.assertEqual(runtimes[0]['agent'].client.provider, 'openai')
         self.assertEqual(runtimes[0]['agent'].client.model, 'example-openai-model')
+
+    def test_codex_agent_uses_data_uri_image_input_without_writing_file(self):
+        class FakeTextInput:
+            def __init__(self, text):
+                self.text = text
+
+        class FakeImageInput:
+            def __init__(self, url):
+                self.url = url
+
+        image_url = 'data:image/png;base64,ZmFrZS1wbmctYnl0ZXM='
+        agent = CodexAgent(name='codex-test')
+        agent._text_input_cls = FakeTextInput
+        agent._image_input_cls = FakeImageInput
+
+        self.assertEqual(agent.config.thread_mode, 'per_agent')
+        rendered = agent._messages_to_codex_prompt(
+            [
+                {
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': 'inspect this observation'},
+                        {'type': 'image_url', 'image_url': {'url': image_url}},
+                    ],
+                }
+            ],
+            agent_idx=0,
+        )
+        sdk_input = agent._to_sdk_input(rendered)
+
+        self.assertIn('inspect this observation', rendered.prompt)
+        self.assertEqual(rendered.image_urls, [image_url])
+        self.assertEqual(len(sdk_input), 2)
+        self.assertIsInstance(sdk_input[0], FakeTextInput)
+        self.assertIsInstance(sdk_input[1], FakeImageInput)
+        self.assertEqual(sdk_input[1].url, image_url)
+
+    def test_codex_agent_without_image_input_keeps_text_only_prompt(self):
+        class FakeTextInput:
+            def __init__(self, text):
+                self.text = text
+
+        agent = CodexAgent(name='codex-test')
+        agent._text_input_cls = FakeTextInput
+        agent._image_input_cls = None
+
+        rendered = agent._messages_to_codex_prompt(
+            [
+                {
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': 'inspect this observation'},
+                        {
+                            'type': 'image_url',
+                            'image_url': {'url': 'data:image/png;base64,ZmFrZS1wbmctYnl0ZXM='},
+                        },
+                    ],
+                }
+            ],
+            agent_idx=0,
+        )
+        sdk_input = agent._to_sdk_input(rendered)
+
+        self.assertEqual(len(sdk_input), 1)
+        self.assertIsInstance(sdk_input[0], FakeTextInput)
+        self.assertIn('[image input:', sdk_input[0].text)
+
+    def test_api_and_codex_build_identical_request_messages(self):
+        obs = {
+            0: {
+                'messages': [
+                    {'role': 'system', 'content': 'system prompt'},
+                    {
+                        'role': 'user',
+                        'content': [
+                            {'type': 'text', 'text': 'task prompt'},
+                            {
+                                'type': 'image_url',
+                                'image_url': {'url': 'data:image/png;base64,ZmFrZQ=='},
+                            },
+                        ],
+                    },
+                ],
+            }
+        }
+        api_agent = object.__new__(APIAgent)
+        codex_agent = CodexAgent(name='codex-test')
+
+        self.assertEqual(
+            APIAgent.build_request_messages(api_agent, obs),
+            codex_agent.build_request_messages(obs),
+        )
+
+    def test_codex_agent_forward_trace_includes_usage(self):
+        class FakeThread:
+            def run(self, _input):
+                return SimpleNamespace(
+                    final_response='<tool_call>{"name":"PushForward","arguments":{"forceScale":1}}</tool_call>',
+                    usage=SimpleNamespace(input_tokens=10, output_tokens=5, total_tokens=15),
+                )
+
+        agent = CodexAgent(name='codex-test', timeout_s=None)
+        agent._get_thread = lambda _agent_idx: FakeThread()
+        agent._text_input_cls = None
+
+        _, trace = agent.forward_with_trace({0: {'messages': [{'role': 'user', 'content': 'hi'}]}})
+
+        self.assertEqual(trace[0]['usage']['input_tokens'], 10)
+        self.assertEqual(trace[0]['usage']['output_tokens'], 5)
+        self.assertEqual(trace[0]['usage']['total_tokens'], 15)
+
+    def test_codex_agent_passes_reasoning_effort_to_run(self):
+        class FakeThread:
+            def __init__(self):
+                self.kwargs = None
+
+            def run(self, _input, **kwargs):
+                self.kwargs = kwargs
+                return SimpleNamespace(
+                    final_response='<tool_call>{"name":"PushForward","arguments":{"forceScale":1}}</tool_call>',
+                    usage=None,
+                )
+
+        fake_thread = FakeThread()
+        agent = CodexAgent(name='codex-test', timeout_s=None, reasoning_effort='LOW')
+        agent._get_thread = lambda _agent_idx: fake_thread
+        agent._text_input_cls = None
+
+        agent.forward_with_trace({0: {'messages': [{'role': 'user', 'content': 'hi'}]}})
+
+        self.assertEqual(fake_thread.kwargs, {'effort': 'low'})
+
+    def test_codex_agent_rejects_unknown_reasoning_effort(self):
+        with self.assertRaises(ValueError):
+            CodexAgent(name='codex-test', reasoning_effort='huge')
+
+    def test_codex_agent_usage_conversion_preserves_nested_breakdowns(self):
+        usage = SimpleNamespace(
+            last=SimpleNamespace(input_tokens=3, output_tokens=2, total_tokens=5),
+            total=SimpleNamespace(input_tokens=30, output_tokens=20, total_tokens=50),
+            model_context_window=1234,
+        )
+
+        converted = CodexAgent._usage_to_dict(usage)
+
+        self.assertEqual(converted['last']['input_tokens'], 3)
+        self.assertEqual(converted['total']['output_tokens'], 20)
+        self.assertEqual(converted['model_context_window'], 1234)
+
+    def test_build_model_runtimes_supports_codex_provider(self):
+        class FakeCodexAgent:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        with patch('agent_ark.ark_eval.run_api_agent.CodexAgent', FakeCodexAgent):
+            runtimes = build_model_runtimes([
+                {
+                    'name': 'codex-local',
+                    'provider': 'codex',
+                    'model': 'gpt-5.5',
+                    'sandbox': 'read_only',
+                    'timeout_s': 12,
+                    'reasoning_effort': 'low',
+                    'thread_mode': 'per_turn',
+                }
+            ])
+
+        self.assertEqual(len(runtimes), 1)
+        self.assertEqual(runtimes[0]['provider'], 'codex')
+        self.assertEqual(runtimes[0]['base_url'], None)
+        self.assertEqual(runtimes[0]['api_key_env'], None)
+        self.assertEqual(runtimes[0]['timeout_s'], 12.0)
+        self.assertEqual(runtimes[0]['agent'].kwargs['model'], 'gpt-5.5')
+        self.assertEqual(runtimes[0]['agent'].kwargs['sandbox'], 'read_only')
+        self.assertEqual(runtimes[0]['reasoning_effort'], 'low')
+        self.assertEqual(runtimes[0]['agent'].kwargs['reasoning_effort'], 'low')
+        self.assertEqual(runtimes[0]['thread_mode'], 'per_turn')
+        self.assertEqual(runtimes[0]['agent'].kwargs['thread_mode'], 'per_turn')
+
+    def test_codex_provider_defaults_to_gpt55(self):
+        class FakeCodexAgent:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        with patch('agent_ark.ark_eval.run_api_agent.CodexAgent', FakeCodexAgent):
+            runtimes = build_model_runtimes([{'name': 'codex-local', 'provider': 'codex'}])
+
+        self.assertEqual(runtimes[0]['model'], 'gpt-5.5')
+        self.assertEqual(runtimes[0]['agent'].kwargs['model'], 'gpt-5.5')
+        self.assertEqual(runtimes[0]['thread_mode'], 'per_agent')
+        self.assertEqual(runtimes[0]['agent'].kwargs['thread_mode'], 'per_agent')
 
     def test_auto_reset_message_omits_repeated_task_prompt_but_keeps_new_image(self):
         img = Image.new('RGB', (2, 2), color=(0, 0, 255))

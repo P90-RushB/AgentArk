@@ -26,7 +26,8 @@ AgentArk eval YAML files use four main sections:
   `Mods/config.yaml`, such as `num_parallel_envs`, `virtual_display`, or history
   settings.
 - `eval`: case selection, seed ranges, output path, and parallelism.
-- `models`: OpenAI-compatible model providers.
+- `models`: OpenAI-compatible model providers, or `provider: codex` for local
+  Codex SDK evaluation.
 
 For evaluation, keep `env_cfg.env_config_overrides.num_parallel_envs: 1`.
 Parallel scoring is done by launching multiple independent `ArkEnv` instances,
@@ -57,6 +58,72 @@ models:
 This model block is only an OpenRouter example. Replace `provider`, `model`,
 `base_url`, and `api_key_env` for any OpenAI-compatible endpoint you want to
 evaluate.
+
+To evaluate through the Codex SDK instead of an OpenAI-compatible HTTP endpoint,
+install AgentArk with the `codex` extra and use `provider: codex`:
+
+```bash
+python -m pip install -U pip
+python -m pip install -e ".[codex]"
+```
+
+If your package index does not mirror the beta Codex SDK yet, install from PyPI
+explicitly:
+
+```bash
+python -m pip install -i https://pypi.org/simple openai-codex
+```
+
+```yaml
+models:
+  - name: codex-gpt55
+    provider: codex
+    model: gpt-5.5
+    sandbox: read_only
+    timeout_s: 600
+    # Choices: none, minimal, low, medium, high, xhigh.
+    # Omit to use the Codex SDK/model default. low is the safer cheap setting;
+    # minimal can be rejected when Codex tools are enabled.
+    reasoning_effort: low
+    thread_mode: per_agent
+```
+
+Codex SDK model entries do not use `base_url`, `api_key`, or `api_key_env`.
+AgentArk converts the OpenAI-style evaluation messages into Codex text and
+image inputs. Data-URI image observations are passed directly as Codex
+`ImageInput` items. Use `reasoning_effort` to override the Codex turn reasoning
+depth when you want cheaper or faster model turns.
+
+`thread_mode` defaults to `per_agent`. This is recommended because Codex SDK
+turns include Codex-side runtime, system, and tool context in addition to
+AgentArk's visible `request_messages`. That context is not shown by the
+environment, but it is counted in Codex token usage. In local MarbleStop checks,
+a first turn with only a few thousand visible text characters plus one image
+reported tens of thousands of input tokens, and `per_agent` runs showed much
+higher cached-token reuse on later turns. Keeping a persistent thread lets
+Codex reuse its own setup plus the reset/base prompt; the environment can then
+send only step deltas.
+
+Message return mode is configured under
+`env_cfg.env_config_overrides.env_wrapper_cfg.context_manager.messages`:
+
+```yaml
+env_cfg:
+  env_config_overrides:
+    env_wrapper_cfg:
+      context_manager:
+        messages:
+          enabled: true
+          only_return_messages: true
+          append_only: true
+          return_mode: delta
+          history_only_on_attempt_start: true
+```
+
+For stateless API models, or Codex with `thread_mode: per_turn`, use
+`return_mode: full`. For Codex with `thread_mode: per_agent`, use `append_only:
+true` plus `return_mode: delta` so the persistent Codex thread receives only
+the new step delta after the reset/base prompt.
 
 Then run:
 

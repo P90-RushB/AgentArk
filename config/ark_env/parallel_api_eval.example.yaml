@@ -29,6 +29,16 @@ env_cfg:
   env_config_overrides:
     override_by_task: true
     num_parallel_envs: 1
+    # env_wrapper_cfg:
+    #   context_manager:
+    #     messages:
+    #       enabled: true
+    #       only_return_messages: true
+    #       append_only: true
+    #       # Use return_mode: delta with Codex thread_mode: per_agent.
+    #       # Use return_mode: full with stateless API models or Codex thread_mode: per_turn.
+    #       return_mode: delta
+    #       history_only_on_attempt_start: true
 
 # Parallel API eval runs one task only, but can fan out many model/seed jobs.
 eval:
@@ -85,3 +95,31 @@ models:
   #   temperature: 0.2
   #   timeout_s: 180
   #   max_retries: 0
+
+  # Codex SDK evaluation. Requires `pip install openai-codex` and an
+  # authenticated local Codex setup. This does not use base_url/api_key.
+  # Data-URI image observations are passed directly as Codex ImageInput items.
+  #
+  # Recommended stateful Codex mode. Pair with messages.return_mode: delta above.
+  # Codex adds its own runtime/system/tool context around AgentArk messages;
+  # keeping one thread lets later turns reuse/cache that setup and receive only deltas.
+  # - name: codex-gpt55-per-agent-delta
+  #   provider: codex
+  #   model: gpt-5.5
+  #   sandbox: read_only
+  #   timeout_s: 600
+  #   # Optional Codex reasoning depth. Choices: none, minimal, low, medium,
+  #   # high, xhigh. Omit to use the Codex SDK/model default. Use low as the
+  #   # safer cheap setting; minimal can be rejected when Codex tools are enabled.
+  #   reasoning_effort: low
+  #   thread_mode: per_agent
+  #
+  # Fresh-thread compatibility mode. Pair with messages.return_mode: full above.
+  # This restarts the Codex-side context every turn, so it is usually more expensive.
+  # - name: codex-gpt55-per-turn-full
+  #   provider: codex
+  #   model: gpt-5.5
+  #   sandbox: read_only
+  #   timeout_s: 600
+  #   reasoning_effort: low
+  #   thread_mode: per_turn

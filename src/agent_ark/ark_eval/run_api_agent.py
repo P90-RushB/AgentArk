@@ -17,6 +17,7 @@ except Exception:
     yaml = None
 
 from agent_ark.agent.api_agent import APIAgent
+from agent_ark.agent.codex_agent import CodexAgent
 from agent_ark.ark_env import ArkEnv, ensure_runtime_pool_range, require_rollout_step_budget, resolve_runtime_sandbox_cfg
 from agent_ark.ark_env.ark_sub_env import _normalize_optional_path, _resolve_cli_mod_path
 from agent_ark.ark_env.direct_env import EnvInfoManager
@@ -51,6 +52,29 @@ def _coerce_bool(value: Any, default: bool = False) -> bool:
         if lowered in ('0', 'false', 'no', 'n', 'off'):
             return False
     return bool(default)
+
+
+def _normalize_codex_reasoning_effort(value: Any) -> Optional[str]:
+    if value in (None, ''):
+        return None
+    normalized = str(value).strip().lower()
+    allowed = {'none', 'minimal', 'low', 'medium', 'high', 'xhigh'}
+    if normalized not in allowed:
+        raise ValueError(
+            'Codex reasoning_effort must be one of: '
+            'none, minimal, low, medium, high, xhigh'
+        )
+    return normalized
+
+
+def _normalize_codex_thread_mode(value: Any) -> str:
+    if value in (None, ''):
+        return 'per_agent'
+    normalized = str(value).strip().lower()
+    allowed = {'per_agent', 'per_turn'}
+    if normalized not in allowed:
+        raise ValueError("Codex thread_mode must be 'per_agent' or 'per_turn'")
+    return normalized
 
 
 def _expand_env_vars(value: str) -> str:
@@ -549,13 +573,49 @@ def build_model_runtimes(
         if not isinstance(model_cfg, dict):
             raise ValueError(f'models[{idx}] must be an object')
 
+        provider = str(model_cfg.get('provider', 'auto')).strip().lower() or 'auto'
         model_name = str(model_cfg.get('name', f'model-{idx:02d}')).strip()
         model_id = str(model_cfg.get('model', '')).strip()
+        if not model_id and provider == 'codex':
+            model_id = 'gpt-5.5'
         if not model_id:
             raise ValueError(f'models[{idx}] is missing model')
 
         base_url = model_cfg.get('base_url', None)
-        provider = str(model_cfg.get('provider', 'auto')).strip().lower() or 'auto'
+        if provider == 'codex':
+            timeout_s = model_cfg.get('timeout_s', model_cfg.get('request_timeout_s', 600.0))
+            if timeout_s is not None:
+                timeout_s = float(timeout_s)
+            sandbox = str(model_cfg.get('sandbox', model_cfg.get('codex_sandbox', 'read_only')) or 'read_only')
+            reasoning_effort = _normalize_codex_reasoning_effort(
+                model_cfg.get('reasoning_effort', model_cfg.get('effort', None))
+            )
+            thread_mode = _normalize_codex_thread_mode(model_cfg.get('thread_mode', None))
+            agent = CodexAgent(
+                name=model_name,
+                model=model_id,
+                sandbox=sandbox,
+                timeout_s=timeout_s,
+                reasoning_effort=reasoning_effort,
+                codex_bin=model_cfg.get('codex_bin', None),
+                cwd=model_cfg.get('cwd', None),
+                thread_mode=thread_mode,
+            )
+            runtimes.append({
+                'name': model_name,
+                'model': model_id,
+                'provider': provider,
+                'base_url': None,
+                'api_key_env': None,
+                'temperature': None,
+                'timeout_s': timeout_s,
+                'reasoning_effort': reasoning_effort,
+                'sandbox': sandbox,
+                'thread_mode': thread_mode,
+                'agent': agent,
+            })
+            continue
+
         api_key = model_cfg.get('api_key', None)
         api_key_env = str(model_cfg.get('api_key_env', '')).strip() or None
         if api_key is None and api_key_env is not None:
@@ -1572,7 +1632,12 @@ def main(args):
                         raise
                     continue
                 finally:
-                    env.close()
+                    try:
+                        close_agent = getattr(model_runtime.get('agent'), 'close', None)
+                        if callable(close_agent):
+                            close_agent()
+                    finally:
+                        env.close()
 
                 write_eval_result(
                     writer,

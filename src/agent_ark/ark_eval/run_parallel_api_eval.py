@@ -320,6 +320,9 @@ def make_parallel_job_runner(
             result = build_error_result(model_runtime, job['case'], exc)
             return _attach_job_metadata(result, job, worker_index=worker_index, slot_index=slot_index)
         finally:
+            close_agent = getattr(model_runtime.get('agent'), 'close', None)
+            if callable(close_agent):
+                close_agent()
             if env is not None:
                 env.close()
 

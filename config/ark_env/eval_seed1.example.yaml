@@ -30,14 +30,20 @@ env_cfg:
     #       sample_mode: latest
     #       # sample_size is the number of prior attempts injected at each reset.
     #       sample_size: 3
-        # messages:
-          # Message rendering reuses history.* attempt/step limits.
-          # Optional message-context override for debugging. Default false keeps repeated
-          # history-start images instead of omitting them when they match the current reset image.
-          # dedupe_initial_history_images: false
-          # Default false: do not repeat the static task prompt when auto-reset starts a new attempt.
-          # repeat_task_prompt_on_auto_reset: false
-          # Same-seed ArkEnv auto-reset initial images are omitted automatically with a text note.
+    #     messages:
+    #       enabled: true
+    #       only_return_messages: true
+    #       append_only: true
+    #       # Use return_mode: delta with Codex thread_mode: per_agent.
+    #       # Use return_mode: full with stateless API models or Codex thread_mode: per_turn.
+    #       return_mode: delta
+    #       history_only_on_attempt_start: true
+    #       # Optional message-context override for debugging. Default false keeps repeated
+    #       # history-start images instead of omitting them when they match the current reset image.
+    #       dedupe_initial_history_images: false
+    #       # Default false: do not repeat the static task prompt when auto-reset starts a new attempt.
+    #       repeat_task_prompt_on_auto_reset: false
+    #       # Same-seed ArkEnv auto-reset initial images are omitted automatically with a text note.
 
 eval:
   output_path: tmp/marble_stop_seed1.jsonl
@@ -113,6 +119,35 @@ models:
   #   base_url: http://127.0.0.1:8081/v1
   #   api_key: not-needed
   #   temperature: 0.2
+
+  # Codex SDK evaluation. This is not an OpenAI-compatible HTTP endpoint:
+  # install `openai-codex`, authenticate your local Codex setup, and use
+  # provider: codex. Data-URI image observations are passed directly as Codex
+  # ImageInput items.
+  #
+  # Recommended stateful Codex mode. Pair with messages.return_mode: delta above.
+  # Codex adds its own runtime/system/tool context around AgentArk messages;
+  # keeping one thread lets later turns reuse/cache that setup and receive only deltas.
+  # - name: codex-gpt55-per-agent-delta
+  #   provider: codex
+  #   model: gpt-5.5
+  #   sandbox: read_only
+  #   timeout_s: 600
+  #   # Optional Codex reasoning depth. Choices: none, minimal, low, medium,
+  #   # high, xhigh. Omit to use the Codex SDK/model default. Use low as the
+  #   # safer cheap setting; minimal can be rejected when Codex tools are enabled.
+  #   reasoning_effort: low
+  #   thread_mode: per_agent
+  #
+  # Fresh-thread compatibility mode. Pair with messages.return_mode: full above.
+  # This restarts the Codex-side context every turn, so it is usually more expensive.
+  # - name: codex-gpt55-per-turn-full
+  #   provider: codex
+  #   model: gpt-5.5
+  #   sandbox: read_only
+  #   timeout_s: 600
+  #   reasoning_effort: low
+  #   thread_mode: per_turn
 
   # - name: dashscope-qwen3-vl-plus
   #   provider: dashscope
