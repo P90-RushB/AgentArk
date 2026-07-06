@@ -5,7 +5,7 @@ from pathlib import Path
 import uuid
 from contextlib import nullcontext
 from copy import deepcopy
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from mlagents_envs.environment import UnityEnvironment
 from mlagents_envs.exception import UnityCommunicationException, UnityTimeOutException, UnityWorkerInUseException
@@ -527,6 +527,102 @@ def _resolve_cli_max_steps(env_cfg: Optional[Dict[str, Any]], max_steps: Optiona
     return 10
 
 
+def _coerce_cli_action_payload(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+
+
+def _existing_cli_action_sequence_path(value: str) -> Optional[Path]:
+    try:
+        normalized = _normalize_optional_path(value) or value
+        path = Path(normalized)
+        return path if path.is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
+def _coerce_cli_action_sequence(value: Any, source: str) -> list[str]:
+    if isinstance(value, dict) and 'actions' in value:
+        value = value['actions']
+
+    if not isinstance(value, list):
+        raise ValueError(f'{source} must contain a JSON array, or a JSON object with an "actions" array')
+
+    actions = [_coerce_cli_action_payload(item) for item in value]
+    if not actions:
+        raise ValueError(f'{source} must contain at least one action payload')
+    return actions
+
+
+def _load_cli_action_sequence_file(path: Path) -> list[str]:
+    text = path.read_text(encoding='utf-8')
+    suffix = path.suffix.lower()
+    if suffix == '.json':
+        return _coerce_cli_action_sequence(json.loads(text), str(path))
+
+    actions: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+
+        if suffix == '.jsonl':
+            try:
+                actions.append(_coerce_cli_action_payload(json.loads(stripped)))
+                continue
+            except json.JSONDecodeError:
+                pass
+
+        actions.append(stripped)
+
+    if not actions:
+        raise ValueError(f'{path} must contain at least one action payload')
+    return actions
+
+
+def _resolve_cli_action_payloads(action: str, action_sequence: Optional[str]) -> list[str]:
+    if action_sequence is None:
+        return [_coerce_cli_action_payload(action)]
+
+    stripped = action_sequence.strip()
+    if not stripped:
+        raise ValueError('--action-sequence must be a JSON array or an existing file path')
+
+    sequence_path = _existing_cli_action_sequence_path(stripped)
+    if sequence_path is not None:
+        return _load_cli_action_sequence_file(sequence_path)
+
+    if stripped.startswith('[') or stripped.startswith('{'):
+        return _coerce_cli_action_sequence(json.loads(stripped), '--action-sequence')
+
+    raise ValueError('--action-sequence must be a JSON array/object or an existing file path')
+
+
+def _resolve_cli_action_step_count(
+    default_steps: int,
+    requested_steps: Optional[int],
+    action_payloads: Sequence[str],
+    has_action_sequence: bool,
+    option_name: str,
+) -> int:
+    if requested_steps is not None:
+        resolved = int(requested_steps)
+        if resolved <= 0:
+            raise ValueError(f'{option_name} must be a positive integer, got {requested_steps!r}')
+        if has_action_sequence and resolved > len(action_payloads):
+            raise ValueError(
+                f'{option_name}={resolved} exceeds --action-sequence length {len(action_payloads)}; '
+                f'provide more actions or lower {option_name}'
+            )
+        return resolved
+
+    if has_action_sequence:
+        return len(action_payloads)
+
+    return int(default_steps)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='Debug ArkSubEnv with a real Unity reset/step smoke test')
     parser.add_argument(
@@ -555,6 +651,11 @@ def main(argv=None) -> int:
         help='Action sent on each step to every active agent; in func mode prefer a <tool_call> payload, while code mode accepts a full C# script or <code> block',
     )
     parser.add_argument(
+        '--action-sequence',
+        default=None,
+        help='Optional action trajectory. Pass an inline JSON array/object with actions, or a path to .json, .jsonl, or text file. Each item is sent on one external step.',
+    )
+    parser.add_argument(
         '--max-steps',
         type=int,
         default=None,
@@ -569,6 +670,7 @@ def main(argv=None) -> int:
 
     env_path = _normalize_optional_path(args.env_path)
     mod_path = _resolve_cli_mod_path(args.mod_path, env_path)
+    action_payloads = _resolve_cli_action_payloads(args.action, args.action_sequence)
 
     cfg = {
         'env_path': env_path,
@@ -613,14 +715,22 @@ def main(argv=None) -> int:
         if args.skip_step:
             return 0
 
-        max_steps = _resolve_cli_max_steps(env.env_info_mgr.env_config, args.max_steps)
+        max_steps = _resolve_cli_action_step_count(
+            default_steps=_resolve_cli_max_steps(env.env_info_mgr.env_config, None),
+            requested_steps=args.max_steps,
+            action_payloads=action_payloads,
+            has_action_sequence=args.action_sequence is not None,
+            option_name='--max-steps',
+        )
         print(f'max_steps={max_steps}')
+        print(f'action_count={len(action_payloads)}')
 
         done = {'__all__': False}
         last_step_info = {}
         for step_idx in range(1, max_steps + 1):
+            step_action = action_payloads[min(step_idx - 1, len(action_payloads) - 1)]
             active_actions = {
-                active_ml_id: args.action
+                active_ml_id: step_action
                 for active_ml_id, obs_item in obs.items()
                 if not (isinstance(obs_item, dict) and obs_item.get('skip_infer'))
             }
@@ -646,7 +756,7 @@ def main(argv=None) -> int:
             print('step_ok=True')
             print(f'step={step_idx}')
             print(f'action_agent_ids={sorted(active_actions.keys())}')
-            print(f'action={args.action}')
+            print(f'action={step_action}')
             print(f'reward={reward}')
             print(f'done={done}')
             print(f'step_info_keys={sorted(last_step_info.keys())}')

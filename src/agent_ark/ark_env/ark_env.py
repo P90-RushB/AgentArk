@@ -4,7 +4,12 @@ import os
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
-from agent_ark.ark_env.ark_sub_env import ArkSubEnv, _normalize_optional_path
+from agent_ark.ark_env.ark_sub_env import (
+    ArkSubEnv,
+    _normalize_optional_path,
+    _resolve_cli_action_payloads,
+    _resolve_cli_action_step_count,
+)
 from agent_ark.ark_env.coordination import (
     SharedEpisodeStore,
     compute_history_bucket_key,
@@ -1147,13 +1152,26 @@ def main(argv=None) -> int:
     parser.add_argument('--env-id', type=int, default=0, help='Unity env_id used during reset')
     parser.add_argument('--num-parallel-envs', type=int, default=1, help='Override num_parallel_envs for local debugging')
     parser.add_argument('--max-attempts', type=int, default=2, help='Maximum attempts inside one ArkEnv rollout')
-    parser.add_argument('--max-rollout-steps', type=int, default=12, help='Maximum external ArkEnv.step calls to run')
+    parser.add_argument('--max-rollout-steps', type=int, default=None, help='Maximum external ArkEnv.step calls to run; defaults to the action sequence length, or 12 without a sequence')
     parser.add_argument(
         '--action',
         default='<params>{"plan":"U7,L7"}</params>',
         help='Action sent on each external step',
     )
+    parser.add_argument(
+        '--action-sequence',
+        default=None,
+        help='Optional action trajectory. Pass an inline JSON array/object with actions, or a path to .json, .jsonl, or text file. Each item is sent on one external rollout step.',
+    )
     args = parser.parse_args(argv)
+    action_payloads = _resolve_cli_action_payloads(args.action, args.action_sequence)
+    max_rollout_steps = _resolve_cli_action_step_count(
+        default_steps=12,
+        requested_steps=args.max_rollout_steps,
+        action_payloads=action_payloads,
+        has_action_sequence=args.action_sequence is not None,
+        option_name='--max-rollout-steps',
+    )
 
     cfg = {
         'env_path': _normalize_optional_path(args.env_path),
@@ -1177,16 +1195,21 @@ def main(argv=None) -> int:
         print(f'obs_keys={sorted(obs.keys())}')
         print(f'rollout_info={info.get("rollout", {})}')
 
-        for rollout_step_idx in range(1, args.max_rollout_steps + 1):
+        print(f'max_rollout_steps={max_rollout_steps}')
+        print(f'action_count={len(action_payloads)}')
+
+        for rollout_step_idx in range(1, max_rollout_steps + 1):
             if not obs:
                 print('empty_obs=True')
                 return 1
 
             unity_id = sorted(obs.keys())[0]
-            next_obs, reward, done, step_info = env.step({unity_id: args.action})
+            step_action = action_payloads[min(rollout_step_idx - 1, len(action_payloads) - 1)]
+            next_obs, reward, done, step_info = env.step({unity_id: step_action})
             next_item = next_obs.get(unity_id, {}) if isinstance(next_obs, dict) else {}
             print(f'rollout_step={rollout_step_idx}')
             print(f'unity_id={unity_id}')
+            print(f'action={step_action}')
             print(f'reward={reward}')
             print(f'done={done}')
             print(f'truncated={step_info.get("truncated", {})}')
