@@ -140,85 +140,25 @@ task mod installation, and a smoke test.
 
 ## 2. Model Evaluation
 
-Set an API key for the provider used by your eval config. For example, if you
-use the default OpenRouter-style example config:
+For OpenAI-compatible HTTP providers, set an API key for the provider used by
+your eval config. For example, if you use the default OpenRouter-style example
+config:
 
 ```bash
 export OPENROUTER_API_KEY=...
 ```
 
-For other OpenAI-compatible providers, change `models[*].provider`,
+For other OpenAI-compatible HTTP providers, change `models[*].provider`,
 `models[*].base_url`, and `models[*].api_key_env` or set `models[*].api_key`
 directly in your local config.
 
-Codex SDK evaluation is also supported as a separate provider path. Use the
-Python 3.10 environment for this repo and install AgentArk normally:
-
-```bash
-python3.10 -m pip install -U pip
-python3.10 -m pip install -e ".[codex]"
-```
-
-If your package index does not mirror the beta Codex SDK yet, install from PyPI
-explicitly:
-
-```bash
-python3.10 -m pip install -i https://pypi.org/simple openai-codex
-```
-
-Then make sure your local Codex setup is authenticated, and use a model block
-like:
-
-```yaml
-models:
-  - name: codex-gpt55
-    provider: codex
-    model: gpt-5.5
-    sandbox: read_only
-    timeout_s: 600
-    # Optional: none, minimal, low, medium, high, or xhigh.
-    # low is the safer cheap setting; minimal can be rejected when Codex tools are enabled.
-    reasoning_effort: low
-    thread_mode: per_agent
-```
-
-Codex entries do not use `base_url` or API-key fields. `thread_mode` defaults
-to `per_agent`, which keeps one Codex SDK thread per AgentArk agent for the
-current evaluation case.
-
-This is the recommended mode because Codex SDK turns include Codex-side
-runtime, system, and tool context in addition to AgentArk's visible
-`request_messages`. That context is not shown as part of the environment
-messages, but it is counted in Codex token usage. Keeping a persistent thread
-lets Codex reuse that setup plus the reset/base prompt, while later environment
-steps send only the new delta.
-
-Message return mode is configured in the eval YAML under
-`env_cfg.env_config_overrides.env_wrapper_cfg.context_manager.messages`. Use
-`return_mode: delta` with Codex `thread_mode: per_agent`, and use
-`return_mode: full` with stateless API models or Codex `thread_mode: per_turn`:
-
-```yaml
-env_cfg:
-  env_config_overrides:
-    env_wrapper_cfg:
-      context_manager:
-        messages:
-          enabled: true
-          only_return_messages: true
-          append_only: true
-          # delta: reset returns the base prompt, later steps return only new deltas.
-          # full: every step returns the full accumulated message history.
-          return_mode: delta
-          history_only_on_attempt_start: true
-```
-
-The same fields can also be set in the runtime `Mods/config.yaml`; putting them
-under `env_config_overrides` changes only this evaluation run.
+Codex SDK evaluation is also supported through `provider: codex`. See
+[docs/evaluation-guide.md](docs/evaluation-guide.md) for the Codex install,
+model config, and message-context settings.
 
 Edit [config/ark_env/eval_seed1.example.yaml](config/ark_env/eval_seed1.example.yaml)
 so `eval.cases[*].task_name` exists in your runtime and `models[*]` matches your
-OpenAI-compatible provider. Then run:
+selected provider. Then run:
 
 ```bash
 python -m agent_ark.ark_eval.run_api_agent \

@@ -45,7 +45,17 @@ eval:
       task_name: MarbleStop
       group_seed: 1
       env_id: 0
+```
 
+Then choose one model provider style below.
+
+### OpenAI-Compatible Providers
+
+Use this path for OpenAI, OpenRouter, DashScope-compatible, or other
+OpenAI-compatible HTTP endpoints. These entries are run by `APIAgent` through
+chat-completions style requests.
+
+```yaml
 models:
   - name: openrouter-model
     provider: openrouter
@@ -55,12 +65,31 @@ models:
     temperature: 0.0
 ```
 
-This model block is only an OpenRouter example. Replace `provider`, `model`,
-`base_url`, and `api_key_env` for any OpenAI-compatible endpoint you want to
-evaluate.
+Replace `provider`, `model`, `base_url`, and `api_key_env` for your endpoint.
+You can also set `api_key` directly in a private local config instead of using
+`api_key_env`.
 
-To evaluate through the Codex SDK instead of an OpenAI-compatible HTTP endpoint,
-install AgentArk with the `codex` extra and use `provider: codex`:
+For stateless HTTP providers, prefer full message context:
+
+```yaml
+env_cfg:
+  env_config_overrides:
+    env_wrapper_cfg:
+      context_manager:
+        messages:
+          enabled: true
+          only_return_messages: true
+          append_only: true
+          return_mode: full
+```
+
+### Codex SDK Provider
+
+Use this path for local Codex SDK evaluation. It is not an OpenAI-compatible
+HTTP endpoint: `provider: codex` does not use `base_url`, `api_key`, or
+`api_key_env`.
+
+Install AgentArk with the `codex` extra:
 
 ```bash
 python -m pip install -U pip
@@ -88,7 +117,6 @@ models:
     thread_mode: per_agent
 ```
 
-Codex SDK model entries do not use `base_url`, `api_key`, or `api_key_env`.
 AgentArk converts the OpenAI-style evaluation messages into Codex text and
 image inputs. Data-URI image observations are passed directly as Codex
 `ImageInput` items. Use `reasoning_effort` to override the Codex turn reasoning
@@ -104,8 +132,7 @@ higher cached-token reuse on later turns. Keeping a persistent thread lets
 Codex reuse its own setup plus the reset/base prompt; the environment can then
 send only step deltas.
 
-Message return mode is configured under
-`env_cfg.env_config_overrides.env_wrapper_cfg.context_manager.messages`:
+For the recommended stateful Codex mode, use delta message context:
 
 ```yaml
 env_cfg:
@@ -120,10 +147,10 @@ env_cfg:
           history_only_on_attempt_start: true
 ```
 
-For stateless API models, or Codex with `thread_mode: per_turn`, use
-`return_mode: full`. For Codex with `thread_mode: per_agent`, use `append_only:
-true` plus `return_mode: delta` so the persistent Codex thread receives only
-the new step delta after the reset/base prompt.
+Use `return_mode: full` if you set Codex `thread_mode: per_turn`. Use
+`append_only: true` plus `return_mode: delta` with `thread_mode: per_agent` so
+the persistent Codex thread receives only the new step delta after the
+reset/base prompt.
 
 Then run:
 
