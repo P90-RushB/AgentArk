@@ -58,85 +58,14 @@ Start with the Hub and the Colab tutorials:
 - RL training with verl: [docs/rl-training.md](docs/rl-training.md)
 - Runtime sandbox details: [docs/runtime-sandbox-migration.md](docs/runtime-sandbox-migration.md)
 
-## 1. Environment Setup
+## 1. Setup
 
-AgentArk currently uses Python 3.10.12 or an earlier Python 3.10 patch version
-for the runtime wrapper, evaluation, replay, and env server processes. Python
-3.10.12 is recommended.
+AgentArk local evaluation, replay, and env serving use the Python package in
+this repository plus a matching packaged Unity runtime from Hugging Face.
+Current runtime release: `env-1.0.1`, with 32 starter tasks.
 
-```bash
-git clone https://github.com/P90-RushB/AgentArk.git
-cd AgentArk
-python3.10 -m venv .venv
-source .venv/bin/activate
-python -m pip install -U pip
-python -m pip install -e .
-```
-
-On Windows PowerShell:
-
-```powershell
-git clone https://github.com/P90-RushB/AgentArk.git
-cd AgentArk
-py -3.10 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -U pip
-python -m pip install -e .
-```
-
-Download a matching AgentArk runtime from Hugging Face. Current release:
-`env-1.0.1`. The packaged runtime includes 32 starter tasks. Use the Hugging
-Face CLI command `hf download`; install the CLI first if `hf` is not available.
-
-```bash
-# Linux
-hf download P90-RushB/AgentArk \
-  --type dataset \
-  --include artifacts/envs/1.0.1/linux/AgentArk-env-1.0.1-linux.zip \
-  --local-dir downloads/agentark-assets
-
-# Windows
-hf download P90-RushB/AgentArk \
-  --type dataset \
-  --include artifacts/envs/1.0.1/windows/AgentArk-env-1.0.1-windows.zip \
-  --local-dir downloads/agentark-assets
-```
-
-You can also download directly from:
-
-- Linux: `https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/main/artifacts/envs/1.0.1/linux/AgentArk-env-1.0.1-linux.zip`
-- Windows: `https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/main/artifacts/envs/1.0.1/windows/AgentArk-env-1.0.1-windows.zip`
-
-Copy `.env.example` to `.env` and point it at the extracted runtime:
-
-```bash
-cp .env.example .env
-```
-
-Important variables:
-
-```dotenv
-AGENTARK_ENV_PATH=/path/to/AgentArk-env-1.0.1-linux/AgentArk.x86_64
-AGENTARK_MOD_PATH=/path/to/AgentArk-env-1.0.1-linux/AgentArk_Data/Resources/Mods
-AGENTARK_TASK_STORE_PATH=${AGENTARK_MOD_PATH}/all_tasks
-AGENTARK_RUNTIME_TEMPLATE_ROOT=/path/to/AgentArk-env-1.0.1-linux
-AGENTARK_RUNTIME_POOL_ROOT=/tmp/agentark_runtime_pool
-MLAGENTS_PYTHON_BIN=/path/to/python3.10
-```
-
-On Windows, `AGENTARK_ENV_PATH` may point to either the runtime directory or
-the `.exe`; `AGENTARK_MOD_PATH` should point to
-`AgentArk_Data\Resources\Mods`.
-
-For headless Linux servers, install Xvfb before running visual tasks:
-
-```bash
-sudo apt update
-sudo apt install -y xvfb
-```
-
-See [docs/setup.md](docs/setup.md) for platform-specific extraction commands,
-task mod installation, and a smoke test.
+See [docs/setup.md](docs/setup.md) for installation, runtime download, local
+path configuration, and smoke-test instructions.
 
 ## 2. Model Evaluation
 

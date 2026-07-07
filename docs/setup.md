@@ -14,23 +14,32 @@ release: `env-1.0.1`.
 
 AgentArk runtime, evaluation, replay, and env server processes require Python
 3.10.12 or an earlier Python 3.10 patch version. Python 3.10.12 is recommended.
+Use `uv` to create the virtual environment so the required Python patch version
+can be installed even when another Python version is already installed.
 
 Linux/macOS shell:
 
 ```bash
-python3.10 -m venv .venv
+git clone https://github.com/P90-RushB/AgentArk.git
+cd AgentArk
+python -m pip install -U uv
+uv venv .venv --python 3.10.12
 source .venv/bin/activate
-python -m pip install -U pip
-python -m pip install -e .
+uv pip install -e .
 ```
 
-Windows PowerShell:
+Windows `cmd`:
 
-```powershell
-py -3.10 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -U pip
-python -m pip install -e .
+```bat
+git clone https://github.com/P90-RushB/AgentArk.git
+cd AgentArk
+
+REM Install uv with any available Python, then create a Python 3.10.12 venv.
+python -m pip install -U uv
+uv venv .venv --python 3.10.12
+
+.\.venv\Scripts\activate
+uv pip install -e .
 ```
 
 For source-tree debugging without installing the package, set `PYTHONPATH=src`.
@@ -38,39 +47,42 @@ For source-tree debugging without installing the package, set `PYTHONPATH=src`.
 ## Runtime Download
 
 The current packaged runtime includes 32 starter tasks. Download the runtime for
-your OS with the Hugging Face CLI command `hf download`. Install the CLI first
-if `hf` is not available.
+your OS with either direct links or the Hugging Face CLI.
 
-Linux:
-
-```bash
-hf download P90-RushB/AgentArk \
-  --type dataset \
-  --include artifacts/envs/1.0.1/linux/AgentArk-env-1.0.1-linux.zip \
-  --local-dir downloads/agentark-assets
-```
-
-Windows PowerShell:
-
-```powershell
-hf download P90-RushB/AgentArk `
-  --type dataset `
-  --include artifacts/envs/1.0.1/windows/AgentArk-env-1.0.1-windows.zip `
-  --local-dir downloads/agentark-assets
-```
-
-Direct links:
+### Direct Download
 
 - Linux: `https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/main/artifacts/envs/1.0.1/linux/AgentArk-env-1.0.1-linux.zip`
 - Windows: `https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/main/artifacts/envs/1.0.1/windows/AgentArk-env-1.0.1-windows.zip`
 
+### Hugging Face CLI
+
+Install the CLI first if `hf` is not available:
+
+```bash
+uv pip install -U huggingface_hub
+```
+
+Linux:
+
+```bash
+hf download P90-RushB/AgentArk artifacts/envs/1.0.1/linux/AgentArk-env-1.0.1-linux.zip \
+  --type dataset \
+  --local-dir downloads/agentark-assets
+```
+
+Windows `cmd`:
+
+```bat
+hf download P90-RushB/AgentArk artifacts/envs/1.0.1/windows/AgentArk-env-1.0.1-windows.zip --type dataset --local-dir downloads/agentark-assets
+```
+
 Extract the zip. On Linux, make the Unity executable runnable if needed:
 
 ```bash
-chmod +x /path/to/AgentArk-env-1.0.1-linux/AgentArk.x86_64
+chmod -R 755 /path/to/AgentArk-env-1.0.1-linux
 ```
 
-## Local Paths
+## Configure Local Runtime Paths
 
 Copy `.env.example` to `.env`:
 
@@ -114,13 +126,23 @@ sudo apt update
 sudo apt install -y xvfb
 ```
 
-Then set `virtual_display: true` in the relevant AgentArk config. The example
-server config already enables it under `env_cfg.env_config_overrides`.
+Then edit `config.yaml` under the directory configured by `AGENTARK_MOD_PATH`
+and set:
+
+```yaml
+virtual_display: true
+```
+
+For env-server workflows, also keep `virtual_display: true` in the relevant
+AgentArk server config. The example server config already enables it under
+`env_cfg.env_config_overrides`.
 
 ## Smoke Test
 
 Start with a single packaged task. `ObjectRotationMatch` is a small task that is
-useful for checking runtime startup:
+useful for checking runtime startup.
+
+Linux/macOS:
 
 ```bash
 python -m agent_ark.ark_env.ark_sub_env \
@@ -130,7 +152,15 @@ python -m agent_ark.ark_env.ark_sub_env \
   --skip-step
 ```
 
+Windows `cmd`:
+
+```bat
+python -m agent_ark.ark_env.ark_sub_env --task-name ObjectRotationMatch --group-seed 1 --env-id 0 --skip-step
+```
+
 If reset succeeds, run one step with a tool call:
+
+Linux/macOS:
 
 ```bash
 python -m agent_ark.ark_env.ark_sub_env \
@@ -139,6 +169,12 @@ python -m agent_ark.ark_env.ark_sub_env \
   --env-id 0 \
   --max-steps 1 \
   --action '<tool_call>{"name":"RotateControlled","arguments":{"axis":"Y","degrees":0}}</tool_call>'
+```
+
+Windows `cmd`:
+
+```bat
+python -m agent_ark.ark_env.ark_sub_env --task-name ObjectRotationMatch --group-seed 1 --env-id 0 --max-steps 1 --action "<tool_call>{\"name\":\"RotateControlled\",\"arguments\":{\"axis\":\"Y\",\"degrees\":0}}</tool_call>"
 ```
 
 ## Browse Tasks
