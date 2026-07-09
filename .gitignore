@@ -77,3 +77,10 @@ Thumbs.db
 *.bak
 tmp/
 outputs/
+
+# Kaggle Benchmark local artifacts
+/*.run.json
+/*.task.json
+/example_task.py
+/kaggle_benchmarks_reference.md
+/results/

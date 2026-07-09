@@ -24,6 +24,7 @@ import os
 import json
 import queue
 import threading
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -233,17 +234,33 @@ class APIAgent(BaseAgent):
         return response_text
 
     def _call_api_with_usage(self, messages: List[dict]) -> tuple[str, Optional[Dict[str, Any]]]:
-        completion = self._run_api_request_with_timeout(
-            messages=messages,
-            temperature=self.temperature,
-            extra_body=self._request_extra_body(),
-        )
+        extra_body = self._request_extra_body()
+        empty_choices_retries = max(0, int(os.getenv("AGENTARK_EMPTY_CHOICES_RETRIES", "3") or "0"))
+        empty_choices_delay_s = max(0.0, float(os.getenv("AGENTARK_EMPTY_CHOICES_RETRY_DELAY_S", "2") or "0"))
+        last_completion: Any = None
+        for attempt in range(1, empty_choices_retries + 2):
+            completion = self._run_api_request_with_timeout(
+                messages=messages,
+                temperature=self.temperature,
+                extra_body=extra_body,
+            )
+            choices = getattr(completion, "choices", None)
+            if choices:
+                response_msg = choices[0].message
+                content = self._response_text_field(response_msg, "content")
+                reasoning = self._response_text_field(response_msg, "reasoning", "reasoning_content")
+                response_text = self._combine_reasoning_and_content(reasoning=reasoning, content=content)
+                return response_text, self._usage_to_jsonable(getattr(completion, "usage", None))
+            last_completion = completion
+            self._record_empty_choices_response(completion=completion, messages=messages, attempt=attempt)
+            if attempt <= empty_choices_retries and empty_choices_delay_s > 0:
+                time.sleep(empty_choices_delay_s)
 
-        response_msg = completion.choices[0].message
-        content = self._response_text_field(response_msg, "content")
-        reasoning = self._response_text_field(response_msg, "reasoning", "reasoning_content")
-        response_text = self._combine_reasoning_and_content(reasoning=reasoning, content=content)
-        return response_text, self._usage_to_jsonable(getattr(completion, "usage", None))
+        raise RuntimeError(
+            "LLM chat completion returned no choices after "
+            f"{empty_choices_retries + 1} request attempt(s). "
+            f"last_response={self._short_json(self._jsonable_value(last_completion), max_chars=4000)}"
+        )
 
     def _run_api_request_with_timeout(
         self,
@@ -307,6 +324,60 @@ class APIAgent(BaseAgent):
             f"Unsupported LLM provider={self.client.provider!r}; "
             "expected auto, openai, generic, none, openrouter, dashscope, or qwen"
         )
+
+    def _record_empty_choices_response(self, *, completion: Any, messages: List[dict], attempt: int) -> None:
+        path = os.getenv("AGENTARK_API_DEBUG_RESPONSE_PATH", "").strip()
+        if not path:
+            return
+        record = {
+            "time": time.time(),
+            "agent": self.name,
+            "model": getattr(self.client, "model", None),
+            "provider": getattr(self.client, "provider", None),
+            "base_url_host": self.client.base_url_host,
+            "error": "chat completion returned no choices",
+            "attempt": int(attempt),
+            "completion": self._jsonable_value(completion),
+            "messages": self._summarize_messages_for_debug(messages),
+        }
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception:
+            return
+
+    @staticmethod
+    def _summarize_messages_for_debug(messages: Any) -> Any:
+        if isinstance(messages, list):
+            return [APIAgent._summarize_messages_for_debug(item) for item in messages]
+        if isinstance(messages, dict):
+            out: Dict[str, Any] = {}
+            for key, value in messages.items():
+                if key == "image_url":
+                    if isinstance(value, dict):
+                        image_url = dict(value)
+                        url = str(image_url.get("url", ""))
+                        image_url["url"] = f"<image_url chars={len(url)} prefix={url[:32]!r}>"
+                        out[key] = image_url
+                    else:
+                        raw = str(value)
+                        out[key] = f"<image_url chars={len(raw)} prefix={raw[:32]!r}>"
+                else:
+                    out[key] = APIAgent._summarize_messages_for_debug(value)
+            return out
+        if isinstance(messages, str) and len(messages) > 2000:
+            return messages[:2000] + f"...<truncated chars={len(messages)}>"
+        return messages
+
+    @staticmethod
+    def _short_json(value: Any, *, max_chars: int) -> str:
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            text = repr(value)
+        if len(text) > max_chars:
+            return text[:max_chars] + f"...<truncated chars={len(text)}>"
+        return text
 
     @staticmethod
     def _infer_provider_from_host(host: str) -> str:
