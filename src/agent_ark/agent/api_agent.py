@@ -88,15 +88,16 @@ class LLMClient:
     def chat_completions_create(
         self,
         messages: List[Dict[str, Any]],
-        temperature: float = 0.2,
+        temperature: Optional[float] = 0.2,
         extra_body: Optional[Dict[str, Any]] = None,
     ) -> Any:
         kwargs: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "temperature": temperature,
             "extra_body": extra_body or {},
         }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         if self.timeout_s is not None:
             kwargs["timeout"] = float(self.timeout_s)
         return self._client.chat.completions.create(**kwargs)
@@ -117,7 +118,7 @@ class APIAgent(BaseAgent):
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: str = "qwen3-vl-plus",
-        temperature: float = 0.2,
+        temperature: Optional[float] = 0.2,
         provider: str = "auto",
         timeout_s: Optional[float] = 180.0,
         max_retries: int = 2,
@@ -131,7 +132,7 @@ class APIAgent(BaseAgent):
             timeout_s=timeout_s,
             max_retries=max_retries,
         ))
-        self.temperature = float(temperature)
+        self.temperature = None if temperature is None else float(temperature)
 
 
     def reset(self) -> None:
@@ -266,7 +267,7 @@ class APIAgent(BaseAgent):
         self,
         *,
         messages: List[dict],
-        temperature: float,
+        temperature: Optional[float],
         extra_body: Dict[str, Any],
     ) -> Any:
         timeout_s = getattr(self.client, "timeout_s", None)

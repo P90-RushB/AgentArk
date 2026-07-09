@@ -98,11 +98,12 @@ Local full validation:
 AGENTARK_KAGGLE_FULL_EVAL=1 python3 benchmarks/kaggle/agentark_marble_stop_seeds_1_10.py
 ```
 
-Some GPT/reasoning model proxy endpoints reject `temperature: 0.0` with an
-error like "Only the default (1) value is supported." The task starts every
-model with `temperature: 0.0` for consistency. If AgentArk sees that
-temperature-specific error, the same task rewrites its eval config to
-`temperature: 1.0` and retries the remaining AgentArk eval attempts.
+Some GPT/Gemini/reasoning model proxy endpoints recommend or require the
+provider default sampling temperature. The task starts every model with
+`temperature: 1.0`. If AgentArk sees a temperature-specific error such as
+"temperature is deprecated" or "temperature is unsupported", the same task
+rewrites its eval config to `temperature: null` and retries the remaining
+AgentArk eval attempts without sending the temperature parameter.
 
 Remote Kaggle Benchmark runs are different: they are not launched with
 `python3 benchmarks/kaggle/...py`. Push the task file, then run it remotely with

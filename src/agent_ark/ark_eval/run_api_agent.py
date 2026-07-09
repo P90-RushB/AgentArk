@@ -623,7 +623,8 @@ def build_model_runtimes(
             if not api_key:
                 raise ValueError(f'models[{idx}] expects env var {api_key_env}, but it is not set')
 
-        temperature = float(model_cfg.get('temperature', 0.2))
+        raw_temperature = model_cfg.get('temperature', 0.2)
+        temperature = None if raw_temperature is None else float(raw_temperature)
         timeout_s = model_cfg.get('timeout_s', model_cfg.get('request_timeout_s', 180.0))
         if timeout_s is not None:
             timeout_s = float(timeout_s)

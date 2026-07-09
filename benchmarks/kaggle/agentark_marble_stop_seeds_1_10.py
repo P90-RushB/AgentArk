@@ -280,7 +280,7 @@ def _write_eval_config(
     env_id: int,
     model: str,
     base_url: str,
-    temperature: float = 0.0,
+    temperature: Optional[float] = 1.0,
 ) -> None:
     RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
     openai_base_url = base_url.rstrip("/")
@@ -288,7 +288,7 @@ def _write_eval_config(
         openai_base_url = openai_base_url[: -len("/genai")]
     if not openai_base_url.endswith("/openapi"):
         openai_base_url = openai_base_url + "/openapi"
-    temperature = float(temperature)
+    temperature_yaml = "null" if temperature is None else f"{float(temperature):g}"
     config = f"""
 env_cfg:
   env_path: "{ENV_ROOT / "AgentArk.x86_64"}"
@@ -330,7 +330,7 @@ models:
     model: "{model}"
     base_url: "{openai_base_url}"
     api_key_env: MODEL_PROXY_API_KEY
-    temperature: {temperature:g}
+    temperature: {temperature_yaml}
     timeout_s: {float(os.getenv("AGENTARK_KAGGLE_REQUEST_TIMEOUT_S", "600"))}
     max_retries: 2
 """
@@ -384,6 +384,7 @@ def _is_temperature_unsupported_text(text: str) -> bool:
             "does not support",
             "only the default",
             "unsupported_value",
+            "deprecated",
         )
     )
 
@@ -461,8 +462,8 @@ def _run_agentark_eval(
         RESULT_PATH.unlink()
     expected = set(_expected_seeds(seed_start, seed_end))
     last_returncode = 0
-    temperature = 0.0
-    retried_temperature_default = False
+    temperature: Optional[float] = 1.0
+    retried_without_temperature = False
     _write_eval_config(
         task_name=task_name,
         seed_start=seed_start,
@@ -502,18 +503,18 @@ def _run_agentark_eval(
         if expected.issubset(ok):
             return results
         if (
-            not retried_temperature_default
-            and temperature == 0.0
+            not retried_without_temperature
+            and temperature is not None
             and (
                 _is_temperature_unsupported_text(output)
                 or _results_have_temperature_unsupported_error(results)
             )
         ):
-            temperature = 1.0
-            retried_temperature_default = True
+            temperature = None
+            retried_without_temperature = True
             print(
-                "Model rejected temperature=0.0; retrying remaining AgentArk eval attempts "
-                "with temperature=1.0.",
+                "Model rejected the temperature parameter; retrying remaining AgentArk "
+                "eval attempts without temperature.",
                 flush=True,
             )
             _write_eval_config(

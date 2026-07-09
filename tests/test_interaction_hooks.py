@@ -8,7 +8,7 @@ from unittest.mock import patch
 from PIL import Image
 import requests
 
-from agent_ark.agent.api_agent import APIAgent
+from agent_ark.agent.api_agent import APIAgent, LLMClient
 from agent_ark.agent.codex_agent import CodexAgent
 from agent_ark.ark_env.ark_env import ArkRolloutContext
 from agent_ark.ark_env.context_manager import MessageContext
@@ -138,6 +138,30 @@ class InteractionHookTest(unittest.TestCase):
                 self.assertIn('<tool_call>', response)
                 self.assertEqual(agent.client.calls[0]['extra_body'], expected_extra_body)
 
+    def test_llm_client_omits_temperature_when_none(self):
+        class FakeCompletions:
+            def __init__(self):
+                self.calls = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                return SimpleNamespace(choices=[], usage=None)
+
+        completions = FakeCompletions()
+        client = object.__new__(LLMClient)
+        client.model = 'example-model'
+        client.provider = 'openai'
+        client.timeout_s = None
+        client._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+        client.chat_completions_create(
+            messages=[{'role': 'user', 'content': 'hi'}],
+            temperature=None,
+            extra_body={},
+        )
+
+        self.assertNotIn('temperature', completions.calls[0])
+
     def test_api_agent_forward_trace_includes_usage(self):
         class FakeClient:
             provider = 'openai'
@@ -235,6 +259,21 @@ class InteractionHookTest(unittest.TestCase):
         self.assertEqual(runtimes[0]['temperature'], 0.1)
         self.assertEqual(runtimes[0]['agent'].client.provider, 'openai')
         self.assertEqual(runtimes[0]['agent'].client.model, 'example-openai-model')
+
+    def test_build_model_runtimes_allows_omitted_temperature(self):
+        runtimes = build_model_runtimes([
+            {
+                'name': 'default-temperature-provider',
+                'provider': 'openai',
+                'model': 'example-model',
+                'base_url': 'https://example.test/v1',
+                'api_key': 'not-needed',
+                'temperature': None,
+            }
+        ])
+
+        self.assertEqual(runtimes[0]['temperature'], None)
+        self.assertEqual(runtimes[0]['agent'].temperature, None)
 
     def test_codex_agent_uses_data_uri_image_input_without_writing_file(self):
         class FakeTextInput:

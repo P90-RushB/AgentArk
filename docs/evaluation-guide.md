@@ -68,6 +68,8 @@ models:
 Replace `provider`, `model`, `base_url`, and `api_key_env` for your endpoint.
 You can also set `api_key` directly in a private local config instead of using
 `api_key_env`.
+If a model or proxy reports that `temperature` is deprecated or unsupported,
+set `temperature: null` to omit the parameter from API requests.
 
 For stateless HTTP providers, prefer full message context:
 
