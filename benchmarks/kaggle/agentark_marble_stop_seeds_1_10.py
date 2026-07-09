@@ -280,6 +280,7 @@ def _write_eval_config(
     env_id: int,
     model: str,
     base_url: str,
+    temperature: float = 0.0,
 ) -> None:
     RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
     openai_base_url = base_url.rstrip("/")
@@ -287,6 +288,7 @@ def _write_eval_config(
         openai_base_url = openai_base_url[: -len("/genai")]
     if not openai_base_url.endswith("/openapi"):
         openai_base_url = openai_base_url + "/openapi"
+    temperature = float(temperature)
     config = f"""
 env_cfg:
   env_path: "{ENV_ROOT / "AgentArk.x86_64"}"
@@ -328,7 +330,7 @@ models:
     model: "{model}"
     base_url: "{openai_base_url}"
     api_key_env: MODEL_PROXY_API_KEY
-    temperature: 0.0
+    temperature: {temperature:g}
     timeout_s: {float(os.getenv("AGENTARK_KAGGLE_REQUEST_TIMEOUT_S", "600"))}
     max_retries: 2
 """
@@ -368,6 +370,33 @@ def _print_filtered_agentark_output(output: str) -> None:
     for line in output.splitlines():
         if _is_notebook_progress_line(line):
             print(line, flush=True)
+
+
+def _is_temperature_unsupported_text(text: str) -> bool:
+    lowered = (text or "").lower()
+    if "temperature" not in lowered:
+        return False
+    return any(
+        marker in lowered
+        for marker in (
+            "unsupported",
+            "not supported",
+            "does not support",
+            "only the default",
+            "unsupported_value",
+        )
+    )
+
+
+def _results_have_temperature_unsupported_error(results: List[Dict[str, Any]]) -> bool:
+    for result in results:
+        text = "\n".join(
+            str(result.get(key, "") or "")
+            for key in ("error", "error_type", "status", "model_name", "model")
+        )
+        if _is_temperature_unsupported_text(text):
+            return True
+    return False
 
 
 def _expected_seeds(seed_start: int, seed_end: int) -> List[int]:
@@ -425,11 +454,24 @@ def _run_agentark_eval(
     seed_end: int,
     env_id: int,
     max_attempts: int,
+    model: str,
+    base_url: str,
 ) -> List[Dict[str, Any]]:
     if RESULT_PATH.exists():
         RESULT_PATH.unlink()
     expected = set(_expected_seeds(seed_start, seed_end))
     last_returncode = 0
+    temperature = 0.0
+    retried_temperature_default = False
+    _write_eval_config(
+        task_name=task_name,
+        seed_start=seed_start,
+        seed_end=seed_end,
+        env_id=env_id,
+        model=model,
+        base_url=base_url,
+        temperature=temperature,
+    )
     EXPORTED_AGENTARK_LOG_PATH.write_text("", encoding="utf-8")
     for attempt in range(1, max(1, int(max_attempts)) + 1):
         print(f"AgentArk evaluation attempt {attempt}/{max_attempts}", flush=True)
@@ -459,6 +501,31 @@ def _run_agentark_eval(
         )
         if expected.issubset(ok):
             return results
+        if (
+            not retried_temperature_default
+            and temperature == 0.0
+            and (
+                _is_temperature_unsupported_text(output)
+                or _results_have_temperature_unsupported_error(results)
+            )
+        ):
+            temperature = 1.0
+            retried_temperature_default = True
+            print(
+                "Model rejected temperature=0.0; retrying remaining AgentArk eval attempts "
+                "with temperature=1.0.",
+                flush=True,
+            )
+            _write_eval_config(
+                task_name=task_name,
+                seed_start=seed_start,
+                seed_end=seed_end,
+                env_id=env_id,
+                model=model,
+                base_url=base_url,
+                temperature=temperature,
+            )
+            continue
         if last_returncode != 0 and not results:
             break
     results = _read_results()
@@ -626,14 +693,6 @@ def agentark_marble_stop_seeds_1_10(llm) -> float:
 
     env = _install_and_configure_agentark()
     env["MODEL_PROXY_API_KEY"] = api_key
-    _write_eval_config(
-        task_name=task_name,
-        seed_start=seed_start,
-        seed_end=seed_end,
-        env_id=env_id,
-        model=model,
-        base_url=base_url,
-    )
     results = _run_agentark_eval(
         env,
         task_name=task_name,
@@ -641,6 +700,8 @@ def agentark_marble_stop_seeds_1_10(llm) -> float:
         seed_end=seed_end,
         env_id=env_id,
         max_attempts=max_attempts,
+        model=model,
+        base_url=base_url,
     )
     summary = _results_summary(results, seed_start=seed_start, seed_end=seed_end)
     summary["exported_result_path"] = _export_result_jsonl(results)
