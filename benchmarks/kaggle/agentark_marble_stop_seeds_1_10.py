@@ -24,7 +24,7 @@ import kaggle_benchmarks as kbench
 
 
 AGENTARK_REPO_URL = "https://github.com/P90-RushB/AgentArk.git"
-AGENTARK_COMMIT = "31a97e7800861e9c1d5b382f323b64392328d042"
+AGENTARK_COMMIT = "41972b931e4bbce47b98f92f27a56cfab0c35acb"
 ENV_ZIP_URL = (
     "https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/main/"
     "artifacts/envs/1.0.1/linux/AgentArk-env-1.0.1-linux.zip?download=true"
