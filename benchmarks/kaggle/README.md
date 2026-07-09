@@ -10,7 +10,7 @@ This directory contains Kaggle Benchmark task files for AgentArk. The first task
 - returns `mean_score_reward` across `MarbleStop` seeds 1-10 as the Kaggle
   leaderboard score.
 
-The task slug is `agentark-marble-stop-seeds-1-10`.
+The task slug is `agentark-marble-stop`.
 
 AgentArk's generic benchmark metric is `score_reward`, which the repository
 defines as the final attempt reward for a case. `rollout_success` and
@@ -67,7 +67,7 @@ python3 benchmarks/kaggle/generate_agentark_kaggle_task.py \
   --seed-end 10
 ```
 
-This creates `benchmarks/kaggle/agentark_yourtaskname_seeds_1_10.py` with a
+This creates `benchmarks/kaggle/agentark_yourtaskname.py` with a
 matching Kaggle task slug. The generated file follows the same contract:
 
 - fixed AgentArk commit for reproducibility,
@@ -81,8 +81,8 @@ matching Kaggle task slug. The generated file follows the same contract:
 For a new formal task, push and run the generated file:
 
 ```bash
-kaggle b t push agentark-yourtaskname-seeds-1-10 -f benchmarks/kaggle/agentark_yourtaskname_seeds_1_10.py --wait
-kaggle b t run agentark-yourtaskname-seeds-1-10 -m gemini-3.5-flash --wait
+kaggle b t push agentark-yourtaskname -f benchmarks/kaggle/agentark_yourtaskname.py --wait
+kaggle b t run agentark-yourtaskname -m gemini-3.5-flash --wait
 ```
 
 Local smoke validation, after `kaggle b init -y` or `kaggle b auth -y`:
@@ -110,8 +110,8 @@ Remote Kaggle Benchmark runs are different: they are not launched with
 the Kaggle CLI:
 
 ```bash
-kaggle b t push agentark-marble-stop-seeds-1-10 -f benchmarks/kaggle/agentark_marble_stop_seeds_1_10.py --wait
-kaggle b t run agentark-marble-stop-seeds-1-10 -m gpt-5.5 --wait
+kaggle b t push agentark-marble-stop -f benchmarks/kaggle/agentark_marble_stop_seeds_1_10.py --wait
+kaggle b t run agentark-marble-stop -m gpt-5.5 --wait
 ```
 
 The `kaggle b t run ... -m ...` command selects the remote model. The
@@ -121,16 +121,16 @@ the same pushed task file and leaderboard definition.
 Push and run, one checkpoint at a time:
 
 ```bash
-kaggle b t push agentark-marble-stop-seeds-1-10 -f benchmarks/kaggle/agentark_marble_stop_seeds_1_10.py --wait
-kaggle b t run agentark-marble-stop-seeds-1-10 -m gemini-3.5-flash --wait
-kaggle b t status agentark-marble-stop-seeds-1-10
-kaggle b t download agentark-marble-stop-seeds-1-10 -o ./results -s
+kaggle b t push agentark-marble-stop -f benchmarks/kaggle/agentark_marble_stop_seeds_1_10.py --wait
+kaggle b t run agentark-marble-stop -m gemini-3.5-flash --wait
+kaggle b t status agentark-marble-stop
+kaggle b t download agentark-marble-stop -o ./results -s
 ```
 
 Publish after the task and at least one model run are satisfactory:
 
 ```bash
-kaggle b t publish agentark-marble-stop-seeds-1-10
+kaggle b t publish agentark-marble-stop
 ```
 
 Useful environment overrides while developing copies of the task:

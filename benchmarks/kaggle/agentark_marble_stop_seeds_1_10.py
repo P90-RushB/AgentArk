@@ -667,7 +667,7 @@ def _creation_smoke_summary() -> Dict[str, Any]:
 
 
 # %%
-@kbench.task(name="agentark-marble-stop-seeds-1-10")
+@kbench.task(name="agentark-marble-stop")
 def agentark_marble_stop_seeds_1_10(llm) -> float:
     """Evaluate the Kaggle-selected model on AgentArk MarbleStop seeds 1-10."""
     del llm  # The AgentArk subprocess consumes the same Kaggle Model Proxy env.

@@ -38,7 +38,7 @@ def generate(
     output: Path | None,
 ) -> Path:
     task_slug = _slugify(task_name)
-    slug = f"agentark-{task_slug}-seeds-{seed_start}-{seed_end}"
+    slug = f"agentark-{task_slug}"
     func_name = _function_name(slug)
     output_path = output or ROOT / f"{func_name}.py"
 
@@ -50,7 +50,7 @@ def generate(
     text = _replace_once(text, "DEFAULT_SEED_START = 1", f"DEFAULT_SEED_START = {int(seed_start)}")
     text = _replace_once(text, "DEFAULT_SEED_END = 10", f"DEFAULT_SEED_END = {int(seed_end)}")
     text = _replace_once(text, "DEFAULT_ENV_ID = 0", f"DEFAULT_ENV_ID = {int(env_id)}")
-    text = text.replace('@kbench.task(name="agentark-marble-stop-seeds-1-10")', f'@kbench.task(name="{slug}")')
+    text = text.replace('@kbench.task(name="agentark-marble-stop")', f'@kbench.task(name="{slug}")')
     text = text.replace(
         "Evaluate the Kaggle-selected model on AgentArk MarbleStop seeds 1-10.",
         f"Evaluate the Kaggle-selected model on AgentArk {task_name} seeds {seed_start}-{seed_end}.",
