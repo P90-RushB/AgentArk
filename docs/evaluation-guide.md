@@ -1,5 +1,7 @@
 # Model Evaluation And Replay
 
+English | [简体中文](evaluation-guide.zh-CN.md)
+
 This guide covers the local model-evaluation path in this repository. AgentArk
 runtime setup is covered in [setup.md](setup.md). Public task pages and aggregate
 leaderboards are available at [AgentArk Hub](https://p90-rushb.github.io/agentark-hub/).

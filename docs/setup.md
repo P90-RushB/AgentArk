@@ -1,5 +1,7 @@
 # Environment Setup
 
+English | [简体中文](setup.zh-CN.md)
+
 This guide installs the Python wrapper and a packaged AgentArk Unity runtime.
 The Python package lives in this repository. Runtime builds, task mods, and
 records live in the Hugging Face dataset:
