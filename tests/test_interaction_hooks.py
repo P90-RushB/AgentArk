@@ -1,7 +1,10 @@
+import json
 import socket
 import threading
 import time
 import unittest
+from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -21,8 +24,10 @@ from agent_ark.ark_eval.run_api_agent import (
     build_eval_hook_manager,
     build_model_runtimes,
     collect_raw_request_messages,
+    evaluate_case,
     load_eval_config,
     normalize_response_trace,
+    validate_player_feedback_eval_contract,
 )
 
 
@@ -385,6 +390,157 @@ class InteractionHookTest(unittest.TestCase):
         self.assertEqual(trace[0]['usage']['output_tokens'], 5)
         self.assertEqual(trace[0]['usage']['total_tokens'], 15)
 
+    def test_codex_agent_collects_structured_feedback_from_same_player_thread(self):
+        class FakeThread:
+            def __init__(self):
+                self.inputs = []
+
+            def run(self, sdk_input, **kwargs):
+                del kwargs
+                self.inputs.append(sdk_input)
+                if len(self.inputs) == 1:
+                    return SimpleNamespace(
+                        final_response='<tool_call>{"name":"Tap","arguments":{"x":500,"y":500}}</tool_call>',
+                        usage=None,
+                    )
+                return SimpleNamespace(
+                    final_response=(
+                        '<player_feedback>{'
+                        '"summary":"tap feedback was missing",'
+                        '"information_reveal_assessment":{'
+                        '"classification":"complete_initially",'
+                        '"evidence":"the required controls were visible from the first observation",'
+                        '"attempts_considered":[1]},'
+                        '"task_defects":[{'
+                        '"category":"interaction_feedback","severity":"major",'
+                        '"confidence":"high","attempt":1,"first_observed_turn":0,'
+                        '"action":"Tap(500,500)","evidence":"no visible response",'
+                        '"expected":"tap marker","observed":"unchanged UI"}],'
+                        '"non_defect_observations":[],"uncertainties":[]'
+                        '}</player_feedback>'
+                    ),
+                    usage=SimpleNamespace(input_tokens=12, output_tokens=8, total_tokens=20),
+                )
+
+        fake_thread = FakeThread()
+
+        class FakeCodex:
+            def __init__(self):
+                self.thread_start_count = 0
+
+            def thread_start(self, **kwargs):
+                del kwargs
+                self.thread_start_count += 1
+                return fake_thread
+
+        fake_codex = FakeCodex()
+        agent = CodexAgent(
+            name='codex-player',
+            timeout_s=None,
+            thread_mode='per_agent',
+            black_box_playtest=True,
+        )
+        agent._codex = fake_codex
+        agent._text_input_cls = None
+
+        actions, _ = agent.forward_with_trace(
+            {0: {'messages': [{'role': 'user', 'content': 'initial visible state'}]}},
+        )
+
+        feedback = agent.collect_player_feedback(
+            {'messages': [{'role': 'user', 'content': 'final visible state'}]},
+            agent_idx=0,
+        )
+
+        self.assertIn('"Tap"', actions[0]['action'])
+        self.assertEqual(fake_codex.thread_start_count, 1)
+        self.assertEqual(len(fake_thread.inputs), 2)
+        self.assertEqual(feedback['status'], 'ok')
+        self.assertEqual(feedback['report']['task_defects'][0]['category'], 'interaction_feedback')
+        self.assertEqual(feedback['usage']['total_tokens'], 20)
+        self.assertIn('Do not output another action', fake_thread.inputs[1])
+        self.assertIn('Not completing the task is not itself a defect', fake_thread.inputs[1])
+
+    def test_codex_black_box_player_uses_and_cleans_isolated_cwd(self):
+        agent = CodexAgent(name='codex-player', black_box_playtest=True, isolated_cwd=True)
+
+        isolated_path = Path(agent._resolve_cwd())
+
+        self.assertTrue(isolated_path.is_dir())
+        self.assertNotEqual(isolated_path.resolve(), Path.cwd().resolve())
+        agent.close()
+        self.assertFalse(isolated_path.exists())
+
+    def test_codex_player_feedback_schema_rejects_invalid_defect_fields(self):
+        base_report = {
+            'summary': 'observed issue',
+            'information_reveal_assessment': {
+                'classification': 'complete_initially',
+                'evidence': 'the necessary control was visible at reset',
+                'attempts_considered': [1],
+            },
+            'task_defects': [{
+                'category': 'action_execution',
+                'severity': 'major',
+                'confidence': 'high',
+                'attempt': 1,
+                'first_observed_turn': 0,
+                'action': 'Tap(500,500)',
+                'evidence': 'the visible state did not change',
+                'expected': 'the button should visibly activate',
+                'observed': 'the screen remained unchanged',
+            }],
+            'non_defect_observations': [],
+            'uncertainties': [],
+        }
+        invalid_mutations = {
+            'severity enum': lambda report: report['task_defects'][0].update(severity='banana'),
+            'attempt type': lambda report: report['task_defects'][0].update(attempt='first'),
+            'turn range': lambda report: report['task_defects'][0].update(first_observed_turn=-1),
+            'action type': lambda report: report['task_defects'][0].update(action=None),
+            'evidence type': lambda report: report['task_defects'][0].update(evidence=['not text']),
+            'non-defect item type': lambda report: report.update(non_defect_observations=[3]),
+            'reveal classification': lambda report: report['information_reveal_assessment'].update(classification='surprise'),
+            'reveal attempts': lambda report: report['information_reveal_assessment'].update(attempts_considered=['first']),
+            'intentional reveal without non-defect': lambda report: report['information_reveal_assessment'].update(classification='intentional_exploration'),
+            'suspected missing info without defect': lambda report: (
+                report['information_reveal_assessment'].update(classification='suspected_missing_information_defect'),
+                report.update(task_defects=[]),
+            ),
+            'unclear reveal without uncertainty': lambda report: report['information_reveal_assessment'].update(classification='unclear'),
+        }
+
+        for label, mutate in invalid_mutations.items():
+            with self.subTest(label=label):
+                report = deepcopy(base_report)
+                mutate(report)
+                parsed, error = CodexAgent._parse_player_feedback(json.dumps(report))
+                self.assertIsNone(parsed)
+                self.assertIsInstance(error, str)
+
+    def test_codex_player_feedback_accepts_intentional_multi_attempt_exploration(self):
+        report = {
+            'summary': 'later attempts exposed useful history as intended',
+            'information_reveal_assessment': {
+                'classification': 'intentional_exploration',
+                'evidence': 'attempt two included the prior attempt outcome and made the next choice informed',
+                'attempts_considered': [1, 2],
+            },
+            'task_defects': [],
+            'non_defect_observations': [
+                'The incomplete first attempt was an intentional discovery step rather than missing task information.',
+            ],
+            'uncertainties': [],
+        }
+
+        parsed, error = CodexAgent._parse_player_feedback(json.dumps(report))
+
+        self.assertIsNone(error)
+        self.assertEqual(
+            parsed['information_reveal_assessment']['classification'],
+            'intentional_exploration',
+        )
+
     def test_codex_agent_passes_reasoning_effort_to_run(self):
         class FakeThread:
             def __init__(self):
@@ -452,6 +608,84 @@ class InteractionHookTest(unittest.TestCase):
         self.assertEqual(runtimes[0]['agent'].kwargs['reasoning_effort'], 'low')
         self.assertEqual(runtimes[0]['thread_mode'], 'per_turn')
         self.assertEqual(runtimes[0]['agent'].kwargs['thread_mode'], 'per_turn')
+
+    def test_build_model_runtimes_enables_isolated_black_box_player_feedback(self):
+        class FakeCodexAgent:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        with patch('agent_ark.ark_eval.run_api_agent.CodexAgent', FakeCodexAgent):
+            runtimes = build_model_runtimes([{
+                'name': 'codex-player',
+                'provider': 'codex',
+                'model': 'gpt-5.5',
+                'thread_mode': 'per_agent',
+                'player_feedback': {'enabled': True},
+            }])
+
+        self.assertTrue(runtimes[0]['player_feedback']['enabled'])
+        self.assertTrue(runtimes[0]['agent'].kwargs['black_box_playtest'])
+        self.assertTrue(runtimes[0]['agent'].kwargs['isolated_cwd'])
+
+    def test_build_model_runtimes_rejects_stateless_player_feedback(self):
+        with self.assertRaisesRegex(ValueError, 'thread_mode: per_agent'):
+            build_model_runtimes([{
+                'name': 'codex-player',
+                'provider': 'codex',
+                'thread_mode': 'per_turn',
+                'player_feedback': {'enabled': True},
+            }])
+
+    def test_build_model_runtimes_requires_read_only_player_sandbox(self):
+        with self.assertRaisesRegex(ValueError, 'sandbox: read_only'):
+            build_model_runtimes([{
+                'name': 'codex-player',
+                'provider': 'codex',
+                'thread_mode': 'per_agent',
+                'sandbox': 'workspace_write',
+                'player_feedback': {'enabled': True},
+            }])
+
+    def test_build_model_runtimes_rejects_non_codex_player_feedback(self):
+        with self.assertRaisesRegex(ValueError, 'provider: codex'):
+            build_model_runtimes([{
+                'name': 'api-player',
+                'provider': 'openai',
+                'model': 'fake-model',
+                'player_feedback': {'enabled': True},
+            }])
+
+    def test_player_feedback_eval_contract_requires_all_image_trajectories(self):
+        model_cfgs = [{
+            'name': 'codex-player',
+            'provider': 'codex',
+            'player_feedback': {'enabled': True},
+        }]
+        valid_eval_cfg = {
+            'trajectory_save': {
+                'enabled': True,
+                'output_path': 'tmp/player.jsonl',
+                'condition': 'all',
+                'include_images': True,
+            },
+        }
+
+        validate_player_feedback_eval_contract(model_cfgs, valid_eval_cfg, {})
+
+        invalid_configs = {
+            'disabled': {'enabled': False, 'output_path': 'tmp/player.jsonl', 'condition': 'all', 'include_images': True},
+            'conditional': {'enabled': True, 'output_path': 'tmp/player.jsonl', 'condition': 'ever_success', 'include_images': True},
+            'no images': {'enabled': True, 'output_path': 'tmp/player.jsonl', 'condition': 'all', 'include_images': False},
+            'no output': {'enabled': True, 'condition': 'all', 'include_images': True},
+        }
+        for label, trajectory_save in invalid_configs.items():
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(ValueError, 'trajectory_save'):
+                    validate_player_feedback_eval_contract(
+                        model_cfgs,
+                        {'trajectory_save': trajectory_save},
+                        {},
+                    )
 
     def test_codex_provider_defaults_to_gpt55(self):
         class FakeCodexAgent:
@@ -965,6 +1199,130 @@ class InteractionHookTest(unittest.TestCase):
             rollout['step_records'][0]['raw_request_by_agent']['1']['request_messages'][0]['content'][0]['text'],
             'exact request',
         )
+        self.assertNotIn('final_obs', rollout)
+
+    def test_evaluate_case_collects_player_feedback_after_final_observation(self):
+        class FakeFeedbackAgent:
+            def __init__(self):
+                self.feedback_obs = None
+
+            def reset(self):
+                return
+
+            def build_request_messages(self, obs):
+                return {1: [{'role': 'user', 'content': obs[1].get('step_msg', '')}]}
+
+            def forward_with_trace(self, obs):
+                del obs
+                action = '<tool_call>{"name":"Tap","arguments":{"x":500,"y":500}}</tool_call>'
+                return ({1: {'action': action, 'assistant': action}}, {1: {'assistant_raw': action}})
+
+            def collect_player_feedback(self, obs_dict, *, agent_idx):
+                self.feedback_obs = (obs_dict, agent_idx)
+                return {
+                    'status': 'ok',
+                    'report': {
+                        'summary': 'visible tap did not change the UI',
+                        'information_reveal_assessment': {
+                            'classification': 'complete_initially',
+                            'evidence': 'the relevant control was visible before the tap',
+                            'attempts_considered': [1],
+                        },
+                        'task_defects': [{'category': 'action_execution'}],
+                        'non_defect_observations': [],
+                        'uncertainties': [],
+                    },
+                }
+
+        class FakeFeedbackEnv:
+            def __init__(self):
+                self.max_attempts = 1
+                self.max_steps_per_attempt = 1
+                self._selected_env_cfg = {'task_name': 'feedback-task', 'env_id': 0}
+
+                class _FakeInfoMgr:
+                    env_config = {'task_name': 'feedback-task', 'env_id': 0}
+
+                self.sub_env = SimpleNamespace(env_info_mgr=_FakeInfoMgr())
+
+            def reset(self, **kwargs):
+                del kwargs
+                return ({1: {'step_msg': 'initial'}}, {'attempt': {'index': 1}})
+
+            def step(self, code_act, info=None):
+                del code_act, info
+                return (
+                    {1: {'step_msg': 'final visible state'}},
+                    {1: 0.0},
+                    {1: True, '__all__': True},
+                    {
+                        'attempt': {'index': 1, 'done': True, 'success': True},
+                        'rollout': {'success': True, 'truncated': False},
+                    },
+                )
+
+        agent = FakeFeedbackAgent()
+        result = evaluate_case(
+            env=FakeFeedbackEnv(),
+            model_runtime={
+                'name': 'codex-player',
+                'model': 'fake-model',
+                'provider': 'codex',
+                'base_url': None,
+                'api_key_env': None,
+                'player_feedback': {'enabled': True},
+                'agent': agent,
+            },
+            case={'case_id': 'feedback-case', 'task_name': 'feedback-task', 'group_seed': 1, 'env_id': 0},
+        )
+
+        self.assertEqual(agent.feedback_obs[0]['step_msg'], 'final visible state')
+        self.assertEqual(agent.feedback_obs[1], 1)
+        self.assertEqual(result['player_feedback']['status'], 'ok')
+        self.assertEqual(
+            result['player_feedback']['report']['task_defects'][0]['category'],
+            'action_execution',
+        )
+
+        agent.collect_player_feedback = lambda obs_dict, agent_idx: {
+            'status': 'unparsed',
+            'assistant_raw': 'not-json',
+            'report': None,
+        }
+        failed_feedback_result = evaluate_case(
+            env=FakeFeedbackEnv(),
+            model_runtime={
+                'name': 'codex-player',
+                'model': 'fake-model',
+                'provider': 'codex',
+                'base_url': None,
+                'api_key_env': None,
+                'player_feedback': {'enabled': True},
+                'agent': agent,
+            },
+            case={'case_id': 'feedback-case-retry', 'task_name': 'feedback-task', 'group_seed': 1, 'env_id': 0},
+        )
+
+        self.assertEqual(failed_feedback_result['status'], 'error')
+        self.assertEqual(failed_feedback_result['error_type'], 'PlayerFeedbackGateError')
+
+        plain_agent = FakeFeedbackAgent()
+        plain_result = evaluate_case(
+            env=FakeFeedbackEnv(),
+            model_runtime={
+                'name': 'plain-api-agent',
+                'model': 'fake-model',
+                'provider': 'openai',
+                'base_url': None,
+                'api_key_env': None,
+                'agent': plain_agent,
+            },
+            case={'case_id': 'plain-case', 'task_name': 'feedback-task', 'group_seed': 1, 'env_id': 0},
+        )
+
+        self.assertEqual(plain_result['status'], 'ok')
+        self.assertNotIn('player_feedback', plain_result)
+        self.assertIsNone(plain_agent.feedback_obs)
 
     def test_collect_raw_request_messages_omits_image_payloads(self):
         class FakeAgent:
@@ -1032,6 +1390,18 @@ class InteractionHookTest(unittest.TestCase):
         self.assertEqual(len(runtimes), 1)
         self.assertEqual(runtimes[0]['name'], 'human-test')
         self.assertTrue(runtimes[0]['human_interaction'])
+
+    def test_human_runtime_cannot_replace_configured_codex_player_feedback(self):
+        with self.assertRaisesRegex(ValueError, 'human_interaction'):
+            build_model_runtimes(
+                [{
+                    'name': 'codex-player',
+                    'provider': 'codex',
+                    'player_feedback': {'enabled': True},
+                }],
+                hooks_cfg={'human_interaction': {'enabled': True}},
+                action_broker=HumanActionBroker(),
+            )
 
     def test_eval_config_contains_explicit_hooks(self):
         cfg = load_eval_config('config/ark_env/eval_seed1.example.yaml')

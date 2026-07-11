@@ -27,6 +27,7 @@ from agent_ark.ark_eval.run_api_agent import (
     load_eval_config,
     maybe_save_eval_trajectory,
     print_summary,
+    validate_player_feedback_eval_contract,
 )
 from .trajectory_io import TrajectoryJsonlWriter
 
@@ -488,6 +489,7 @@ def run_parallel_evaluation(cfg: Dict[str, Any], *, config_path: str | None = No
         raise ValueError('run_parallel_api_eval does not support hooks.human_interaction.enabled=true')
 
     model_cfgs = list(cfg.get('models', []) or [])
+    validate_player_feedback_eval_contract(model_cfgs, eval_cfg, hooks_cfg)
     cases = apply_trajectory_load_to_cases(build_eval_cases(env_cfg, eval_cfg), eval_cfg)
     jobs = build_parallel_eval_jobs(cases, model_cfgs)
     skip_existing_results = _coerce_bool(eval_cfg.get('skip_existing_results', False), default=False)

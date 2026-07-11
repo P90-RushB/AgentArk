@@ -1,0 +1,64 @@
+env_cfg:
+  env_path: "${AGENTARK_ENV_PATH}"
+  mod_path: "${AGENTARK_MOD_PATH}"
+  task_type: RLTask
+  env_config_overrides:
+    override_by_task: true
+    num_parallel_envs: 1
+    env_wrapper_cfg:
+      context_manager:
+        messages:
+          enabled: true
+          only_return_messages: true
+          append_only: true
+          # The black-box player keeps one Codex thread for the whole rollout.
+          return_mode: delta
+          history_only_on_attempt_start: true
+
+eval:
+  output_path: tmp/player_feedback_results.jsonl
+  stop_on_error: true
+  fixed_env_id: 0
+  cases:
+    - case_id: replace-with-task-seed-0001
+      task_name: ReplaceWithExportedTaskName
+      group_seed: 1
+      env_id: 0
+  # Preserve every playtest, including unsuccessful runs. Completion is not the
+  # quality signal for this stage, and exact actions/images should be replayable.
+  trajectory_save:
+    enabled: true
+    output_path: tmp/player_feedback_trajectories.jsonl
+    condition: all
+    include_images: true
+
+hooks:
+  visualization:
+    enabled: false
+    host: 127.0.0.1
+    port: 18181
+    open_browser: false
+    text_max_chars: 6000
+    max_images_per_observation: 4
+    event_buffer_size: 500
+    keep_open_on_end: false
+  # This must remain false or the human browser agent replaces the Codex model.
+  human_interaction:
+    enabled: false
+
+models:
+  - name: codex-black-box-player
+    provider: codex
+    model: gpt-5.5
+    sandbox: read_only
+    timeout_s: 600
+    reasoning_effort: low
+    thread_mode: per_agent
+    # The same SDK thread plays from observations and emits a structured report
+    # after the terminal frame. Its cwd is an automatically created empty temp
+    # directory rather than this source repo.
+    # The terminal report also classifies the information flow across the
+    # attempts actually experienced; that player-side label is evidence for a
+    # later independent reviewer decision, not an automatic repair request.
+    player_feedback:
+      enabled: true

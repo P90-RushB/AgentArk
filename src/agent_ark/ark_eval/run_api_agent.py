@@ -77,6 +77,44 @@ def _normalize_codex_thread_mode(value: Any) -> str:
     return normalized
 
 
+def _normalize_player_feedback_cfg(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        out = dict(value)
+        out['enabled'] = _coerce_bool(out.get('enabled', False), default=False)
+        return out
+    return {'enabled': _coerce_bool(value, default=False)}
+
+
+def validate_player_feedback_eval_contract(
+    model_cfgs: List[Dict[str, Any]],
+    eval_cfg: Dict[str, Any],
+    hooks_cfg: Dict[str, Any] | None = None,
+) -> None:
+    enabled = any(
+        isinstance(model_cfg, dict)
+        and _normalize_player_feedback_cfg(model_cfg.get('player_feedback', None)).get('enabled', False)
+        for model_cfg in (model_cfgs or [])
+    )
+    if not enabled:
+        return
+
+    hooks_cfg = dict(hooks_cfg or {})
+    human_cfg = hooks_cfg.get('human_interaction', {}) if isinstance(hooks_cfg.get('human_interaction', {}), dict) else {}
+    if _coerce_bool(human_cfg.get('enabled', False), default=False):
+        raise ValueError('Codex player_feedback cannot run while hooks.human_interaction.enabled=true')
+
+    save_cfg = eval_cfg.get('trajectory_save', {}) if isinstance(eval_cfg.get('trajectory_save', {}), dict) else {}
+    if not _coerce_bool(save_cfg.get('enabled', False), default=False):
+        raise ValueError('Codex player_feedback requires eval.trajectory_save.enabled=true')
+    condition = str(save_cfg.get('condition', '') or '').strip().lower()
+    if condition not in ('all', 'always'):
+        raise ValueError('Codex player_feedback requires eval.trajectory_save.condition: all')
+    if not _coerce_bool(save_cfg.get('include_images', True), default=True):
+        raise ValueError('Codex player_feedback requires eval.trajectory_save.include_images=true')
+    if not str(save_cfg.get('output_path', '') or '').strip():
+        raise ValueError('Codex player_feedback requires eval.trajectory_save.output_path')
+
+
 def _expand_env_vars(value: str) -> str:
     expanded = str(value)
     for _ in range(3):
@@ -548,6 +586,12 @@ def build_model_runtimes(
     hooks_cfg = dict(hooks_cfg or {})
     human_cfg = hooks_cfg.get('human_interaction', {}) if isinstance(hooks_cfg.get('human_interaction', {}), dict) else {}
     if _coerce_bool(human_cfg.get('enabled', False), default=False):
+        if any(
+            isinstance(model_cfg, dict)
+            and _normalize_player_feedback_cfg(model_cfg.get('player_feedback', None)).get('enabled', False)
+            for model_cfg in model_cfgs
+        ):
+            raise ValueError('Codex player_feedback cannot run while hooks.human_interaction.enabled=true')
         limits = _hook_visualization_limits(hooks_cfg)
         agent = HumanInteractiveAgent(
             name=str(human_cfg.get('name', 'human-local') or 'human-local'),
@@ -582,6 +626,9 @@ def build_model_runtimes(
             raise ValueError(f'models[{idx}] is missing model')
 
         base_url = model_cfg.get('base_url', None)
+        player_feedback_cfg = _normalize_player_feedback_cfg(model_cfg.get('player_feedback', None))
+        if player_feedback_cfg.get('enabled', False) and provider != 'codex':
+            raise ValueError('player_feedback is currently supported only with provider: codex')
         if provider == 'codex':
             timeout_s = model_cfg.get('timeout_s', model_cfg.get('request_timeout_s', 600.0))
             if timeout_s is not None:
@@ -591,6 +638,13 @@ def build_model_runtimes(
                 model_cfg.get('reasoning_effort', model_cfg.get('effort', None))
             )
             thread_mode = _normalize_codex_thread_mode(model_cfg.get('thread_mode', None))
+            player_feedback_enabled = bool(player_feedback_cfg.get('enabled', False))
+            if player_feedback_enabled and thread_mode != 'per_agent':
+                raise ValueError("Codex player_feedback requires thread_mode: per_agent")
+            if player_feedback_enabled and sandbox.strip().lower().replace('-', '_') != 'read_only':
+                raise ValueError("Codex player_feedback requires sandbox: read_only")
+            if player_feedback_enabled and model_cfg.get('cwd', None) not in (None, ''):
+                raise ValueError("Codex player_feedback uses an isolated cwd; remove the explicit model cwd")
             agent = CodexAgent(
                 name=model_name,
                 model=model_id,
@@ -600,6 +654,8 @@ def build_model_runtimes(
                 codex_bin=model_cfg.get('codex_bin', None),
                 cwd=model_cfg.get('cwd', None),
                 thread_mode=thread_mode,
+                black_box_playtest=player_feedback_enabled,
+                isolated_cwd=player_feedback_enabled,
             )
             runtimes.append({
                 'name': model_name,
@@ -612,6 +668,7 @@ def build_model_runtimes(
                 'reasoning_effort': reasoning_effort,
                 'sandbox': sandbox,
                 'thread_mode': thread_mode,
+                'player_feedback': player_feedback_cfg,
                 'agent': agent,
             })
             continue
@@ -885,6 +942,7 @@ def _run_case_rollout(
     hook_manager: HookManager | None = None,
     hooks_cfg: Dict[str, Any] | None = None,
     phase: str = 'eval',
+    include_final_obs: bool = False,
 ) -> Dict[str, Any]:
     agent = model_runtime['agent']
     hooks = hook_manager or HookManager()
@@ -997,6 +1055,9 @@ def _run_case_rollout(
         'final_env_cfg': final_env_cfg,
         'unity_id': unity_id,
         'initial_obs': initial_obs,
+        # Raw terminal observations may retain image buffers. Return that
+        # reference only for an explicitly enabled post-rollout consumer.
+        **({'final_obs': obs} if include_final_obs else {}),
         'reset_info': info or {},
         'loaded_history_attempt_count': count_history_prefix_attempts(history_snapshot),
         'start_attempt_index': getattr(env, 'current_attempt_index', start_attempt_index or 1),
@@ -1021,6 +1082,8 @@ def evaluate_case(
     hook_manager: HookManager | None = None,
     hooks_cfg: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    player_feedback_cfg = _normalize_player_feedback_cfg(model_runtime.get('player_feedback', None))
+    player_feedback_enabled = bool(player_feedback_cfg.get('enabled', False))
     rollout = _run_case_rollout(
         env=env,
         model_runtime=model_runtime,
@@ -1029,6 +1092,7 @@ def evaluate_case(
         hook_manager=hook_manager,
         hooks_cfg=hooks_cfg,
         phase='eval',
+        include_final_obs=player_feedback_enabled,
     )
     attempt_summary = summarize_attempt_rewards(rollout['step_records'], rollout['reset_info'])
     seed_summary = summarize_seed_fields(
@@ -1037,8 +1101,53 @@ def evaluate_case(
         rollout['requested_group_seed'],
     )
 
+    player_feedback = None
+    if player_feedback_enabled:
+        collector = getattr(model_runtime.get('agent'), 'collect_player_feedback', None)
+        if not callable(collector):
+            player_feedback = {
+                'status': 'error',
+                'error_type': 'UnsupportedPlayerFeedbackAgent',
+                'error': 'Configured agent does not support post-rollout player feedback',
+            }
+        else:
+            try:
+                final_obs_map = rollout.get('final_obs', {})
+                final_obs = final_obs_map.get(rollout['unity_id'], {}) if isinstance(final_obs_map, dict) else {}
+                player_feedback = collector(final_obs, agent_idx=rollout['unity_id'])
+            except Exception as exc:
+                player_feedback = {
+                    'status': 'error',
+                    'error_type': type(exc).__name__,
+                    'error': str(exc),
+                }
+
+        hooks = hook_manager or HookManager()
+        hooks.emit(
+            'player_feedback',
+            {
+                'case_id': case['case_id'],
+                'model_name': model_runtime['name'],
+                'feedback': _to_jsonable(player_feedback),
+            },
+            source='run_api_agent',
+            phase='player_feedback',
+        )
+
+    player_feedback_gate_ok = (
+        not player_feedback_enabled
+        or (isinstance(player_feedback, dict) and player_feedback.get('status') == 'ok')
+    )
+
     return {
-        'status': 'ok',
+        # A configured feedback stage is part of the evaluation contract. Keep
+        # the rollout/trajectory evidence, but mark the result retryable when
+        # the terminal report failed or could not be parsed.
+        'status': 'ok' if player_feedback_gate_ok else 'error',
+        **({} if player_feedback_gate_ok else {
+            'error_type': 'PlayerFeedbackGateError',
+            'error': 'Codex player feedback was missing, failed, or unparsed',
+        }),
         'case_id': case['case_id'],
         'model_name': model_runtime['name'],
         'model': model_runtime['model'],
@@ -1084,6 +1193,7 @@ def evaluate_case(
         'reset_info': _to_jsonable(rollout['reset_info']),
         'initial_step_msg_preview': _truncate_text(rollout['initial_obs'].get('step_msg', ''), max_len=1000),
         'initial_obs_summary': summarize_obs(rollout['unity_id'], rollout['initial_obs']),
+        **({'player_feedback': _to_jsonable(player_feedback)} if player_feedback_enabled else {}),
         'duration_s': rollout['duration_s'],
         'steps': rollout['step_records'],
     }
@@ -1504,9 +1614,11 @@ def main(args):
 
     env_cfg = resolve_runtime_sandbox_cfg(env_cfg)
 
+    model_cfgs = list(cfg.get('models', []) or [])
+    validate_player_feedback_eval_contract(model_cfgs, eval_cfg, hooks_cfg)
     hook_manager, action_broker = build_eval_hook_manager(hooks_cfg)
     model_runtimes = build_model_runtimes(
-        list(cfg.get('models', []) or []),
+        model_cfgs,
         hooks_cfg=hooks_cfg,
         hook_manager=hook_manager,
         action_broker=action_broker,
@@ -1639,6 +1751,24 @@ def main(args):
                             close_agent()
                     finally:
                         env.close()
+
+                if result.get('status') != 'ok':
+                    write_eval_result(
+                        writer,
+                        result,
+                        replace_existing_by_resume_key=skip_existing_results,
+                    )
+                    results.append(result)
+                    hook_manager.emit('error', result, source='run_api_agent')
+                    print(
+                        f"[model {model_runtime['name']}] error: "
+                        f"{result.get('error_type', 'EvaluationError')}: {result.get('error', '')}"
+                    )
+                    if stop_on_error:
+                        raise RuntimeError(
+                            f"{result.get('error_type', 'EvaluationError')}: {result.get('error', '')}"
+                        )
+                    continue
 
                 write_eval_result(
                     writer,

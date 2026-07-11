@@ -165,6 +165,84 @@ python -m agent_ark.ark_eval.run_api_agent \
 includes 32 starter tasks, such as `MarbleStop`, `Snake`, `Pushbox`,
 `ObjectRotationMatch`, and `StarterRouteJump3D`.
 
+### Black-Box Player Feedback
+
+Use [player_feedback.example.yaml](../config/ark_env/player_feedback.example.yaml)
+to let the same Codex SDK thread play a packaged task and then report observable
+task-quality problems after the rollout. The player receives the normal task
+prompt, image observations, visible/history messages, and action results. It is
+not injected with task source, hidden state, oracle actions, design notes, or
+reviewer evidence.
+
+Use the SDK player for the actual play loop rather than a normal workflow
+subagent. The SDK adapter already consumes AgentArk's multimodal messages as
+native image inputs, preserves one player thread across steps and attempts, and
+records the exact task, seed, actions, outcomes, trajectory, and replay evidence.
+A workflow subagent normally inherits repository and design/review context, so
+it is appropriate for launching the run and checking its artifacts, but not for
+choosing black-box player actions.
+
+```bash
+python -m agent_ark.ark_eval.run_api_agent \
+  --config config/ark_env/player_feedback.example.yaml
+```
+
+The model entry must use `provider: codex`, `thread_mode: per_agent`, and:
+
+```yaml
+player_feedback:
+  enabled: true
+```
+
+This mode adds two safeguards automatically:
+
+- The action prompt tells Codex to use only player-visible messages and images.
+- The Codex thread starts in a new empty temporary cwd instead of the source
+  repository; that directory is removed when the agent closes.
+
+After the terminal observation, `run_api_agent` asks that same thread for one
+structured `<player_feedback>` JSON report. The report separates concrete task
+defects from non-defects such as failing to solve the task, difficulty, player
+mistakes, or a legitimate need to explore. The result record stores the report
+under `player_feedback`. Enable `trajectory_save` with `condition: all` and
+`include_images: true` so every reported issue can be replayed even when the
+player did not succeed. If the terminal report is missing, fails, or does not
+match the required JSON schema, the evaluation result is marked `status: error`
+so resume/retry logic does not silently treat the player gate as complete; the
+rollout and trajectory evidence are still retained.
+
+The report also contains `information_reveal_assessment` with one of four
+player-side classifications: `complete_initially`, `intentional_exploration`,
+`suspected_missing_information_defect`, or `unclear`. It records the visible
+evidence and the attempt indices the player actually considered. `ArkEnv` may
+intentionally use an early attempt for discovery and expose consequences or
+configured history at later attempt boundaries. Initial uncertainty is therefore
+not a defect when progressive discovery is intentional and works. A suspected
+defect requires visible evidence that promised or necessary information never
+became discoverable, or that the observed reveal behavior contradicted the
+player-facing contract.
+
+The player's classification is evidence, not the final verdict, and it never
+directly requests a source change. The workflow sends the parsed report and
+image-inclusive replay to the task reviewer. The reviewer independently compares
+it with the approved information-reveal design, task description, effective
+`max_attempts`, seed/history semantics, and packaged replay, then classifies each
+candidate as `confirmed defect`, `non-defect`, or `inconclusive`. Only confirmed
+defects reach the builder; an inconclusive finding may receive one fresh targeted
+run, and intentional exploration remains a recorded non-defect.
+
+Both serial and parallel runners reject player-feedback configs unless
+`trajectory_save.enabled: true`, `condition: all`, `include_images: true`, and
+an output path are present. They also reject human-interaction replacement,
+non-Codex providers, non-read-only sandboxes, explicit source cwd values, and
+stateless Codex threads for this mode.
+
+The isolated cwd and prompt are contamination-reduction measures, not a hard
+security boundary: the current Codex SDK adapter does not disable every
+filesystem or shell tool. Do not describe a run as strict source-proof black-box
+testing unless the deployed SDK/runtime also enforces that stronger tool
+restriction.
+
 ## Multiple Seeds
 
 Use [config/ark_env/eval_seeds_1_n.example.yaml](../config/ark_env/eval_seeds_1_n.example.yaml):
