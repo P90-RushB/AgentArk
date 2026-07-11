@@ -118,6 +118,14 @@ The `kaggle b t run ... -m ...` command selects the remote model. The
 temperature retry behavior above runs inside the remote task, so all models use
 the same pushed task file and leaderboard definition.
 
+During `push`, Kaggle runs a creation check with its default model environment.
+The task maps Kaggle's current default `gemini-3-flash-preview` to
+`gemini-3.5-flash` for AgentArk evaluation. Override this with
+`AGENTARK_KAGGLE_CREATION_MODEL` if Kaggle's default changes or if a cheaper
+creation-check model is preferred. Formal `run -m ...` selections still take
+priority unless the chosen model is exactly Kaggle's push-default alias; use
+`AGENTARK_KAGGLE_MODEL` for an explicit override.
+
 Push and run, one checkpoint at a time:
 
 ```bash
@@ -140,7 +148,9 @@ Useful environment overrides while developing copies of the task:
 - `AGENTARK_KAGGLE_SEED_END`, default `10`
 - `AGENTARK_KAGGLE_EVAL_ATTEMPTS`, default `100`; reruns the full AgentArk eval loop while any requested seed lacks an ok result, then stops when all seeds are ok or the loop limit is reached
 - `AGENTARK_KAGGLE_ENV_ID`, default `0`
-- `AGENTARK_KAGGLE_MODEL`, default `LLM_DEFAULT` or `LLM_DEFAULT_EVAL`
+- `AGENTARK_KAGGLE_MODEL`, explicit model override for local or remote runs
+- `AGENTARK_KAGGLE_CREATION_MODEL`, default `gemini-3.5-flash`; used when
+  Kaggle's push creation check exposes `gemini-3-flash-preview`
 - `AGENTARK_KAGGLE_FULL_EVAL=1`, force a full AgentArk evaluation outside
   Kaggle `BENCHMARK_MODE=RUN`
 - `AGENTARK_KAGGLE_PYTHON_VERSION`, default `3.10.12`

@@ -51,6 +51,8 @@ DEFAULT_SEED_END = 10
 DEFAULT_EVAL_ATTEMPTS = 100
 DEFAULT_ENV_ID = 0
 DEFAULT_PYTHON_VERSION = "3.10.12"
+DEFAULT_KAGGLE_CREATION_MODEL = "gemini-3.5-flash"
+KAGGLE_PUSH_DEFAULT_MODEL_ALIASES = {"gemini-3-flash-preview", "google/gemini-3-flash-preview"}
 
 
 # %%
@@ -253,22 +255,36 @@ def _enable_virtual_display(env: Dict[str, str]) -> None:
     _run([VENV_PY, "-c", script], env=env)
 
 
+def _canonical_model_slug(model: str) -> str:
+    text = (model or "").strip()
+    if "/" in text:
+        text = text.rsplit("/", 1)[-1]
+    return text.replace("@", "-")
+
+
+def _select_model_proxy_model() -> str:
+    explicit = os.getenv("AGENTARK_KAGGLE_MODEL", "").strip()
+    if explicit:
+        return explicit
+
+    model = (os.getenv("LLM_DEFAULT") or os.getenv("LLM_DEFAULT_EVAL") or "").strip()
+    creation_model = os.getenv("AGENTARK_KAGGLE_CREATION_MODEL", DEFAULT_KAGGLE_CREATION_MODEL).strip()
+    if model and _canonical_model_slug(model) not in KAGGLE_PUSH_DEFAULT_MODEL_ALIASES:
+        return model
+    return creation_model or model
+
+
 def _require_model_proxy_env() -> Tuple[str, str, str]:
     _load_dotenv_if_available()
     base_url = os.getenv("MODEL_PROXY_URL", "").strip()
     api_key = os.getenv("MODEL_PROXY_API_KEY", "").strip()
-    model = (
-        os.getenv("AGENTARK_KAGGLE_MODEL")
-        or os.getenv("LLM_DEFAULT")
-        or os.getenv("LLM_DEFAULT_EVAL")
-        or ""
-    ).strip()
+    model = _select_model_proxy_model()
     if not base_url:
         raise RuntimeError("MODEL_PROXY_URL is not set. Run `kaggle b init -y` or execute through Kaggle Benchmarks.")
     if not api_key:
         raise RuntimeError("MODEL_PROXY_API_KEY is not set. Run `kaggle b auth -y` if local credentials expired.")
     if not model:
-        raise RuntimeError("LLM_DEFAULT is not set and AGENTARK_KAGGLE_MODEL was not provided.")
+        raise RuntimeError("No Kaggle benchmark model is configured.")
     return base_url, api_key, model
 
 
