@@ -3,7 +3,7 @@
 English | [简体中文](README.zh-CN.md)
 
 <p align="center">
-  <img src="docs/figures/agentark-figure1.png" alt="AgentArk architecture and workflow overview" width="900">
+  <img src="docs/figures/agentark-task-diversity.png" alt="A growing gallery of diverse AgentArk tasks supported by one runtime for evaluation and reinforcement learning" width="900">
 </p>
 
 AgentArk is an open environment framework for multimodal agents: models can see
@@ -22,6 +22,10 @@ evaluation, replay, environment serving, and RL training integration.
 
 ## What AgentArk Enables
 
+<p align="center">
+  <img src="docs/figures/agentark-figure1.png" alt="AgentArk architecture and workflow overview" width="900">
+</p>
+
 - **Task scaling with coding agents.** New environments are packaged as task
   mods, so designers, builders, and reviewers can expand the task library
   without changing the core runtime.
@@ -34,10 +38,6 @@ evaluation, replay, environment serving, and RL training integration.
   calibration, timing control, path planning, video-level observation,
   mini-games, GUI-like tasks, and future task families that can be expressed as
   loadable mods with verifiable scoring.
-
-<p align="center">
-  <img src="docs/figures/agentark-task-diversity.png" alt="Diverse AgentArk interactive tasks in a rapidly growing task library" width="900">
-</p>
 
 ## Try AgentArk First
 
