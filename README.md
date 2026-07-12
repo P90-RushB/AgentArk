@@ -2,6 +2,10 @@
 
 English | [简体中文](README.zh-CN.md)
 
+<p align="center">
+  <img src="docs/figures/agentark-figure1.png" alt="AgentArk architecture and workflow overview" width="900">
+</p>
+
 AgentArk is an open environment framework for multimodal agents: models can see
 interactive tasks, write actions as code or tool calls, receive verifiable
 feedback, and improve through evaluation, replay, or RL.
@@ -32,7 +36,7 @@ evaluation, replay, environment serving, and RL training integration.
   loadable mods with verifiable scoring.
 
 <p align="center">
-  <img src="docs/figures/agentark-figure1.png" alt="AgentArk overview" width="900">
+  <img src="docs/figures/agentark-task-diversity.png" alt="Diverse AgentArk interactive tasks in a rapidly growing task library" width="900">
 </p>
 
 ## Try AgentArk First
