@@ -117,7 +117,7 @@ models:
     # Choices: none, minimal, low, medium, high, xhigh.
     # Omit to use the Codex SDK/model default. low is the safer cheap setting;
     # minimal can be rejected when Codex tools are enabled.
-    reasoning_effort: low
+    reasoning_effort: medium
     thread_mode: per_agent
 ```
 

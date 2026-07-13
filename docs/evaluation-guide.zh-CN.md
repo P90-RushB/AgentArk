@@ -114,7 +114,7 @@ models:
     # 可选：none、minimal、low、medium、high、xhigh。
     # 省略时使用 Codex SDK/模型默认值。low 是更稳妥的低成本设置；
     # 启用 Codex tools 时 minimal 可能被拒绝。
-    reasoning_effort: low
+    reasoning_effort: medium
     thread_mode: per_agent
 ```
 

@@ -52,7 +52,7 @@ models:
     model: gpt-5.5
     sandbox: read_only
     timeout_s: 600
-    reasoning_effort: low
+    reasoning_effort: medium
     thread_mode: per_agent
     # The same SDK thread plays from observations and emits a structured report
     # after the terminal frame. Its cwd is an automatically created empty temp
