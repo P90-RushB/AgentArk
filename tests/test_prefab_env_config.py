@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+import yaml
 from PIL import Image
 
 
@@ -183,6 +184,79 @@ class PrefabEnvConfigTest(unittest.TestCase):
             self.assertEqual(manager.env_config['max_attempts'], 2)
             self.assertEqual(manager.env_config['max_steps_per_attempt'], 3)
 
+    def test_prefab_task_materializes_matching_effective_yaml_and_json_from_backup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_root = Path(temp_dir) / 'AgentArkUnity'
+            mods_path = project_root / 'Assets' / 'Resources' / 'Mods'
+            mods_path.mkdir(parents=True)
+            task_root = project_root / 'Assets' / 'AgentArk' / 'Tasks' / 'CleanPrefabTask'
+            task_root.mkdir(parents=True)
+
+            root_yaml = '\n'.join([
+                'override_by_task: false',
+                'load_mod_mode: none',
+                'task_name: OldPrefabTask',
+                'obs_mode: video',
+                'capture_interval: 25',
+                'early_request_act: false',
+                'time_between_decisions: 40',
+                'action_mode: code',
+                'done_on_script_error: true',
+                'num_parallel_envs: 1',
+                'width: 320',
+                'height: 240',
+                'engine_para:',
+                '  time_scale: 8',
+                'max_attempts: 9',
+                'max_steps_per_attempt: 11',
+                'task_params:',
+                '  staleFromPreviousTask: 1',
+                'env_wrapper_cfg:',
+                '  video_frame_selection: decision_only',
+                '',
+            ])
+            (mods_path / 'config.yaml').write_text(root_yaml, encoding='utf-8')
+            (mods_path / 'config.yaml.bak').write_text(root_yaml, encoding='utf-8')
+            (mods_path / 'config.json').write_text('{}', encoding='utf-8')
+            (task_root / 'task_config.yaml').write_text('\n'.join([
+                'task_name: CleanPrefabTask',
+                'obs_mode: decision',
+                'capture_interval: 10',
+                'early_request_act: true',
+                'time_between_decisions: 2.5',
+                'action_mode: func',
+                'done_on_script_error: false',
+                'num_parallel_envs: 1',
+                'width: 768',
+                'height: 512',
+                'engine_para:',
+                '  time_scale: 4',
+                'max_attempts: 1',
+                'max_steps_per_attempt: 6',
+                'task_params:',
+                '  cleanValue: 7',
+                'env_wrapper_cfg:',
+                '  video_frame_selection: transition_and_decision',
+                '',
+            ]), encoding='utf-8')
+
+            manager = self._manager_for_mods(mods_path)
+            manager.reset(task_name='CleanPrefabTask', group_seed=12, env_id=0)
+
+            effective_yaml = yaml.safe_load((mods_path / 'config.yaml').read_text(encoding='utf-8'))
+            effective = json.loads((mods_path / 'config.json').read_text(encoding='utf-8'))
+            self.assertEqual(effective_yaml, effective)
+            self.assertEqual((mods_path / 'config.yaml.bak').read_text(encoding='utf-8'), root_yaml)
+            self.assertFalse(effective['override_by_task'])
+            self.assertEqual(effective['load_mod_mode'], 'none')
+            self.assertEqual(effective['task_name'], 'CleanPrefabTask')
+            self.assertEqual(effective['obs_mode'], 'decision')
+            self.assertEqual(effective['width'], 768)
+            self.assertEqual(effective['height'], 512)
+            self.assertEqual(effective['engine_para']['time_scale'], 4)
+            self.assertEqual(effective['task_params'], {'cleanValue': 7})
+            self.assertNotIn('staleFromPreviousTask', effective['task_params'])
+
     def test_override_true_still_requires_task_store(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             mods_path = Path(temp_dir)
@@ -225,6 +299,97 @@ class PrefabEnvConfigTest(unittest.TestCase):
 
             self.assertEqual(manager.env_config['max_attempts'], 2)
             self.assertEqual(manager.env_config['max_steps_per_attempt'], 3)
+
+    def test_task_store_switches_tasks_from_unchanged_backup_template(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mods_path = Path(temp_dir)
+            root_yaml = '\n'.join([
+                'override_by_task: true',
+                'load_mod_mode: task_name',
+                'task_name: Baseline',
+                'obs_mode: decision',
+                'capture_interval: 10',
+                'early_request_act: true',
+                'time_between_decisions: 5',
+                'action_mode: func',
+                'done_on_script_error: false',
+                'num_parallel_envs: 1',
+                'width: 320',
+                'height: 240',
+                'engine_para:',
+                '  time_scale: 4',
+                'max_attempts: 1',
+                'max_steps_per_attempt: 1',
+                'task_params: {}',
+                'env_wrapper_cfg:',
+                '  video_frame_selection: decision_only',
+                '  context_manager:',
+                '    messages:',
+                '      enabled: true',
+                '',
+            ])
+            (mods_path / 'config.yaml').write_text(root_yaml, encoding='utf-8')
+            (mods_path / 'config.yaml.bak').write_text(root_yaml, encoding='utf-8')
+            (mods_path / 'config.json').write_text('{}', encoding='utf-8')
+
+            for task_name, config_lines in {
+                'TaskA': [
+                    'task_name: TaskA',
+                    'width: 640',
+                    'height: 480',
+                    'max_attempts: 1',
+                    'max_steps_per_attempt: 2',
+                    'task_params:',
+                    '  onlyA: 1',
+                    'env_wrapper_cfg:',
+                    '  context_manager:',
+                    '    messages:',
+                    '      text_max_chars: 111',
+                ],
+                'TaskB': [
+                    'task_name: TaskB',
+                    'width: 768',
+                    'height: 512',
+                    'max_attempts: 1',
+                    'max_steps_per_attempt: 3',
+                    'task_params:',
+                    '  onlyB: 2',
+                    'env_wrapper_cfg:',
+                    '  video_frame_selection: transition_and_decision',
+                ],
+            }.items():
+                task_root = mods_path / 'all_tasks' / task_name
+                cfg_root = task_root / 'cfg'
+                cfg_root.mkdir(parents=True)
+                (task_root / f'{task_name}.json').write_text('{}', encoding='utf-8')
+                (cfg_root / 'task_config.yaml').write_text(
+                    '\n'.join(config_lines) + '\n',
+                    encoding='utf-8',
+                )
+
+            manager = self._manager_for_mods(mods_path)
+            manager.reset(task_name='TaskA', group_seed=1)
+            first_effective = json.loads((mods_path / 'config.json').read_text(encoding='utf-8'))
+            self.assertEqual(first_effective['task_params'], {'onlyA': 1})
+            self.assertEqual(
+                first_effective['env_wrapper_cfg']['context_manager']['messages']['text_max_chars'],
+                111,
+            )
+
+            manager.reset(task_name='TaskB', group_seed=2)
+            second_effective = json.loads((mods_path / 'config.json').read_text(encoding='utf-8'))
+
+            effective_yaml = yaml.safe_load((mods_path / 'config.yaml').read_text(encoding='utf-8'))
+            self.assertEqual(effective_yaml, second_effective)
+            self.assertEqual((mods_path / 'config.yaml.bak').read_text(encoding='utf-8'), root_yaml)
+            self.assertEqual(second_effective['task_name'], 'TaskB')
+            self.assertEqual(second_effective['width'], 768)
+            self.assertEqual(second_effective['height'], 512)
+            self.assertEqual(second_effective['task_params'], {'onlyB': 2})
+            self.assertNotIn(
+                'text_max_chars',
+                second_effective['env_wrapper_cfg']['context_manager']['messages'],
+            )
 
     def test_task_store_resolves_task_info_public_name_and_legacy_aliases(self):
         with tempfile.TemporaryDirectory() as temp_dir:

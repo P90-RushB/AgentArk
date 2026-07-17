@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import threading
 import time
+import warnings
 from contextlib import nullcontext
 try:
     from PIL import Image  # Pillow for PNG decoding
@@ -265,6 +266,57 @@ class EnvInfoManager(object):
             env_config = self._read_config(self.mod_path, 'config.json') or {}
         return env_config if isinstance(env_config, dict) else {}
 
+    def _read_clean_base_env_config(self, active_env_config=None):
+        """Load the immutable root template used to materialize one task.
+
+        config.yaml is intentionally human-readable effective runtime state.
+        Reusing it as the next task's merge base would carry task-local values
+        forward.  config.yaml.bak is the clean root template; only operator and
+        mode/selection fields are preserved from the active runtime config.
+        """
+        clean = self._read_yaml(self.mod_path, 'config.yaml.bak')
+        if not isinstance(clean, dict):
+            warnings.warn(
+                f"config.yaml.bak is missing or invalid under mod_path={self.mod_path}; "
+                "falling back to the mutable active root config, so cross-task "
+                "config isolation cannot be guaranteed.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            if isinstance(active_env_config, dict):
+                return deepcopy(active_env_config)
+            return self._read_base_env_config()
+
+        active = active_env_config if isinstance(active_env_config, dict) else self._read_base_env_config()
+        # These values describe the current runtime/operator rather than a task.
+        # Keep them when resetting from the shared template so Editor/package
+        # port, graphics, and startup policy are not accidentally replaced.
+        preserve_keys = (
+            'override_by_task',
+            'load_mod_mode',
+            'task_name',
+            'no_graphics',
+            'unity_start_timeout_s',
+            'unity_start_max_attempts',
+            'unity_start_retry_wait_s',
+            'serialize_unity_startup',
+            'base_port',
+            'auto_port_scan',
+            'virtual_display',
+            'virtual_display_force',
+            'virtual_display_num',
+            'virtual_display_max_tries',
+            'virtual_display_width',
+            'virtual_display_height',
+            'virtual_display_color_depth',
+            'virtual_display_startup_wait_s',
+            'virtual_display_render_env',
+        )
+        for key in preserve_keys:
+            if key in active:
+                clean[key] = deepcopy(active[key])
+        return clean
+
     @staticmethod
     def _uses_task_store(env_config):
         if not isinstance(env_config, dict):
@@ -278,15 +330,19 @@ class EnvInfoManager(object):
         selected_task_name = str(task_name or env_config.get('task_name') or 'prefab').strip() or 'prefab'
         self.task_list = []
         self.now_task_info = {'folder_name': selected_task_name, 'json_name': ''}
-        self.env_config = deepcopy(env_config)
+        self.env_config = self._read_clean_base_env_config(env_config)
 
         self.task_cfg_path, self.task_config = self._find_prefab_task_config(selected_task_name)
         if isinstance(self.task_config, dict) and self.task_config:
-            if 'task_params' in self.task_config:
-                self.env_config['task_params'] = deepcopy(self.task_config['task_params'])
-            else:
-                self.env_config.pop('task_params', None)
-            self.env_config = self._merge_python_only_task_config(self.env_config, self.task_config)
+            # Prefab mode still runs the selected task's authored observation,
+            # timing, resolution, action, and error contract.  Start from the
+            # stable root YAML, overlay the local task config, then force only
+            # the prefab-loading fields below.  This avoids inheriting the
+            # previous task's effective top-level values from config.json.
+            self.env_config = self._overlay_env_with_task_config(self.env_config, self.task_config)
+        else:
+            self.env_config.pop('task_params', None)
+        self.env_config = self._merge_python_only_task_config(self.env_config, self.task_config)
 
         env_cfg_overrides = self.cfg.get('env_config_overrides', None) if isinstance(self.cfg, dict) else None
         if isinstance(env_cfg_overrides, dict) and env_cfg_overrides:
@@ -317,6 +373,13 @@ class EnvInfoManager(object):
             self._last_group_seed = int(random.randint(1, 2**31 - 2))
         self.env_config['group_seed'] = int(self._last_group_seed)
         self._last_task_name = selected_task_name
+
+        # Keep a human-readable effective YAML beside the JSON that Unity reads.
+        # The next reset starts from config.yaml.bak, never from this output.
+        if not self._save_yaml(self.env_config, self.mod_path, 'config.yaml'):
+            raise OSError(f"Failed to write effective config.yaml under mod_path={self.mod_path}")
+        if not self._save_config(self.env_config, self.mod_path, 'config.json'):
+            raise OSError(f"Failed to write runtime config.json under mod_path={self.mod_path}")
 
     @staticmethod
     def get_task_list(mod_path):
@@ -471,8 +534,11 @@ class EnvInfoManager(object):
         # written back to config.json for runtime loading.
         selected_task_name = self.now_task_info['folder_name']
 
-        # Read base config (prefer YAML then JSON)
-        self.env_config = self._read_base_env_config()
+        # Read the active config for operator/mode fields, but always materialize
+        # the selected task from the immutable root template.  The effective
+        # config.yaml left by the previous task is output, not the next input.
+        active_env_config = self._read_base_env_config()
+        self.env_config = self._read_clean_base_env_config(active_env_config)
 
         # Read per-task cfg task_config (YAML preferred) so Python-side history config
         # can be picked up even when it only exists in task_config.
@@ -533,12 +599,13 @@ class EnvInfoManager(object):
         self.env_config['group_seed'] = int(self._last_group_seed)
         self._last_task_name = selected_task_name
 
-        # Save back to YAML (authoritative) and JSON (for Unity consumption)
-        # Keep behavior consistent with existing pipeline: only write files when override_by_task
-        # was enabled (task-specific overlay mode).
+        # Write matching human-readable YAML and Unity-consumed JSON.  Both are
+        # effective outputs; config.yaml.bak remains the clean next-run input.
         if self.env_config.get('override_by_task', False):
-            self._save_yaml(self.env_config, self.mod_path, 'config.yaml')
-            self._save_config(self.env_config, self.mod_path, 'config.json')
+            if not self._save_yaml(self.env_config, self.mod_path, 'config.yaml'):
+                raise OSError(f"Failed to write effective config.yaml under mod_path={self.mod_path}")
+            if not self._save_config(self.env_config, self.mod_path, 'config.json'):
+                raise OSError(f"Failed to write runtime config.json under mod_path={self.mod_path}")
 
             # 注：task 专用参数（只在 task_config 中存在，而不在全局 config.yaml 中声明的键）
             # 目前不会写回到 env_config，而是单独通过 raw_bytes 传给 Unity。
