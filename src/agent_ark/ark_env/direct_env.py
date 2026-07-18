@@ -66,6 +66,83 @@ def _patch_unity_environment_partial_init_close() -> None:
 _patch_unity_environment_partial_init_close()
 
 
+_EDITOR_BASE_PORT_ENV = 'AGENTARK_EDITOR_BASE_PORT'
+_PLAYER_BASE_PORT_ENV = 'AGENTARK_PLAYER_BASE_PORT'
+
+
+def _is_unity_editor_env_path(env_path: Any) -> bool:
+    """Return whether an env path represents an Editor connection."""
+    if env_path is None:
+        return True
+    if isinstance(env_path, str):
+        return env_path.strip().lower() in ('', 'none', 'null', '~')
+    return False
+
+
+def _coerce_base_port(value: Any, *, source: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f'{source} must be an integer Unity ML-Agents base port; got {value!r}') from exc
+
+
+def _resolve_configured_unity_base_port(
+    cfg: Optional[Dict[str, Any]],
+    env_cfg: Optional[Dict[str, Any]],
+    *,
+    environ: Optional[Dict[str, str]] = None,
+) -> int:
+    """Resolve the ML-Agents base port for every AgentArk runtime entry point.
+
+    ``cfg`` is the caller-owned Python mapping passed to ArkEnv/ArkSubEnv; it is
+    not the Mods config and AgentArk does not add a default ``cfg['base_port']``.
+    That key only exists when a caller explicitly supplies it (for example via
+    CLI ``--base-port`` or evaluation ``env_cfg.base_port``).
+
+    Explicit caller configuration wins. The two environment variables are
+    optional local-development overrides: Editor connections read
+    AGENTARK_EDITOR_BASE_PORT and packaged Players read
+    AGENTARK_PLAYER_BASE_PORT. When they are unset, the legacy effective Mods
+    config and default-port behavior is preserved, so existing users do not
+    need to change their configuration.
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    env_cfg = env_cfg if isinstance(env_cfg, dict) else {}
+    wrapper_cfg = env_cfg.get('env_wrapper_cfg', {})
+    wrapper_cfg = wrapper_cfg if isinstance(wrapper_cfg, dict) else {}
+    overrides = cfg.get('env_config_overrides', {})
+    overrides = overrides if isinstance(overrides, dict) else {}
+    environ = os.environ if environ is None else environ
+
+    # These are explicit caller overrides, not defaults loaded from Mods.
+    for source, value in (
+        ("cfg['base_port']", cfg.get('base_port')),
+        ("cfg['env_config_overrides']['base_port']", overrides.get('base_port')),
+    ):
+        if value is not None and str(value).strip():
+            return _coerce_base_port(value, source=source)
+
+    # Opt-in worktree isolation only. Do not require these variables from normal
+    # AgentArk users or from existing deployment/evaluation configurations.
+    env_name = (
+        _EDITOR_BASE_PORT_ENV
+        if _is_unity_editor_env_path(cfg.get('env_path'))
+        else _PLAYER_BASE_PORT_ENV
+    )
+    env_value = environ.get(env_name, '')
+    if str(env_value).strip():
+        return _coerce_base_port(env_value, source=env_name)
+
+    for source, value in (
+        ("env_config['base_port']", env_cfg.get('base_port')),
+        ("env_config['env_wrapper_cfg']['base_port']", wrapper_cfg.get('base_port')),
+    ):
+        if value is not None and str(value).strip():
+            return _coerce_base_port(value, source=source)
+
+    return 5005
+
+
 class _SharedXvfbManager:
     """Process-wide Xvfb manager for Linux headless rendering.
 
@@ -1363,11 +1440,7 @@ class EnvWrapper(object):
         env_cfg = self.env_info_mgr.env_config or {}
         wrapper_cfg = env_cfg.get('env_wrapper_cfg', {}) if isinstance(env_cfg, dict) else {}
 
-        base_port = int(
-            self.cfg.get('base_port',
-                         env_cfg.get('base_port',
-                                     wrapper_cfg.get('base_port', 5005)))
-        )
+        base_port = _resolve_configured_unity_base_port(self.cfg, env_cfg)
         worker_index = int(self.cfg.get('worker_index', 0) or 0)
         env_id_offset = int(env_cfg.get('env_id', 0) or 0)
         port_stride = int(
@@ -1409,9 +1482,11 @@ class EnvWrapper(object):
 
         Priority for base port source:
           1) cfg['base_port']
-          2) env_config['base_port']
-          3) env_config['env_wrapper_cfg']['base_port']
-          4) default 5005
+          2) cfg['env_config_overrides']['base_port']
+          3) AGENTARK_EDITOR_BASE_PORT or AGENTARK_PLAYER_BASE_PORT
+          4) env_config['base_port']
+          5) env_config['env_wrapper_cfg']['base_port']
+          6) default 5005
         """
         alloc = self._get_port_alloc_config()
         start_port = alloc['start_port']

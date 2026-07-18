@@ -1146,6 +1146,13 @@ def main(argv=None) -> int:
         default=os.environ.get('AGENTARK_MOD_PATH', None),
         help='Path to the Unity Mods directory. Defaults to AGENTARK_MOD_PATH when set.',
     )
+    parser.add_argument(
+        '--base-port',
+        type=int,
+        default=None,
+        help='Optional explicit Unity ML-Agents base port for local/multi-worktree development. '
+             'Otherwise uses AGENTARK_PLAYER_BASE_PORT when set, then the existing Mods config.',
+    )
     parser.add_argument('--task-type', default='RLTask', help='Task type passed to EnvInfoManager')
     parser.add_argument('--task-name', default='MarbleStop', help='Task folder name or task identifier')
     parser.add_argument('--group-seed', type=int, default=123, help='Group seed used during reset')
@@ -1182,6 +1189,8 @@ def main(argv=None) -> int:
         },
         'max_attempts': args.max_attempts,
     }
+    if args.base_port is not None:
+        cfg['base_port'] = int(args.base_port)
 
     env = ArkEnv(cfg)
     try:

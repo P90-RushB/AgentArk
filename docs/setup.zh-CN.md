@@ -111,6 +111,27 @@ AGENTARK_RUNTIME_POOL_ROOT=C:\path\to\agentark-runtime-pool
 MLAGENTS_PYTHON_BIN=C:\path\to\AgentArk\.venv\Scripts\python.exe
 ```
 
+下面两个变量是可选项，只用于同时开发多个 Unity 工程或 Git worktree。
+普通 AgentArk 用户无需添加；两者都未设置时，端口解析与修改前保持一致，
+继续使用有效的 Mods 配置和原有默认值：
+
+```dotenv
+AGENTARK_EDITOR_BASE_PORT=5004
+AGENTARK_PLAYER_BASE_PORT=5005
+```
+
+当 `env_path` 为 `None`、Python 连接 Unity Editor 时，统一使用
+`AGENTARK_EDITOR_BASE_PORT`；启动打包程序时统一使用
+`AGENTARK_PLAYER_BASE_PORT`。显式的 `env_cfg.base_port` 或命令行
+`--base-port` 仍然具有更高优先级。因此，每个 worktree 只需维护自己的
+`.env`，一般的评测和回放 YAML 不再需要重复填写 Player 端口。
+
+这里的 `env_cfg.base_port` 是 Python 调用方或评测 YAML 显式传入的顶层值，
+不是 Mods `config.yaml` 中的 `base_port`。AgentArk 自带的运行时和评测配置
+默认不会设置顶层 `env_cfg.base_port`；worktree 的可选环境变量优先于从 Mods
+读取的端口。标准多 worktree 流程应保持 `env_cfg.base_port` 和 `--base-port`
+未设置，让各自 `.env` 决定端口；只有确实要覆盖某一次运行时才显式填写。
+
 Python 包会从当前目录或其父目录中自动加载最近的 `.env`。显式设置的 shell/CI
 环境变量优先级更高。设置 `AGENTARK_AUTO_LOAD_DOTENV=0` 可关闭自动加载。
 

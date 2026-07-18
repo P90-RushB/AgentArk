@@ -114,6 +114,30 @@ AGENTARK_RUNTIME_POOL_ROOT=C:\path\to\agentark-runtime-pool
 MLAGENTS_PYTHON_BIN=C:\path\to\AgentArk\.venv\Scripts\python.exe
 ```
 
+The following variables are optional and intended for local development with
+multiple Unity projects or Git worktrees. Existing AgentArk users do not need to
+add them; when both are absent, port resolution behaves as before and falls back
+to the effective Mods config and the existing default:
+
+```dotenv
+AGENTARK_EDITOR_BASE_PORT=5004
+AGENTARK_PLAYER_BASE_PORT=5005
+```
+
+`AGENTARK_EDITOR_BASE_PORT` is used whenever `env_path` is `None` and Python
+connects to a Unity Editor. `AGENTARK_PLAYER_BASE_PORT` is used for packaged
+runtime builds. An explicit `env_cfg.base_port` or CLI `--base-port` still wins,
+so one checkout-local `.env` can isolate all normal evaluation and replay entry
+points without repeating the Player port in every YAML file.
+
+Here `env_cfg.base_port` means a top-level value explicitly supplied by the
+Python caller or evaluation YAML. AgentArk's default runtime/evaluation configs
+do not set it. It is different from `base_port` loaded from the Mods
+`config.yaml`; the optional checkout-local environment variable takes precedence
+over that Mods value. For the standard multi-worktree setup, leave
+`env_cfg.base_port` and `--base-port` unset so each worktree's `.env` selects the
+port. Use an explicit value only for an intentional one-run override.
+
 The Python package auto-loads the nearest `.env` from the current directory or
 one of its parents. Explicit shell or CI environment variables take precedence.
 Set `AGENTARK_AUTO_LOAD_DOTENV=0` to disable auto-loading.
