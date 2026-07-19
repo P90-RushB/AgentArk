@@ -81,7 +81,7 @@ hf download P90-RushB/AgentArk artifacts/envs/1.0.1/windows/AgentArk-env-1.0.1-w
 Extract the zip. On Linux, make the Unity executable runnable if needed:
 
 ```bash
-chmod -R 755 /path/to/AgentArk-env-1.0.1-linux
+chmod +x /path/to/AgentArk-env-1.0.1-linux/AgentArk.x86_64
 ```
 
 ## Configure Local Runtime Paths

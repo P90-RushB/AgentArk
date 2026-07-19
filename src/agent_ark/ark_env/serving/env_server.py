@@ -2,19 +2,92 @@ from __future__ import annotations
 
 import argparse
 import logging
-from typing import Any, Dict, Optional
+from contextlib import asynccontextmanager
+from typing import Any, Callable, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from agent_ark.ark_env.op_timeout import OperationTimeout
+from agent_ark.ark_env.serving.lease_protocol import LeaseProtocolError
 from agent_ark.ark_env.serving.session_manager import EnvSessionManager
 
 
-
-app = FastAPI(title="AgentArk Env Server", version="0.1.0")
 manager = EnvSessionManager()
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    manager.start_reaper()
+    try:
+        yield
+    finally:
+        manager.shutdown()
+
+
+app = FastAPI(title="AgentArk Env Server", version="0.2.0", lifespan=_lifespan)
+
+
+@app.exception_handler(LeaseProtocolError)
+async def _lease_protocol_error_handler(
+    _request: Request,
+    exc: LeaseProtocolError,
+) -> JSONResponse:
+    headers = {"Retry-After": "1"} if exc.retryable else None
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.as_detail()},
+        headers=headers,
+    )
+
+
+def _v2_error_detail(code: str, message: str, *, retryable: bool) -> Dict[str, Any]:
+    return {
+        "code": code,
+        "message": message,
+        "retryable": retryable,
+    }
+
+
+def _invoke_v2(operation: str, call: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
+    try:
+        return call()
+    except LeaseProtocolError:
+        # Handled centrally so v1 fencing errors and v2 errors have one stable
+        # wire representation.
+        raise
+    except OperationTimeout as exc:
+        logger.exception("%s timed out", operation)
+        raise HTTPException(
+            status_code=503,
+            detail=_v2_error_detail(
+                "operation_timeout",
+                f"{type(exc).__name__}: {exc}",
+                retryable=True,
+            ),
+            headers={"Retry-After": "1"},
+        ) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=_v2_error_detail(
+                "invalid_request",
+                str(exc),
+                retryable=False,
+            ),
+        ) from exc
+    except Exception as exc:
+        logger.exception("%s failed", operation)
+        raise HTTPException(
+            status_code=500,
+            detail=_v2_error_detail(
+                "env_operation_failed",
+                f"{type(exc).__name__}: {exc}",
+                retryable=False,
+            ),
+        ) from exc
 
 
 class CreateEnvRequest(BaseModel):
@@ -54,15 +127,60 @@ class StartEnvRequest(BaseModel):
     uid: Optional[str] = None
 
 
+class AcquireStartEnvV2Request(AcquireStartEnvRequest):
+    acquire_request_id: str
+    client_id: Optional[str] = None
+
+
+class LeaseRequestV2(BaseModel):
+    server_epoch: str
+    lease_id: str
+    lease_generation: int
+
+
+class StepEnvV2Request(LeaseRequestV2):
+    action_id: str
+    turn_index: int
+    action: Optional[str] = None
+    assistant: Optional[str] = None
+
+
+class ReleaseEnvV2Request(LeaseRequestV2):
+    release_request_id: str
+
+
+class HeartbeatEnvV2Request(LeaseRequestV2):
+    heartbeat_id: str
+
+
+class HeartbeatManyItemV2(HeartbeatEnvV2Request):
+    env_id: str
+
+
+class HeartbeatManyV2Request(BaseModel):
+    leases: List[HeartbeatManyItemV2]
+
+
 @app.get("/health")
 def health() -> Dict[str, Any]:
-    return {"ok": True, "env_count": len(manager.list_envs())}
+    return {
+        "ok": True,
+        "env_count": len(manager.list_envs()),
+        **manager.protocol_status(),
+    }
+
+
+@app.get("/v2/capabilities")
+def capabilities_v2() -> Dict[str, Any]:
+    return manager.protocol_status()
 
 
 @app.post("/v1/envs")
 def create_env(req: CreateEnvRequest) -> Dict[str, Any]:
     try:
         return manager.create_env(cfg=req.cfg, env_id=req.env_id)
+    except LeaseProtocolError:
+        raise
     except OperationTimeout as e:
         raise HTTPException(status_code=503, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -74,6 +192,8 @@ def create_env(req: CreateEnvRequest) -> Dict[str, Any]:
 def validate_env(req: ValidateEnvRequest) -> Dict[str, Any]:
     try:
         return manager.validate_env_cfg(req.cfg)
+    except LeaseProtocolError:
+        raise
     except OperationTimeout as e:
         raise HTTPException(status_code=503, detail=f"{type(e).__name__}: {e}")
     except Exception as e:
@@ -106,6 +226,8 @@ def start_env(env_id: str, req: StartEnvRequest) -> Dict[str, Any]:
             start_attempt_index=req.start_attempt_index,
             uid=req.uid,
         )
+    except LeaseProtocolError:
+        raise
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except OperationTimeout as e:
@@ -119,6 +241,8 @@ def start_env(env_id: str, req: StartEnvRequest) -> Dict[str, Any]:
 def step_env(env_id: str, req: StepEnvRequest) -> Dict[str, Any]:
     try:
         return manager.step_env(env_id=env_id, action=req.action, assistant=req.assistant)
+    except LeaseProtocolError:
+        raise
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except OperationTimeout as e:
@@ -142,6 +266,8 @@ def acquire_start_env(req: AcquireStartEnvRequest) -> Dict[str, Any]:
             start_attempt_index=req.start_attempt_index,
             uid=req.uid,
         )
+    except LeaseProtocolError:
+        raise
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except OperationTimeout as e:
@@ -158,6 +284,82 @@ def release_env(env_id: str) -> Dict[str, Any]:
     if not ok:
         raise HTTPException(status_code=404, detail=f"Unknown env_id: {env_id}")
     return {"ok": True}
+
+
+@app.post("/v2/envs/acquire_start")
+def acquire_start_env_v2(req: AcquireStartEnvV2Request) -> Dict[str, Any]:
+    return _invoke_v2(
+        "acquire_start_env_v2",
+        lambda: manager.acquire_start_env_v2(
+            cfg=req.cfg,
+            acquire_request_id=req.acquire_request_id,
+            client_id=req.client_id,
+            env_id=req.env_id,
+            task_name=req.task_name,
+            group_seed=req.group_seed,
+            unity_env_id=req.unity_env_id,
+            history_snapshot=req.history_snapshot,
+            start_attempt_index=req.start_attempt_index,
+            uid=req.uid,
+        ),
+    )
+
+
+@app.post("/v2/envs/{env_id}/step")
+def step_env_v2(env_id: str, req: StepEnvV2Request) -> Dict[str, Any]:
+    return _invoke_v2(
+        "step_env_v2",
+        lambda: manager.step_env_v2(
+            env_id,
+            server_epoch=req.server_epoch,
+            lease_id=req.lease_id,
+            lease_generation=req.lease_generation,
+            action_id=req.action_id,
+            turn_index=req.turn_index,
+            action=req.action,
+            assistant=req.assistant,
+        ),
+    )
+
+
+@app.post("/v2/envs/{env_id}/heartbeat")
+def heartbeat_env_v2(env_id: str, req: HeartbeatEnvV2Request) -> Dict[str, Any]:
+    return _invoke_v2(
+        "heartbeat_env_v2",
+        lambda: manager.heartbeat_env_v2(
+            env_id,
+            server_epoch=req.server_epoch,
+            lease_id=req.lease_id,
+            lease_generation=req.lease_generation,
+            heartbeat_id=req.heartbeat_id,
+        ),
+    )
+
+
+@app.post("/v2/leases/heartbeat")
+def heartbeat_many_v2(req: HeartbeatManyV2Request) -> Dict[str, Any]:
+    leases = [
+        item.model_dump() if hasattr(item, "model_dump") else item.dict()
+        for item in req.leases
+    ]
+    return _invoke_v2(
+        "heartbeat_many_v2",
+        lambda: manager.heartbeat_many_v2(leases),
+    )
+
+
+@app.post("/v2/envs/{env_id}/release")
+def release_env_v2(env_id: str, req: ReleaseEnvV2Request) -> Dict[str, Any]:
+    return _invoke_v2(
+        "release_env_v2",
+        lambda: manager.release_env_v2(
+            env_id,
+            server_epoch=req.server_epoch,
+            lease_id=req.lease_id,
+            lease_generation=req.lease_generation,
+            release_request_id=req.release_request_id,
+        ),
+    )
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:

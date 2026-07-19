@@ -1,5 +1,5 @@
 # Unified runtime config for AgentArk env server clients.
-# This file is shared by warmup / interaction demo / no-verl debug scripts.
+# Shared by warmup, evaluation/interaction tools, and RL integrations.
 
 server:
   host: http://127.0.0.1
@@ -24,7 +24,8 @@ interaction:
 
 warmup:
   # How many envs to pre-create and keep alive in the server.
-  # Default training uses TRAIN_BATCH_SIZE=2 and ROLLOUT_N=8, so it leases 16 envs concurrently.
+  # This example keeps 16 runtimes warm. Set this and runtime_sandbox.pool_size
+  # to at least the trainer's peak generation-batch concurrency.
   num_envs: 16
 
   # Optionally do one no-op step after start.
@@ -62,7 +63,8 @@ env_cfg:
     template_mod_path: "${AGENTARK_MOD_PATH}"
     shared_task_store_path: "${AGENTARK_TASK_STORE_PATH}"
     pool_root: "${AGENTARK_RUNTIME_POOL_ROOT}"
-    pool_size: 10
+    # Keep this at least warmup.num_envs and the trainer's generation batch.
+    pool_size: 16
     auto_prepare: true
     link_mode: symlink
   env_config_overrides:

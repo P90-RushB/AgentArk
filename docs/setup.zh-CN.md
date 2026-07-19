@@ -78,7 +78,7 @@ hf download P90-RushB/AgentArk artifacts/envs/1.0.1/windows/AgentArk-env-1.0.1-w
 解压 zip。Linux 下如有需要，请为 Unity 可执行文件添加执行权限：
 
 ```bash
-chmod -R 755 /path/to/AgentArk-env-1.0.1-linux
+chmod +x /path/to/AgentArk-env-1.0.1-linux/AgentArk.x86_64
 ```
 
 ## 配置本地运行时路径

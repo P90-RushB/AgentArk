@@ -1,181 +1,184 @@
-# RL Training
+# RL Training: Architecture and Semantics
 
 English | [简体中文](rl-training.zh-CN.md)
 
-AgentArk provides the Unity environment server. The current GRPO training
-integration lives in the public verl fork:
+AgentArk exposes its Unity runtime pool as an HTTP environment service. Two
+GRPO paths are maintained; use their runbooks for executable instructions:
 
-`https://github.com/P90-RushB/verl/tree/agentark_rl/agentark_recipe/agentark_env_agent`
+- [ms-swift runbook (Chinese)](../integrations/ms_swift/README.md): the adapter
+  lives in this repository, currently targets the validated ms-swift 4.4.1
+  stack, and defaults to AgentArk HTTP protocol v2.
+- [VERL integration guide](../integrations/verl/README.md): the AgentArk bridge
+  lives here, while the trainer adapter lives in the public `agentark_rl` fork
+  and currently uses protocol v1.
 
-The design deliberately separates Python environments:
+See the [RL integrations index](../integrations/README.md) for navigation. This
+document explains shared architecture, synchronization, grouping, task
+selection, and failure semantics without duplicating either runbook.
 
-- AgentArk env server: Python 3.10.12, this repository.
-- verl training process: the Python version and dependency stack required by
-  verl.
-
-The trainer does not need to import the `agent_ark` package. It talks to the env
-server over HTTP.
-
-## 1. Prepare AgentArk
-
-Follow [docs/setup.md](setup.md), including runtime download, `.env`, and Xvfb
-on headless Linux.
-
-For training, keep runtime sandboxing enabled. The example config is:
-
-`config/ark_env/agentark_runtime_config.example.yaml`
-
-Size the warmup pool for the maximum number of concurrent rollout environments.
-For example, if `TRAIN_BATCH_SIZE=2` and `ROLLOUT_N=8`, warm up at least 16
-envs.
-
-## 2. Start The Env Server
-
-From this repository:
-
-```bash
-bash scripts/run_env_server_mlagents.sh
-```
-
-The script loads `.env`, sets `PYTHONPATH=src`, and starts:
-
-```bash
-python -m agent_ark.ark_env.serving.run_server --host 127.0.0.1 --port 18080
-```
-
-Warm up envs:
-
-```bash
-python -m agent_ark.ark_env.serving.warmup_envs \
-  --config config/ark_env/agentark_runtime_config.example.yaml \
-  --output tmp/warmup_snapshot.json
-```
-
-Check health:
-
-```bash
-curl http://127.0.0.1:18080/health
-curl http://127.0.0.1:18080/v1/envs
-```
-
-## 3. Install The verl Integration
-
-Clone the public verl fork and switch to the AgentArk branch:
-
-```bash
-git clone https://github.com/P90-RushB/verl.git
-cd verl
-git switch agentark_rl
-```
-
-The AgentArk integration is under:
+## 1. Shared architecture
 
 ```text
-agentark_recipe/agentark_env_agent/
+┌────────────── trainer Python environment ─────────────┐
+│  dataset → rollout/model server → framework adapter  │
+└───────────────────────┬───────────────────────────────┘
+                        │ HTTP v1 or v2
+┌───────────────────────▼───────────────────────────────┐
+│ AgentArk Env Server (one service per host/port)       │
+│ task/seed selector · session/lease · runtime pool     │
+└───────────────────────┬───────────────────────────────┘
+                        │
+             multiple runtime sandboxes / Unity children
 ```
 
-Use that directory's README as the source of truth for verl-side environment
-setup, configs, dataset generation, and training launch details. The older
-`recipe/agentark_env_agent` path is not used in this fork.
+The AgentArk wrapper and Env Server use Python 3.10.12. ms-swift or VERL uses
+its own Python environment and talks over HTTP without importing `agent_ark`.
 
-## 4. Generate Dataset Rows
+“One Env Server process” means that one address must not have multiple server
+workers with independent in-memory state. It does not limit Unity concurrency.
+One `EnvSessionManager` allocates distinct worker indices and the existing
+runtime sandbox mechanism isolates multiple Unity processes.
 
-Run this in the verl environment:
+Protocol v1 and v2 use isolated namespaces. Within a namespace, a runtime can
+only be reused for an equivalent semantic `env_cfg`, so warmup must use the
+configuration that the selected adapter will actually send.
 
-```bash
-DATA_DIR=/path/to/agentark_data
+## 2. What asynchronous environment interaction means
 
-python agentark_recipe/agentark_env_agent/generate_agentark_dataset.py \
-  --local-save-dir "${DATA_DIR}" \
-  --num-train 1000 \
-  --num-test 200 \
-  --seed 1234
+Both integrations concurrently await resets and steps for multiple trajectories
+inside one rollout/generation batch. A slow Unity task does not prevent Python
+from initiating other environment requests. The ms-swift `AgentArkScheduler`
+uses coroutines; the VERL agent loop also schedules trajectories asynchronously
+inside its batch workers.
+
+This is not a continuous pipeline across optimizer updates:
+
+```text
+collect every trajectory in batch N
+                 ↓ barrier
+update the policy with batch N
+                 ↓
+collect batch N+1
 ```
 
-By default, dataset rows leave `task_name=None`. The env server then maps the
-GRPO group id (`uid`) deterministically to a task and seed. All samples in the
-same GRPO group use the same task and seed, while different groups spread across
-the configured task list.
+For the current ms-swift path, “async” therefore means within-batch environment
+I/O concurrency. Rollout batches and optimizer updates still alternate
+synchronously; the ms-swift 4.4.1 multi-turn Gym scheduler does not use an
+`async_generate` cross-batch pipeline.
 
-To pin one task:
+## 3. GRPO groups, tasks, and seeds
 
-```bash
-python agentark_recipe/agentark_env_agent/generate_agentark_dataset.py \
-  --local-save-dir "${DATA_DIR}" \
-  --task-name Snake \
-  --num-train 1000 \
-  --num-test 200
+GRPO samples sibling trajectories for one prompt and computes relative
+advantages from their rewards. AgentArk must reset siblings to the same task
+and seed while leasing a different Unity runtime for each trajectory.
+
+### ms-swift
+
+- A static dataset ticket stores `group_uid`, and Swift repeats the row
+  `G=num_generations` times.
+- Siblings share `group_uid`, while Swift gives each real trajectory a distinct
+  request UUID. The former selects the same task/seed; the latter identifies an
+  independent lease and action stream.
+- When the same ticket appears in another epoch, its `group_uid` remains stable,
+  so the current selector maps it to the same task/seed. Generating enough
+  tickets for the intended run avoids repeated rows; future curriculum policy
+  can still deliberately change this behavior.
+
+### VERL
+
+- The trainer creates a `uid` each time a prompt group is consumed and copies
+  it to that occurrence's n siblings.
+- The current server-managed dataset also stores an explicit `group_seed`.
+  Thus the uid selects the task and the row selects the seed; they are not both
+  derived solely from uid.
+- Consuming the row in another epoch creates a new uid, so its task may change
+  while its row seed remains stable.
+
+With a pinned `task_name`, both adapters forward the requested task. Keeping
+task/curriculum selection on the AgentArk side lets that policy evolve without
+embedding it in framework-specific trainer code.
+
+## 4. Policy-loss scope
+
+The ms-swift adapter exposes two choices:
+
+- `all_turns` (default): every assistant turn contributes to policy loss;
+  environment-observation tokens do not.
+- `last_round`: intermediate assistant turns are masked and only the last
+  assistant turn is retained.
+
+See the [ms-swift runbook](../integrations/ms_swift/README.md) and
+[architecture note (Chinese)](../integrations/ms_swift/ARCHITECTURE.zh-CN.md)
+for the exact settings and driver masks. The current VERL recipe uses its own
+agent-loop response masks for assistant output and masks environment
+observations; it does not consume the Swift-specific loss-scope switch.
+
+## 5. Integration comparison
+
+| Dimension | ms-swift | VERL |
+| --- | --- | --- |
+| Adapter location | `integrations/ms_swift` in this repository | External fork; local bridge/preflight |
+| Environment abstraction | Swift Gym Env + multi-turn scheduler | VERL async agent loop |
+| Current protocol | v2 | v1 |
+| Sibling identity | Static ticket `group_uid` + distinct request UUID | Per-occurrence `uid` |
+| Cross-epoch default | Ticket task/seed stays stable | Task can change with uid; row seed stays stable |
+| Assistant loss | `all_turns` or `last_round` | Current recipe's assistant response mask |
+| Safe retries | Operation IDs and generation fencing | Transport/5xx retry, no end-to-end exactly-once proof |
+| Abandoned leases | Heartbeat + TTL reclamation | Usually restart Server and rebuild v1 pool after a hard kill |
+| Current topology | Validated colocate path | Current single-node FSDP2/vLLM recipe |
+
+Protocol v1/v2 is an AgentArk Server capability, not inherently tied to an RL
+framework. The table describes today's adapters; VERL can migrate to v2 later.
+
+## 6. Mixing non-AgentArk data or environments
+
+ms-swift can register multiple Gym environments, but the current AgentArk
+launcher globally selects:
+
+```text
+--multi_turn_scheduler agentark_scheduler
+--gym_env agentark
 ```
 
-## 5. Launch GRPO
+`AgentArkScheduler` consequently interprets every request in its batch as an
+AgentArk ticket. The current path naturally mixes many AgentArk tasks in one
+AgentArk dataset, but it does not yet provide an in-job dispatcher for ordinary
+single-turn data or another Gym environment.
 
-Example:
+That form of mixed training needs a composite scheduler/dispatcher that routes
+on row-level `env_config.name`, plus explicit reward scaling, group batching,
+and loss-mask rules for every source. Concatenating datasets alone is not
+sufficient. Separate jobs need no such router. The current VERL recipe is also
+an AgentArk-specific dataset/agent-loop path.
 
-```bash
-PYTHON=python \
-MODEL_PATH=/path/to/model \
-DATA_DIR=/path/to/agentark_data \
-NNODES=1 NGPUS_PER_NODE=8 \
-ROLLOUT_TP=8 ROLLOUT_N=16 \
-TRAIN_BATCH_SIZE=1 PPO_MINI_BATCH_SIZE=1 \
-AGENT_NUM_WORKERS=8 \
-TOTAL_EPOCHS=1 \
-TOTAL_TRAINING_STEPS=1000 \
-SAVE_FREQ=250 TEST_FREQ=-1 \
-TRAINER_LOGGER='["console","tensorboard"]' \
-TENSORBOARD_DIR=/path/to/tensorboard/agentark \
-bash agentark_recipe/agentark_env_agent/run_qwen3_5_9b_agentark_env_grpo.sh
-```
+## 7. Capacity and scaling
 
-Common knobs:
+Increasing environment count normally requires no Env Server core-code change:
+increase the final runtime configuration and warmup count for the selected
+namespace. Also account for peak rollout leases, sandbox disk usage, Unity
+CPU/RAM and Xvfb capacity, model context and visual-token memory, and long-tail
+step latency across heterogeneous tasks.
 
-- `TOTAL_TRAINING_STEPS`: set to a positive integer for a fixed run, or `-1`
-  for a full epoch.
-- `ROLLOUT_N`: number of samples per prompt / GRPO group.
-- `AGENT_NUM_WORKERS`: number of concurrent agent-loop workers.
-- `SAVE_FREQ`: checkpoint interval, or `-1` to disable.
-- `TRAINER_LOGGER`: include `tensorboard` to write TensorBoard logs.
+The ms-swift runbook gives its exact generation-batch and ticket-capacity
+formula. The VERL guide gives its peak-lease formula and exact-config warmup.
 
-Avoid running unrelated GPU occupancy scripts during training; they can starve
-Unity reset/step calls and trigger timeouts.
+## 8. Failure and recovery boundary
 
-## Task Selection Semantics
+The Server applies hard timeouts to blocking Unity reset/step/close calls,
+discards broken runtimes, and can recycle long-lived runtimes after a configured
+number of interactions.
 
-Training requests can be pinned or server-managed.
+Protocol v2 additionally has stable operation IDs, lease generations,
+idempotent replay, heartbeats, and TTL. A client can recover a lost response
+without blindly repeating an action, and a late request cannot operate a
+re-leased runtime. A v1 client can retry transport/5xx failures but lacks those
+identities, so a lost step response has no end-to-end exactly-once proof.
 
-Pinned task:
+Normal trainer errors can rely on adapter cleanup. After `SIGKILL`, host failure,
+or OOM, ms-swift/v2 can wait for TTL and inspect active leases. For the current
+VERL/v1 path, restart the Server, warm the exact config again, and resume the
+checkpoint.
 
-- The dataset row sets `extra_info.task_name`.
-- Optional `group_seed` and `unity_env_id` are forwarded to the server.
-- The env resets to exactly that task.
-
-Server-managed task:
-
-- The dataset row leaves `task_name=None`.
-- The trainer forwards `uid`.
-- `EnvSessionManager` maps `uid -> (task_name, group_seed)` through a
-  deterministic `TaskSelector`.
-- All samples sharing one `uid` use the same task and seed.
-
-This keeps task curriculum policy on the AgentArk side, so RL framework code can
-stay stable while task selection evolves.
-
-## Env Resilience
-
-Long training runs repeatedly reset Unity and execute dynamically compiled code.
-The env server includes several guards:
-
-- Hard timeouts for blocking Unity `reset`, `step`, and `close` calls.
-- Broken runtimes are discarded and recreated.
-- HTTP client retries transient failures with backoff.
-- The verl agent loop converts environment failures into valid failed rollouts
-  instead of aborting the whole training step.
-
-Use the soak test to stress the env server:
-
-```bash
-python -m agent_ark.tools.env_soak_test \
-  --workers 6 \
-  --rounds 150 \
-  --fault-mode gentle
-```
+For the full ms-swift data flow, script responsibilities, masks, and v2
+lifecycle, see the
+[ms-swift architecture note (Chinese)](../integrations/ms_swift/ARCHITECTURE.zh-CN.md).

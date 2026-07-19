@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "integration": "agentark-verl",
+  "repository": {
+    "canonical_url": "https://github.com/P90-RushB/verl.git",
+    "canonical_slug": "github.com/p90-rushb/verl",
+    "recommended_branch": "agentark_rl",
+    "minimum_compatible_commit": "8952cfd9ee8738478d6430c714efb3f7cfd3c298",
+    "commit_policy": "ancestor_of_head",
+    "reviewed_at": "2026-07-19"
+  },
+  "recipe_root": "agentark_recipe/agentark_env_agent",
+  "required_paths": [
+    "agentark_recipe/__init__.py",
+    "agentark_recipe/agentark_env_agent/README.md",
+    "agentark_recipe/agentark_env_agent/__init__.py",
+    "agentark_recipe/agentark_env_agent/agentark_dataset.py",
+    "agentark_recipe/agentark_env_agent/agentark_env_agent_loop.py",
+    "agentark_recipe/agentark_env_agent/env_client.py",
+    "agentark_recipe/agentark_env_agent/generate_agentark_dataset.py",
+    "agentark_recipe/agentark_env_agent/run_qwen3_5_9b_agentark_env_grpo.sh",
+    "agentark_recipe/agentark_env_agent/config/agent_loop.yaml",
+    "agentark_recipe/agentark_env_agent/config/agentark_env_grpo.yaml",
+    "agentark_recipe/agentark_env_agent/config/env_cfg.yaml"
+  ],
+  "protocol": {
+    "name": "agentark-http",
+    "version": "v1",
+    "required_literals": [
+      {
+        "path": "agentark_recipe/agentark_env_agent/env_client.py",
+        "literals": [
+          "/v1/envs/acquire_start",
+          "/v1/envs/{env_id}/step",
+          "/v1/envs/{env_id}/release"
+        ]
+      },
+      {
+        "path": "agentark_recipe/agentark_env_agent/agentark_env_agent_loop.py",
+        "literals": [
+          "group_uid = kwargs.get(\"uid\")",
+          "uid=group_uid"
+        ]
+      }
+    ]
+  },
+  "watch_paths": [
+    "verl/experimental/agent_loop/agent_loop.py",
+    "verl/workers/rollout/utils.py",
+    "verl/trainer/ppo/ray_trainer.py",
+    "verl/workers/engine/fsdp/transformer_impl.py",
+    "verl/utils/tensordict_utils.py"
+  ]
+}

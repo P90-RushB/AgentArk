@@ -61,6 +61,8 @@ coverage.xml
 .env.*
 !.env.example
 *.local
+*.local.yaml
+*.local.yml
 
 # IDE / editor files
 .vscode/

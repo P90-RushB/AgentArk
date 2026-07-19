@@ -32,8 +32,8 @@ evaluation, replay, environment serving, and RL training integration.
 - **Multimodal task evaluation.** Models interact with visual and textual state,
   receive score and error feedback, and produce replayable traces for analysis.
 - **Multimodal agent training.** The same runtime and task definitions can be
-  served over HTTP for RL frameworks, including the current verl GRPO
-  integration.
+  served over HTTP for RL frameworks, including ms-swift and verl GRPO
+  integrations.
 - **A broad task surface.** AgentArk is designed for 2D and 3D scenes, physics
   calibration, timing control, path planning, video-level observation,
   mini-games, GUI-like tasks, and future task families that can be expressed as
@@ -66,7 +66,7 @@ and should not be compared as identical runs.
 - System paper: [docs/paper/AgentArk.pdf](docs/paper/AgentArk.pdf)
 - Colab tutorials: [docs/tutorials](docs/tutorials)
 - Model evaluation and replay: [docs/evaluation-guide.md](docs/evaluation-guide.md)
-- RL training with verl: [docs/rl-training.md](docs/rl-training.md)
+- RL training with ms-swift or verl: [docs/rl-training.md](docs/rl-training.md)
 - Runtime sandbox details: [docs/runtime-sandbox-migration.md](docs/runtime-sandbox-migration.md)
 
 ## 1. Setup
@@ -140,39 +140,21 @@ interaction, scoring fields, trajectory save/load, and replay:
 
 ## 3. RL Training
 
-AgentArk provides the env server side. The verl GRPO integration lives in the
-public fork [P90-RushB/verl](https://github.com/P90-RushB/verl), branch
-`agentark_rl`, under
-[`agentark_recipe/agentark_env_agent`](https://github.com/P90-RushB/verl/tree/agentark_rl/agentark_recipe/agentark_env_agent).
+AgentArk serves its Unity runtime pool over HTTP for multi-turn, multimodal RL.
+The runtime wrapper and Env Server use the AgentArk Python 3.10.12 environment,
+while each trainer keeps its own Python environment and dependency stack.
 
-The runtime wrapper and env server run in the AgentArk Python 3.10.12
-environment. The verl trainer can run in its own Python environment because it
-talks to AgentArk over HTTP.
+Two GRPO integrations are available:
 
-Start the env server from the AgentArk checkout:
+- [ms-swift](integrations/ms_swift/README.md), maintained in this repository
+  with a Chinese runbook.
+- [VERL](integrations/verl/README.md), with its trainer-side implementation in
+  the public `agentark_rl` fork.
 
-```bash
-bash scripts/run_env_server_mlagents.sh
-```
-
-Warm up the pool:
-
-```bash
-python -m agent_ark.ark_env.serving.warmup_envs \
-  --config config/ark_env/agentark_runtime_config.example.yaml \
-  --output tmp/warmup_snapshot.json
-```
-
-Check health:
-
-```bash
-curl http://127.0.0.1:18080/health
-curl http://127.0.0.1:18080/v1/envs
-```
-
-Then follow the verl integration guide to generate the dataset and launch GRPO
-training:
-[docs/rl-training.md](docs/rl-training.md).
+Start with the [RL integrations index](integrations/README.md) to choose a
+framework and follow its end-to-end runbook. Shared architecture, grouping and
+task-selection semantics are described in the
+[RL training guide](docs/rl-training.md).
 
 ## Future Development
 
@@ -199,8 +181,8 @@ Near-term development will focus on:
   runtime sandboxing, env server, warmup, and HTTP client utilities.
 - `agent_ark.ark_eval`: API model evaluation, parallel evaluation, replay, and
   trajectory save/load.
-- `agent_ark.ark_rl`: reserved namespace for future in-package RL adapters; the
-  current RL training implementation is in the verl fork.
+- `integrations`: framework-specific RL adapters and runbooks; the VERL
+  trainer-side recipe remains in its public fork.
 - `agent_ark.interaction`: local browser viewer and human-interaction hooks.
 
 ## Licensing
