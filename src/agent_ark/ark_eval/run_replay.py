@@ -327,6 +327,7 @@ def run_replay(
     *,
     config_path: Optional[str] = None,
     env_factory: Optional[EnvFactory] = None,
+    hook_manager: Any = None,
 ) -> List[Dict[str, Any]]:
     env_cfg = dict(cfg.get('env_cfg', {}) or {})
     replay_cfg = dict(cfg.get('replay', cfg.get('eval', {})) or {})
@@ -348,7 +349,8 @@ def run_replay(
     env_cfg = resolve_runtime_sandbox_cfg(env_cfg)
     factory = env_factory or ArkEnv
 
-    hook_manager, _ = build_eval_hook_manager(hooks_cfg)
+    if hook_manager is None:
+        hook_manager, _ = build_eval_hook_manager(hooks_cfg)
     writer = None
     output_path = replay_cfg.get('output_path', None)
     if output_path:

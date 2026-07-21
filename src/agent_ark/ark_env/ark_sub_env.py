@@ -113,6 +113,11 @@ class ArkSubEnv(object):
 
         last_error = None
         no_graphics = self._get_no_graphics()
+        additional_args = self.cfg.get('additional_args', None)
+        if additional_args is not None:
+            if not isinstance(additional_args, (list, tuple)):
+                raise ValueError('env_cfg.additional_args must be a list of Unity Player command-line arguments')
+            additional_args = [str(value) for value in additional_args]
         start_cfg = self._get_unity_start_config()
         serialize_startup = self._get_unity_start_serialize(alloc)
         startup_failures = 0
@@ -134,6 +139,7 @@ class ArkSubEnv(object):
                         timeout_wait=start_cfg['timeout_wait_s'],
                         base_port=candidate_port,
                         no_graphics=no_graphics,
+                        additional_args=additional_args,
                     )
                     self._unity_base_port = candidate_port
                     print(
