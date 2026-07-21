@@ -15,6 +15,7 @@ from agent_ark.ark_eval.run_replay import (  # noqa: E402
     run_replay,
     select_replay_records,
 )
+from agent_ark.interaction.hooks import HookManager  # noqa: E402
 
 
 def _sample_record():
@@ -131,7 +132,48 @@ class FakeReplayEnv:
         return
 
 
+class RecordingHook:
+    def __init__(self):
+        self.events = []
+        self.started = False
+        self.closed = False
+
+    def start(self):
+        self.started = True
+
+    def handle_event(self, event):
+        self.events.append(event)
+
+    def close(self):
+        self.closed = True
+
+
 class ReplayEvalTest(unittest.TestCase):
+    def test_run_replay_uses_injected_hook_manager(self):
+        hook = RecordingHook()
+        manager = HookManager([hook], strict=True)
+        with TemporaryDirectory() as tmpdir:
+            records_path = Path(tmpdir) / 'records.jsonl'
+            records_path.write_text(json.dumps(_sample_record()) + '\n', encoding='utf-8')
+
+            run_replay(
+                {
+                    'env_cfg': {},
+                    'replay': {'records_path': str(records_path), 'record_index': 0, 'step_delay_s': 0},
+                    'hooks': {},
+                },
+                env_factory=FakeReplayEnv,
+                hook_manager=manager,
+            )
+
+        self.assertTrue(hook.started)
+        self.assertTrue(hook.closed)
+        event_names = [event['event'] for event in hook.events]
+        self.assertIn('run_start', event_names)
+        self.assertIn('replay_record_start', event_names)
+        self.assertIn('replay_record_end', event_names)
+        self.assertIn('run_end', event_names)
+
     def test_extract_replay_action_prefers_saved_action(self):
         record = _sample_record()
         action = extract_replay_action(record['steps'][0], 0)
