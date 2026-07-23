@@ -52,6 +52,7 @@ class ArkSubEnv(object):
     _decode_image_payload_to_pil = staticmethod(EnvWrapper._decode_image_payload_to_pil)
     _merge_video_pil_frames = staticmethod(EnvWrapper._merge_video_pil_frames)
     _attach_image_payloads_to_obs = EnvWrapper._attach_image_payloads_to_obs
+    _get_agent_visual_observations = EnvWrapper._get_agent_visual_observations
     _clear_image_channels = EnvWrapper._clear_image_channels
     _clear_code_channel_step_msgs = EnvWrapper._clear_code_channel_step_msgs
     _initial_observation_frame_counts = staticmethod(EnvWrapper._initial_observation_frame_counts)
@@ -276,11 +277,10 @@ class ArkSubEnv(object):
         self.episode_agent_id_to_index = deepcopy(decision_steps.agent_id_to_index)
         self.agent_done_dict = {k: False for k in self.episode_agent_id_to_index}
 
-        env_obs = decision_steps.obs
         obs = {}
         for ml_id, unity_id in self.ml_unity_id_map.items():
             obs[ml_id] = unity_id_obs[unity_id]
-            obs[ml_id]['vis'] = [env_obs[0][decision_steps.agent_id_to_index[ml_id]]]
+            obs[ml_id]['vis'] = self._get_agent_visual_observations(decision_steps, ml_id)
 
         obs, info = self._apply_initial_observation_warmup(obs, info, current_init_prompt)
 
@@ -354,7 +354,7 @@ class ArkSubEnv(object):
             done[ml_id] = True
             self.agent_done_dict[ml_id] = True
             reward[ml_id] = terminal_steps.reward[terminal_steps.agent_id_to_index[ml_id]]
-            next_obs[ml_id]['vis'] = [terminal_steps.obs[0][terminal_steps.agent_id_to_index[ml_id]]]
+            next_obs[ml_id]['vis'] = self._get_agent_visual_observations(terminal_steps, ml_id)
 
             index = terminal_steps.agent_id_to_index[ml_id]
             if terminal_steps.interrupted[index]:
@@ -367,7 +367,7 @@ class ArkSubEnv(object):
             done[ml_id] = False
             assert not self.agent_done_dict[ml_id]
             reward[ml_id] = decision_steps.reward[decision_steps.agent_id_to_index[ml_id]]
-            next_obs[ml_id]['vis'] = [decision_steps.obs[0][decision_steps.agent_id_to_index[ml_id]]]
+            next_obs[ml_id]['vis'] = self._get_agent_visual_observations(decision_steps, ml_id)
 
         step_msgs = {}
         for ml_id in next_obs.keys():

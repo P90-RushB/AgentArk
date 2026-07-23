@@ -1719,8 +1719,6 @@ class EnvWrapper(object):
         self.episode_agent_id_to_index = deepcopy(decision_steps.agent_id_to_index)
         self.agent_done_dict = {k: False for k in self.episode_agent_id_to_index}
 
-        env_obs = decision_steps.obs
-
         # for idx in self.agent_index_list:
         #     obs[idx]['env_msg'] = ''
         #     obs[idx]['vis'] = [env_obs[0][i]]
@@ -1728,7 +1726,7 @@ class EnvWrapper(object):
         obs = {}
         for ml_id, unity_id in self.ml_unity_id_map.items():
             obs[ml_id] = unity_id_obs[unity_id]
-            obs[ml_id]['vis'] = [env_obs[0][decision_steps.agent_id_to_index[ml_id]]]
+            obs[ml_id]['vis'] = self._get_agent_visual_observations(decision_steps, ml_id)
 
         obs, info = self._apply_initial_observation_warmup(obs, info, current_init_prompt)
 
@@ -1995,13 +1993,42 @@ class EnvWrapper(object):
     def _build_obs_from_decision_steps(self, decision_steps, current_init_prompt: Dict[int, dict]):
         unity_id_obs = self.get_empty_obs(current_init_prompt)
         obs = {}
-        env_obs = decision_steps.obs
         for ml_id, unity_id in self.ml_unity_id_map.items():
             if ml_id not in decision_steps.agent_id_to_index:
                 continue
             obs[ml_id] = unity_id_obs[unity_id]
-            obs[ml_id]['vis'] = [env_obs[0][decision_steps.agent_id_to_index[ml_id]]]
+            obs[ml_id]['vis'] = self._get_agent_visual_observations(decision_steps, ml_id)
         return obs
+
+    def _get_agent_visual_observations(self, steps, ml_id) -> list:
+        """Return all rank-3 ML-Agents observations for one agent.
+
+        AgentArk exposes ``obs['vis']`` as a camera list.  The ML-Agents
+        observation array also contains the vector observation used to map its
+        agent id back to the Unity env id, so selecting observations by position
+        (for example ``obs[0]`` or ``obs[:-1]``) is not a safe camera contract.
+        ``BehaviorSpec.observation_specs`` is ordered exactly like ``steps.obs``;
+        visual observations are the entries whose shape has rank three.
+        """
+        observation_specs = getattr(getattr(self, 'env_spec', None), 'observation_specs', None)
+        step_observations = getattr(steps, 'obs', None)
+        if observation_specs is None or step_observations is None:
+            raise RuntimeError('ML-Agents behavior/step data is missing observation metadata.')
+        if len(observation_specs) != len(step_observations):
+            raise RuntimeError(
+                'ML-Agents observation metadata does not match the returned observations: '
+                f'specs={len(observation_specs)}, observations={len(step_observations)}.'
+            )
+
+        agent_index = steps.agent_id_to_index[ml_id]
+        visual_observations = [
+            step_observations[obs_index][agent_index]
+            for obs_index, obs_spec in enumerate(observation_specs)
+            if len(getattr(obs_spec, 'shape', ()) or ()) == 3
+        ]
+        if not visual_observations:
+            raise RuntimeError('AgentArk requires at least one rank-3 visual observation.')
+        return visual_observations
 
     def _apply_initial_observation_warmup(self, obs: Dict[int, dict], info: Dict[str, Any], current_init_prompt: Dict[int, dict]):
         env_cfg = self.env_info_mgr.env_config or {}
@@ -2173,7 +2200,7 @@ class EnvWrapper(object):
             done[ml_id] = True
             self.agent_done_dict[ml_id] = True
             reward[ml_id] = terminal_steps.reward[terminal_steps.agent_id_to_index[ml_id]]
-            next_obs[ml_id]['vis'] = [terminal_steps.obs[0][terminal_steps.agent_id_to_index[ml_id]]]
+            next_obs[ml_id]['vis'] = self._get_agent_visual_observations(terminal_steps, ml_id)
 
             index = terminal_steps.agent_id_to_index[ml_id]
             if terminal_steps.interrupted[index]:
@@ -2187,7 +2214,7 @@ class EnvWrapper(object):
             done[ml_id] = False
             assert not self.agent_done_dict[ml_id]
             reward[ml_id] = decision_steps.reward[decision_steps.agent_id_to_index[ml_id]]
-            next_obs[ml_id]['vis'] = [decision_steps.obs[0][decision_steps.agent_id_to_index[ml_id]]]
+            next_obs[ml_id]['vis'] = self._get_agent_visual_observations(decision_steps, ml_id)
 
         # step_msgs = self.script_channel.get_step_msgs()
         # step_msgs= {i: self.code_act_channels[self.ml_unity_id_map[i]].get_step_msgs() for i in next_obs}

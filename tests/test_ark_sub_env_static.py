@@ -62,6 +62,7 @@ class ArkSubEnvStaticTest(unittest.TestCase):
         self.assertIn('_build_unity_env_params_payload', assigned_names)
         self.assertIn('_apply_initial_observation_warmup', assigned_names)
         self.assertIn('_attach_image_payloads_to_obs', assigned_names)
+        self.assertIn('_get_agent_visual_observations', assigned_names)
 
 
 if __name__ == '__main__':
