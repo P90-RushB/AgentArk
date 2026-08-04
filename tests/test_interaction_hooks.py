@@ -143,6 +143,88 @@ class InteractionHookTest(unittest.TestCase):
                 self.assertIn('<tool_call>', response)
                 self.assertEqual(agent.client.calls[0]['extra_body'], expected_extra_body)
 
+    def test_api_agent_maps_unified_reasoning_config_by_provider(self):
+        class FakeClient:
+            def __init__(self, provider, host='example.test'):
+                self.provider = provider
+                self.base_url_host = host
+                self.timeout_s = None
+                self.calls = []
+
+            def chat_completions_create(self, **kwargs):
+                self.calls.append(kwargs)
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(
+                        content='<tool_call>{"name":"PushForward","arguments":{}}</tool_call>',
+                        model_extra={},
+                    ))],
+                    usage=None,
+                )
+
+        cases = [
+            (
+                'volcengine',
+                'example.test',
+                {'type': 'enabled'},
+                'high',
+                {'thinking': {'type': 'enabled'}},
+                'high',
+            ),
+            (
+                'openrouter',
+                'example.test',
+                {'type': 'enabled'},
+                'high',
+                {'reasoning': {'enabled': True, 'effort': 'high'}},
+                None,
+            ),
+            (
+                'openrouter',
+                'example.test',
+                {'type': 'disabled'},
+                None,
+                {'reasoning': {'enabled': False}},
+                None,
+            ),
+            (
+                'dashscope',
+                'example.test',
+                {'type': 'disabled'},
+                None,
+                {'enable_thinking': False},
+                None,
+            ),
+        ]
+        for provider, host, thinking, effort, expected_body, expected_effort in cases:
+            with self.subTest(provider=provider, host=host):
+                agent = object.__new__(APIAgent)
+                agent.client = FakeClient(provider, host)
+                agent.temperature = None
+                agent.thinking_type = APIAgent._normalize_thinking_type(thinking)
+                agent.reasoning_effort = APIAgent._normalize_reasoning_effort(effort)
+
+                agent._call_api([{'role': 'user', 'content': 'hi'}])
+
+                call = agent.client.calls[0]
+                self.assertEqual(call['extra_body'], expected_body)
+                self.assertEqual(call['reasoning_effort'], expected_effort)
+
+    def test_api_agent_rejects_conflicting_or_unmappable_reasoning_config(self):
+        with self.assertRaisesRegex(ValueError, 'conflicts'):
+            APIAgent(
+                api_key='test-key',
+                provider='openrouter',
+                thinking={'type': 'disabled'},
+                reasoning_effort='high',
+            )
+
+        agent = object.__new__(APIAgent)
+        agent.client = SimpleNamespace(provider='dashscope', base_url_host='example.test')
+        agent.thinking_type = 'enabled'
+        agent.reasoning_effort = 'high'
+        with self.assertRaisesRegex(ValueError, 'does not support reasoning_effort'):
+            agent._request_parameters()
+
     def test_llm_client_omits_temperature_when_none(self):
         class FakeCompletions:
             def __init__(self):
@@ -166,6 +248,20 @@ class InteractionHookTest(unittest.TestCase):
         )
 
         self.assertNotIn('temperature', completions.calls[0])
+        self.assertNotIn('reasoning_effort', completions.calls[0])
+
+        client.chat_completions_create(
+            messages=[{'role': 'user', 'content': 'hi'}],
+            temperature=None,
+            extra_body={'thinking': {'type': 'enabled'}},
+            reasoning_effort='high',
+        )
+
+        self.assertEqual(completions.calls[1]['reasoning_effort'], 'high')
+        self.assertEqual(
+            completions.calls[1]['extra_body'],
+            {'thinking': {'type': 'enabled'}},
+        )
 
     def test_api_agent_forward_trace_includes_usage(self):
         class FakeClient:
@@ -608,6 +704,22 @@ class InteractionHookTest(unittest.TestCase):
         self.assertEqual(runtimes[0]['agent'].kwargs['reasoning_effort'], 'low')
         self.assertEqual(runtimes[0]['thread_mode'], 'per_turn')
         self.assertEqual(runtimes[0]['agent'].kwargs['thread_mode'], 'per_turn')
+
+    def test_build_model_runtimes_supports_http_reasoning_config(self):
+        runtimes = build_model_runtimes([{
+            'name': 'doubao-test',
+            'provider': 'volcengine',
+            'model': 'doubao-seed-2-1-pro-260628',
+            'base_url': 'https://ark.cn-beijing.volces.com/api/v3',
+            'api_key': 'test-key',
+            'thinking': {'type': 'ENABLED'},
+            'reasoning_effort': 'HIGH',
+        }])
+
+        self.assertEqual(runtimes[0]['thinking'], {'type': 'enabled'})
+        self.assertEqual(runtimes[0]['reasoning_effort'], 'high')
+        self.assertEqual(runtimes[0]['agent'].thinking_type, 'enabled')
+        self.assertEqual(runtimes[0]['agent'].reasoning_effort, 'high')
 
     def test_build_model_runtimes_enables_isolated_black_box_player_feedback(self):
         class FakeCodexAgent:

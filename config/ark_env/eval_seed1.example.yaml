@@ -76,12 +76,26 @@ hooks:
     timeout_s: null
 
 models:
-  - name: openrouter-qwen37-plus
-    provider: openrouter
-    model: qwen/qwen3.7-plus
-    base_url: https://openrouter.ai/api/v1
-    api_key_env: OPENROUTER_API_KEY
-    temperature: 0.0
+  # Volcengine Ark online inference. The versioned model ID and /api/v3 base URL
+  # are for pay-as-you-go online inference, not the separate Coding Plan API.
+  - name: doubao-seed-2-1-pro-260628
+    provider: volcengine
+    model: doubao-seed-2-1-pro-260628
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    api_key_env: ARK_API_KEY
+    thinking:
+      type: enabled
+    reasoning_effort: high
+    timeout_s: 180
+    # Omit temperature so the model/provider can use its supported default.
+    temperature: null
+
+  # - name: openrouter-qwen37-plus
+  #   provider: openrouter
+  #   model: qwen/qwen3.7-plus
+  #   base_url: https://openrouter.ai/api/v1
+  #   api_key_env: OPENROUTER_API_KEY
+  #   temperature: 0.0
 
   # - name: openrouter-gpt-5.5
   #   provider: openrouter

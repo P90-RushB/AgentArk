@@ -695,6 +695,13 @@ def build_model_runtimes(
             provider=provider,
             timeout_s=timeout_s,
             max_retries=max_retries,
+            thinking=model_cfg.get('thinking', None),
+            reasoning_effort=model_cfg.get('reasoning_effort', None),
+        )
+        thinking = (
+            {'type': agent.thinking_type}
+            if agent.thinking_type is not None
+            else None
         )
         runtimes.append({
             'name': model_name,
@@ -705,6 +712,8 @@ def build_model_runtimes(
             'temperature': temperature,
             'timeout_s': timeout_s,
             'max_retries': max_retries,
+            'thinking': thinking,
+            'reasoning_effort': agent.reasoning_effort,
             'agent': agent,
         })
     if not runtimes:
@@ -1154,6 +1163,8 @@ def evaluate_case(
         'provider': model_runtime.get('provider'),
         'base_url': model_runtime['base_url'],
         'api_key_env': model_runtime['api_key_env'],
+        'thinking': _to_jsonable(model_runtime.get('thinking')),
+        'reasoning_effort': model_runtime.get('reasoning_effort'),
         'requested_task_name': rollout['requested_task_name'],
         'requested_group_seed': rollout['requested_group_seed'],
         'requested_env_id': rollout['requested_env_id'],
@@ -1208,6 +1219,8 @@ def build_error_result(model_runtime: Dict[str, Any], case: Dict[str, Any], erro
         'provider': model_runtime.get('provider'),
         'base_url': model_runtime['base_url'],
         'api_key_env': model_runtime['api_key_env'],
+        'thinking': _to_jsonable(model_runtime.get('thinking')),
+        'reasoning_effort': model_runtime.get('reasoning_effort'),
         'requested_task_name': case['task_name'],
         'requested_group_seed': int(case['group_seed']),
         'requested_env_id': case.get('env_id', None),

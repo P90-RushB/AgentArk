@@ -64,6 +64,9 @@ models:
     model: replace-with-openrouter-model-id
     base_url: https://openrouter.ai/api/v1
     api_key_env: OPENROUTER_API_KEY
+    thinking:
+      type: enabled
+    reasoning_effort: high
     temperature: 0.0
 ```
 
@@ -72,6 +75,55 @@ You can also set `api_key` directly in a private local config instead of using
 `api_key_env`.
 If a model or proxy reports that `temperature` is deprecated or unsupported,
 set `temperature: null` to omit the parameter from API requests.
+
+HTTP models share the `thinking.type` (`enabled` or `disabled`) and
+`reasoning_effort` configuration. AgentArk maps them by provider:
+
+| Provider | Request fields sent |
+| --- | --- |
+| `volcengine` | `thinking.type` and top-level `reasoning_effort` |
+| `openrouter` | `reasoning.enabled` and `reasoning.effort` |
+| `dashscope` / `qwen` | `enable_thinking`; no `reasoning_effort` mapping |
+| `openai` / `generic` | Top-level `reasoning_effort`; no `thinking` mapping |
+
+AgentArk raises a configuration error before the request if a provider cannot
+map a setting unambiguously. Omitting the settings preserves the existing
+provider defaults.
+
+#### Volcengine Ark Online Inference
+
+Volcengine Ark online inference is compatible with the OpenAI SDK. Use
+`provider: volcengine` so AgentArk sends Chat Completions requests with Ark's
+deep-thinking fields:
+
+```yaml
+models:
+  - name: doubao-seed-2-1-pro-260628
+    provider: volcengine
+    model: doubao-seed-2-1-pro-260628
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    api_key_env: ARK_API_KEY
+    thinking:
+      type: enabled
+    reasoning_effort: high
+    timeout_s: 180
+    temperature: null
+```
+
+Set the API key before running:
+
+```bash
+export ARK_API_KEY="your-api-key"
+```
+
+This versioned model ID and `/api/v3` base URL select pay-as-you-go online
+inference. Do not mix them with the Coding Plan `/api/coding/v3` base URL and
+the `doubao-seed-2.0-pro` model name. AgentArk currently calls the Chat
+Completions API. `thinking.type: enabled` explicitly enables deep thinking,
+`reasoning_effort: high` selects the reasoning level, and `temperature: null`
+makes the OpenAI SDK omit that request parameter entirely. Visual requests at
+`high` can exceed the example's 180-second timeout; increase `timeout_s` when
+that latency is acceptable.
 
 For stateless HTTP providers, prefer full message context:
 

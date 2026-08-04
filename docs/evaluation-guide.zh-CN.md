@@ -60,12 +60,60 @@ models:
     model: replace-with-openrouter-model-id
     base_url: https://openrouter.ai/api/v1
     api_key_env: OPENROUTER_API_KEY
+    thinking:
+      type: enabled
+    reasoning_effort: high
     temperature: 0.0
 ```
 
 根据端点替换 `provider`、`model`、`base_url` 和 `api_key_env`。也可以在本地私有
 配置中直接设置 `api_key`。如果模型或代理提示 `temperature` 已弃用或不受支持，
 请设置 `temperature: null`，让请求省略该参数。
+
+HTTP 模型可以使用统一的 `thinking.type`（`enabled` 或 `disabled`）和
+`reasoning_effort` 配置。AgentArk 会按 provider 转换请求字段：
+
+| provider | 实际请求字段 |
+| --- | --- |
+| `volcengine` | `thinking.type` 和顶层 `reasoning_effort` |
+| `openrouter` | `reasoning.enabled` 和 `reasoning.effort` |
+| `dashscope` / `qwen` | `enable_thinking`；不映射 `reasoning_effort` |
+| `openai` / `generic` | 顶层 `reasoning_effort`；不映射 `thinking` |
+
+如果 provider 无法无歧义地映射配置，AgentArk 会在发请求前报错。省略这些配置时，
+保留原有 provider 默认行为。
+
+#### 火山方舟在线推理
+
+火山方舟在线推理兼容 OpenAI SDK。使用 `provider: volcengine`，让 AgentArk 发送
+Chat Completions 请求，并按火山方舟格式传递深度思考配置：
+
+```yaml
+models:
+  - name: doubao-seed-2-1-pro-260628
+    provider: volcengine
+    model: doubao-seed-2-1-pro-260628
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    api_key_env: ARK_API_KEY
+    thinking:
+      type: enabled
+    reasoning_effort: high
+    timeout_s: 180
+    temperature: null
+```
+
+运行前设置 API Key：
+
+```bash
+export ARK_API_KEY="your-api-key"
+```
+
+这里的版本化模型 ID 和 `/api/v3` 地址属于按量计费的在线推理。不要与 Coding Plan
+的 `/api/coding/v3` 地址及 `doubao-seed-2.0-pro` 模型名混用。AgentArk 当前通过
+Chat Completions API 调用模型；`thinking.type: enabled` 显式开启深度思考，
+`reasoning_effort: high` 设置推理力度。配置中的 `temperature: null` 会让 OpenAI
+SDK 完全省略该请求参数。视觉任务使用 `high` 时可能超过示例的 180 秒超时；如果
+可以接受更长延迟，请相应提高 `timeout_s`。
 
 对于无状态 HTTP provider，建议返回完整消息上下文：
 
