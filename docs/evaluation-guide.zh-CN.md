@@ -99,7 +99,7 @@ models:
       type: enabled
     reasoning_effort: high
     timeout_s: 180
-    temperature: null
+    temperature: 1.0
 ```
 
 运行前设置 API Key：
@@ -111,8 +111,8 @@ export ARK_API_KEY="your-api-key"
 这里的版本化模型 ID 和 `/api/v3` 地址属于按量计费的在线推理。不要与 Coding Plan
 的 `/api/coding/v3` 地址及 `doubao-seed-2.0-pro` 模型名混用。AgentArk 当前通过
 Chat Completions API 调用模型；`thinking.type: enabled` 显式开启深度思考，
-`reasoning_effort: high` 设置推理力度。配置中的 `temperature: null` 会让 OpenAI
-SDK 完全省略该请求参数。视觉任务使用 `high` 时可能超过示例的 180 秒超时；如果
+`reasoning_effort: high` 设置推理力度，`temperature: 1.0` 显式设置采样温度。
+视觉任务使用 `high` 时可能超过示例的 180 秒超时；如果
 可以接受更长延迟，请相应提高 `timeout_s`。
 
 对于无状态 HTTP provider，建议返回完整消息上下文：

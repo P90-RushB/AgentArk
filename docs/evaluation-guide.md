@@ -107,7 +107,7 @@ models:
       type: enabled
     reasoning_effort: high
     timeout_s: 180
-    temperature: null
+    temperature: 1.0
 ```
 
 Set the API key before running:
@@ -120,8 +120,8 @@ This versioned model ID and `/api/v3` base URL select pay-as-you-go online
 inference. Do not mix them with the Coding Plan `/api/coding/v3` base URL and
 the `doubao-seed-2.0-pro` model name. AgentArk currently calls the Chat
 Completions API. `thinking.type: enabled` explicitly enables deep thinking,
-`reasoning_effort: high` selects the reasoning level, and `temperature: null`
-makes the OpenAI SDK omit that request parameter entirely. Visual requests at
+`reasoning_effort: high` selects the reasoning level, and `temperature: 1.0`
+sets the sampling temperature explicitly. Visual requests at
 `high` can exceed the example's 180-second timeout; increase `timeout_s` when
 that latency is acceptable.
 

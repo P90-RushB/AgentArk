@@ -87,15 +87,15 @@ models:
       type: enabled
     reasoning_effort: high
     timeout_s: 180
-    # Omit temperature so the model/provider can use its supported default.
-    temperature: null
+    temperature: 1.0
 
-  # - name: openrouter-qwen37-plus
+  # - name: openrouter-qwen38-max
   #   provider: openrouter
-  #   model: qwen/qwen3.7-plus
+  #   model: qwen/qwen3.8-max
   #   base_url: https://openrouter.ai/api/v1
   #   api_key_env: OPENROUTER_API_KEY
-  #   temperature: 0.0
+  #   reasoning_effort: high
+  #   temperature: 1.0
 
   # - name: openrouter-gpt-5.5
   #   provider: openrouter
