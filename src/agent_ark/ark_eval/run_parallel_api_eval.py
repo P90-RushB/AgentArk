@@ -71,6 +71,7 @@ def _model_stub(model_cfg: Dict[str, Any], model_index: int) -> Dict[str, Any]:
         'api_key_env': str(model_cfg.get('api_key_env', '')).strip() or None,
         'thinking': _to_jsonable(model_cfg.get('thinking', None)),
         'reasoning_effort': model_cfg.get('reasoning_effort', None),
+        'max_completion_tokens': model_cfg.get('max_completion_tokens', 30000),
     }
 
 

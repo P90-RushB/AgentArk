@@ -86,6 +86,7 @@ models:
     thinking:
       type: enabled
     reasoning_effort: high
+    max_completion_tokens: 30000
     timeout_s: 180
     temperature: 1.0
 
@@ -95,6 +96,7 @@ models:
   #   base_url: https://openrouter.ai/api/v1
   #   api_key_env: OPENROUTER_API_KEY
   #   reasoning_effort: high
+  #   max_completion_tokens: 30000
   #   temperature: 1.0
 
   # - name: openrouter-gpt-5.5

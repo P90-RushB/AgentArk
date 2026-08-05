@@ -91,6 +91,7 @@ class LLMClient:
         temperature: Optional[float] = 0.2,
         extra_body: Optional[Dict[str, Any]] = None,
         reasoning_effort: Optional[str] = None,
+        max_completion_tokens: Optional[int] = 30000,
     ) -> Any:
         kwargs: Dict[str, Any] = {
             "model": self.model,
@@ -101,6 +102,8 @@ class LLMClient:
             kwargs["temperature"] = temperature
         if reasoning_effort is not None:
             kwargs["reasoning_effort"] = reasoning_effort
+        if max_completion_tokens is not None:
+            kwargs["max_completion_tokens"] = int(max_completion_tokens)
         if self.timeout_s is not None:
             kwargs["timeout"] = float(self.timeout_s)
         return self._client.chat.completions.create(**kwargs)
@@ -127,6 +130,7 @@ class APIAgent(BaseAgent):
         max_retries: int = 2,
         thinking: Any = None,
         reasoning_effort: Optional[str] = None,
+        max_completion_tokens: Optional[int] = 30000,
     ) -> None:
         super().__init__(name)
         self.client = LLMClient(LLMClientConfig(
@@ -140,6 +144,7 @@ class APIAgent(BaseAgent):
         self.temperature = None if temperature is None else float(temperature)
         self.thinking_type = self._normalize_thinking_type(thinking)
         self.reasoning_effort = self._normalize_reasoning_effort(reasoning_effort)
+        self.max_completion_tokens = self._normalize_max_completion_tokens(max_completion_tokens)
         if self.thinking_type == "disabled" and self.reasoning_effort is not None:
             raise ValueError(
                 "thinking.type=disabled conflicts with reasoning_effort; "
@@ -248,6 +253,7 @@ class APIAgent(BaseAgent):
 
     def _call_api_with_usage(self, messages: List[dict]) -> tuple[str, Optional[Dict[str, Any]]]:
         extra_body, reasoning_effort = self._request_parameters()
+        max_completion_tokens = getattr(self, "max_completion_tokens", 30000)
         empty_choices_retries = max(0, int(os.getenv("AGENTARK_EMPTY_CHOICES_RETRIES", "3") or "0"))
         empty_choices_delay_s = max(0.0, float(os.getenv("AGENTARK_EMPTY_CHOICES_RETRY_DELAY_S", "2") or "0"))
         last_completion: Any = None
@@ -257,6 +263,7 @@ class APIAgent(BaseAgent):
                 temperature=self.temperature,
                 extra_body=extra_body,
                 reasoning_effort=reasoning_effort,
+                max_completion_tokens=max_completion_tokens,
             )
             choices = getattr(completion, "choices", None)
             if choices:
@@ -283,6 +290,7 @@ class APIAgent(BaseAgent):
         temperature: Optional[float],
         extra_body: Dict[str, Any],
         reasoning_effort: Optional[str],
+        max_completion_tokens: Optional[int],
     ) -> Any:
         timeout_s = getattr(self.client, "timeout_s", None)
         if timeout_s is None or float(timeout_s) <= 0:
@@ -291,6 +299,7 @@ class APIAgent(BaseAgent):
                 temperature=temperature,
                 extra_body=extra_body,
                 reasoning_effort=reasoning_effort,
+                max_completion_tokens=max_completion_tokens,
             )
 
         result_queue: "queue.Queue[tuple[str, Any]]" = queue.Queue(maxsize=1)
@@ -304,6 +313,7 @@ class APIAgent(BaseAgent):
                         temperature=temperature,
                         extra_body=extra_body,
                         reasoning_effort=reasoning_effort,
+                        max_completion_tokens=max_completion_tokens,
                     ),
                 ))
             except BaseException as exc:
@@ -400,6 +410,20 @@ class APIAgent(BaseAgent):
                 "reasoning_effort must be one of: "
                 "none, minimal, low, medium, high, xhigh, max"
             )
+        return normalized
+
+    @staticmethod
+    def _normalize_max_completion_tokens(value: Any) -> Optional[int]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, bool):
+            raise ValueError("max_completion_tokens must be a positive integer or null")
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_completion_tokens must be a positive integer or null") from exc
+        if normalized <= 0:
+            raise ValueError("max_completion_tokens must be a positive integer or null")
         return normalized
 
     def _record_empty_choices_response(self, *, completion: Any, messages: List[dict], attempt: int) -> None:

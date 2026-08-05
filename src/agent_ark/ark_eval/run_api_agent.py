@@ -686,6 +686,9 @@ def build_model_runtimes(
         if timeout_s is not None:
             timeout_s = float(timeout_s)
         max_retries = int(model_cfg.get('max_retries', 2))
+        max_completion_tokens = APIAgent._normalize_max_completion_tokens(
+            model_cfg.get('max_completion_tokens', 30000)
+        )
         agent = APIAgent(
             name=model_name,
             api_key=api_key,
@@ -697,6 +700,7 @@ def build_model_runtimes(
             max_retries=max_retries,
             thinking=model_cfg.get('thinking', None),
             reasoning_effort=model_cfg.get('reasoning_effort', None),
+            max_completion_tokens=max_completion_tokens,
         )
         thinking = (
             {'type': agent.thinking_type}
@@ -712,6 +716,7 @@ def build_model_runtimes(
             'temperature': temperature,
             'timeout_s': timeout_s,
             'max_retries': max_retries,
+            'max_completion_tokens': agent.max_completion_tokens,
             'thinking': thinking,
             'reasoning_effort': agent.reasoning_effort,
             'agent': agent,
@@ -1165,6 +1170,7 @@ def evaluate_case(
         'api_key_env': model_runtime['api_key_env'],
         'thinking': _to_jsonable(model_runtime.get('thinking')),
         'reasoning_effort': model_runtime.get('reasoning_effort'),
+        'max_completion_tokens': model_runtime.get('max_completion_tokens'),
         'requested_task_name': rollout['requested_task_name'],
         'requested_group_seed': rollout['requested_group_seed'],
         'requested_env_id': rollout['requested_env_id'],
@@ -1221,6 +1227,7 @@ def build_error_result(model_runtime: Dict[str, Any], case: Dict[str, Any], erro
         'api_key_env': model_runtime['api_key_env'],
         'thinking': _to_jsonable(model_runtime.get('thinking')),
         'reasoning_effort': model_runtime.get('reasoning_effort'),
+        'max_completion_tokens': model_runtime.get('max_completion_tokens'),
         'requested_task_name': case['task_name'],
         'requested_group_seed': int(case['group_seed']),
         'requested_env_id': case.get('env_id', None),

@@ -40,12 +40,22 @@ hooks:
 
 models:
   # Replace model/base_url/api_key_env with your OpenAI-compatible provider.
-  - name: openrouter-qwen38-max
+  # - name: openrouter-qwen38-max
+  #   provider: openrouter
+  #   model: qwen/qwen3.8-max
+  #   base_url: https://openrouter.ai/api/v1
+  #   api_key_env: OPENROUTER_API_KEY
+  #   reasoning_effort: high
+  #   max_completion_tokens: 30000
+  #   temperature: 1.0
+
+  - name: openrouter-qwen37-plus
     provider: openrouter
-    model: qwen/qwen3.8-max
+    model: qwen/qwen3.7-plus
     base_url: https://openrouter.ai/api/v1
     api_key_env: OPENROUTER_API_KEY
     reasoning_effort: high
+    max_completion_tokens: 30000
     temperature: 1.0
 
   # - name: openrouter-gpt-5.5

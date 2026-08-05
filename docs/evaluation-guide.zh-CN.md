@@ -63,12 +63,15 @@ models:
     thinking:
       type: enabled
     reasoning_effort: high
+    max_completion_tokens: 30000
     temperature: 0.0
 ```
 
 根据端点替换 `provider`、`model`、`base_url` 和 `api_key_env`。也可以在本地私有
 配置中直接设置 `api_key`。如果模型或代理提示 `temperature` 已弃用或不受支持，
 请设置 `temperature: null`，让请求省略该参数。
+HTTP API 模型的 `max_completion_tokens` 默认为 `30000`，限制推理 token 与可见
+输出 token 的总量；设置为 `null` 时省略该参数。
 
 HTTP 模型可以使用统一的 `thinking.type`（`enabled` 或 `disabled`）和
 `reasoning_effort` 配置。AgentArk 会按 provider 转换请求字段：
@@ -98,6 +101,7 @@ models:
     thinking:
       type: enabled
     reasoning_effort: high
+    max_completion_tokens: 30000
     timeout_s: 180
     temperature: 1.0
 ```
@@ -111,7 +115,8 @@ export ARK_API_KEY="your-api-key"
 这里的版本化模型 ID 和 `/api/v3` 地址属于按量计费的在线推理。不要与 Coding Plan
 的 `/api/coding/v3` 地址及 `doubao-seed-2.0-pro` 模型名混用。AgentArk 当前通过
 Chat Completions API 调用模型；`thinking.type: enabled` 显式开启深度思考，
-`reasoning_effort: high` 设置推理力度，`temperature: 1.0` 显式设置采样温度。
+`reasoning_effort: high` 设置推理力度，`max_completion_tokens: 30000` 限制推理
+token 与可见输出 token 的总量，`temperature: 1.0` 显式设置采样温度。
 视觉任务使用 `high` 时可能超过示例的 180 秒超时；如果
 可以接受更长延迟，请相应提高 `timeout_s`。
 

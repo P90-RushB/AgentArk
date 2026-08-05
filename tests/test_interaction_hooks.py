@@ -249,15 +249,18 @@ class InteractionHookTest(unittest.TestCase):
 
         self.assertNotIn('temperature', completions.calls[0])
         self.assertNotIn('reasoning_effort', completions.calls[0])
+        self.assertEqual(completions.calls[0]['max_completion_tokens'], 30000)
 
         client.chat_completions_create(
             messages=[{'role': 'user', 'content': 'hi'}],
             temperature=None,
             extra_body={'thinking': {'type': 'enabled'}},
             reasoning_effort='high',
+            max_completion_tokens=4096,
         )
 
         self.assertEqual(completions.calls[1]['reasoning_effort'], 'high')
+        self.assertEqual(completions.calls[1]['max_completion_tokens'], 4096)
         self.assertEqual(
             completions.calls[1]['extra_body'],
             {'thinking': {'type': 'enabled'}},
@@ -358,6 +361,8 @@ class InteractionHookTest(unittest.TestCase):
         self.assertEqual(runtimes[0]['base_url'], 'http://203.0.113.10:18081/v1')
         self.assertEqual(runtimes[0]['api_key_env'], None)
         self.assertEqual(runtimes[0]['temperature'], 0.1)
+        self.assertEqual(runtimes[0]['max_completion_tokens'], 30000)
+        self.assertEqual(runtimes[0]['agent'].max_completion_tokens, 30000)
         self.assertEqual(runtimes[0]['agent'].client.provider, 'openai')
         self.assertEqual(runtimes[0]['agent'].client.model, 'example-openai-model')
 
@@ -375,6 +380,39 @@ class InteractionHookTest(unittest.TestCase):
 
         self.assertEqual(runtimes[0]['temperature'], None)
         self.assertEqual(runtimes[0]['agent'].temperature, None)
+
+    def test_build_model_runtimes_configures_max_completion_tokens(self):
+        explicit = build_model_runtimes([{
+            'name': 'explicit-output-limit',
+            'provider': 'openai',
+            'model': 'example-model',
+            'base_url': 'https://example.test/v1',
+            'api_key': 'not-needed',
+            'max_completion_tokens': 4096,
+        }])[0]
+        omitted = build_model_runtimes([{
+            'name': 'omitted-output-limit',
+            'provider': 'openai',
+            'model': 'example-model',
+            'base_url': 'https://example.test/v1',
+            'api_key': 'not-needed',
+            'max_completion_tokens': None,
+        }])[0]
+
+        self.assertEqual(explicit['max_completion_tokens'], 4096)
+        self.assertEqual(explicit['agent'].max_completion_tokens, 4096)
+        self.assertIsNone(omitted['max_completion_tokens'])
+        self.assertIsNone(omitted['agent'].max_completion_tokens)
+
+        with self.assertRaisesRegex(ValueError, 'positive integer'):
+            build_model_runtimes([{
+                'name': 'invalid-output-limit',
+                'provider': 'openai',
+                'model': 'example-model',
+                'base_url': 'https://example.test/v1',
+                'api_key': 'not-needed',
+                'max_completion_tokens': 0,
+            }])
 
     def test_codex_agent_uses_data_uri_image_input_without_writing_file(self):
         class FakeTextInput:
@@ -714,12 +752,15 @@ class InteractionHookTest(unittest.TestCase):
             'api_key': 'test-key',
             'thinking': {'type': 'ENABLED'},
             'reasoning_effort': 'HIGH',
+            'max_completion_tokens': 8192,
         }])
 
         self.assertEqual(runtimes[0]['thinking'], {'type': 'enabled'})
         self.assertEqual(runtimes[0]['reasoning_effort'], 'high')
         self.assertEqual(runtimes[0]['agent'].thinking_type, 'enabled')
         self.assertEqual(runtimes[0]['agent'].reasoning_effort, 'high')
+        self.assertEqual(runtimes[0]['max_completion_tokens'], 8192)
+        self.assertEqual(runtimes[0]['agent'].max_completion_tokens, 8192)
 
     def test_build_model_runtimes_enables_isolated_black_box_player_feedback(self):
         class FakeCodexAgent:

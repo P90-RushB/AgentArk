@@ -67,6 +67,7 @@ models:
     thinking:
       type: enabled
     reasoning_effort: high
+    max_completion_tokens: 30000
     temperature: 0.0
 ```
 
@@ -75,6 +76,8 @@ You can also set `api_key` directly in a private local config instead of using
 `api_key_env`.
 If a model or proxy reports that `temperature` is deprecated or unsupported,
 set `temperature: null` to omit the parameter from API requests.
+`max_completion_tokens` defaults to `30000` for HTTP API models and limits
+reasoning plus visible output tokens. Set it to `null` to omit the parameter.
 
 HTTP models share the `thinking.type` (`enabled` or `disabled`) and
 `reasoning_effort` configuration. AgentArk maps them by provider:
@@ -106,6 +109,7 @@ models:
     thinking:
       type: enabled
     reasoning_effort: high
+    max_completion_tokens: 30000
     timeout_s: 180
     temperature: 1.0
 ```
@@ -120,8 +124,9 @@ This versioned model ID and `/api/v3` base URL select pay-as-you-go online
 inference. Do not mix them with the Coding Plan `/api/coding/v3` base URL and
 the `doubao-seed-2.0-pro` model name. AgentArk currently calls the Chat
 Completions API. `thinking.type: enabled` explicitly enables deep thinking,
-`reasoning_effort: high` selects the reasoning level, and `temperature: 1.0`
-sets the sampling temperature explicitly. Visual requests at
+`reasoning_effort: high` selects the reasoning level,
+`max_completion_tokens: 30000` caps reasoning plus visible output tokens, and
+`temperature: 1.0` sets the sampling temperature explicitly. Visual requests at
 `high` can exceed the example's 180-second timeout; increase `timeout_s` when
 that latency is acceptable.
 
