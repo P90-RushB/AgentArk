@@ -94,7 +94,9 @@ directly in your local config.
 
 Codex SDK evaluation is also supported through `provider: codex`. See
 [docs/evaluation-guide.md](docs/evaluation-guide.md) for the Codex install,
-model config, and message-context settings.
+AgentArk-only lean context profile, and delta message-context settings. The
+lean profile is passed to evaluation SDK threads and does not modify normal
+Codex configuration.
 
 Edit [config/ark_env/eval_seed1.example.yaml](config/ark_env/eval_seed1.example.yaml)
 so `eval.cases[*].task_name` exists in your runtime and `models[*]` matches your

@@ -54,6 +54,13 @@ models:
     timeout_s: 600
     reasoning_effort: medium
     thread_mode: per_agent
+    # AgentArk-only SDK thread profile: empty Codex base/developer instructions,
+    # no Codex tools/apps/plugins/multi-agent, and an isolated temporary cwd.
+    # This does not modify ~/.codex/config.toml or normal Codex sessions.
+    codex_context_mode: lean
+    # Add every extra MCP server name configured in your personal Codex setup.
+    # node_repl and unityMCP are disabled by default even when this list is omitted.
+    codex_disabled_mcp_servers: [node_repl, unityMCP]
     # The same SDK thread plays from observations and emits a structured report
     # after the terminal frame. Its cwd is an automatically created empty temp
     # directory rather than this source repo.

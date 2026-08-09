@@ -605,6 +605,78 @@ class InteractionHookTest(unittest.TestCase):
         agent.close()
         self.assertFalse(isolated_path.exists())
 
+    def test_codex_lean_context_uses_only_thread_local_minimal_overrides(self):
+        class FakeCodex:
+            def __init__(self):
+                self.kwargs = None
+
+            def thread_start(self, **kwargs):
+                self.kwargs = kwargs
+                return object()
+
+        fake_codex = FakeCodex()
+        agent = CodexAgent(
+            name='codex-lean',
+            context_mode='lean',
+            lean_disabled_mcp_servers=['node_repl', 'unityMCP', 'customMcp'],
+        )
+        agent._codex = fake_codex
+        agent._sandbox_cls = SimpleNamespace(read_only='read-only')
+        agent._approval_mode_cls = SimpleNamespace(deny_all='deny-all')
+
+        isolated_path = Path(agent._resolve_cwd())
+        agent._get_thread(0)
+
+        self.assertEqual(fake_codex.kwargs['approval_mode'], 'deny-all')
+        self.assertEqual(fake_codex.kwargs['base_instructions'], '')
+        self.assertEqual(fake_codex.kwargs['developer_instructions'], '')
+        self.assertTrue(fake_codex.kwargs['ephemeral'])
+        self.assertEqual(Path(fake_codex.kwargs['cwd']), isolated_path)
+        self.assertTrue(fake_codex.kwargs['config']['features'])
+        self.assertTrue(all(
+            enabled is False
+            for enabled in fake_codex.kwargs['config']['features'].values()
+        ))
+        self.assertEqual(
+            fake_codex.kwargs['config']['mcp_servers'],
+            {
+                'node_repl': {'enabled': False},
+                'unityMCP': {'enabled': False},
+                'customMcp': {'enabled': False},
+            },
+        )
+        self.assertFalse(fake_codex.kwargs['config']['tools']['web_search'])
+        self.assertFalse(fake_codex.kwargs['config']['tools']['view_image'])
+
+        agent.close()
+        self.assertFalse(isolated_path.exists())
+
+    def test_codex_default_context_does_not_add_lean_thread_overrides(self):
+        class FakeCodex:
+            def __init__(self):
+                self.kwargs = None
+
+            def thread_start(self, **kwargs):
+                self.kwargs = kwargs
+                return object()
+
+        fake_codex = FakeCodex()
+        agent = CodexAgent(name='codex-default', context_mode='default')
+        agent._codex = fake_codex
+        agent._sandbox_cls = SimpleNamespace(read_only='read-only')
+
+        agent._get_thread(0)
+
+        self.assertEqual(agent.config.context_mode, 'default')
+        self.assertNotIn('base_instructions', fake_codex.kwargs)
+        self.assertNotIn('developer_instructions', fake_codex.kwargs)
+        self.assertNotIn('approval_mode', fake_codex.kwargs)
+        self.assertNotIn('config', fake_codex.kwargs)
+
+    def test_codex_lean_context_rejects_explicit_cwd(self):
+        with self.assertRaisesRegex(ValueError, 'explicit cwd'):
+            CodexAgent(name='codex-lean', context_mode='lean', cwd='explicit-path')
+
     def test_codex_player_feedback_schema_rejects_invalid_defect_fields(self):
         base_report = {
             'summary': 'observed issue',
@@ -742,6 +814,9 @@ class InteractionHookTest(unittest.TestCase):
         self.assertEqual(runtimes[0]['agent'].kwargs['reasoning_effort'], 'low')
         self.assertEqual(runtimes[0]['thread_mode'], 'per_turn')
         self.assertEqual(runtimes[0]['agent'].kwargs['thread_mode'], 'per_turn')
+        self.assertEqual(runtimes[0]['codex_context_mode'], 'lean')
+        self.assertEqual(runtimes[0]['agent'].kwargs['context_mode'], 'lean')
+        self.assertTrue(runtimes[0]['agent'].kwargs['isolated_cwd'])
 
     def test_build_model_runtimes_supports_http_reasoning_config(self):
         runtimes = build_model_runtimes([{
@@ -779,6 +854,27 @@ class InteractionHookTest(unittest.TestCase):
         self.assertTrue(runtimes[0]['player_feedback']['enabled'])
         self.assertTrue(runtimes[0]['agent'].kwargs['black_box_playtest'])
         self.assertTrue(runtimes[0]['agent'].kwargs['isolated_cwd'])
+        self.assertEqual(runtimes[0]['codex_context_mode'], 'lean')
+
+    def test_build_model_runtimes_can_opt_out_of_codex_lean_context(self):
+        class FakeCodexAgent:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.config = SimpleNamespace(lean_disabled_mcp_servers=('node_repl', 'unityMCP'))
+
+        with patch('agent_ark.ark_eval.run_api_agent.CodexAgent', FakeCodexAgent):
+            runtimes = build_model_runtimes([{
+                'name': 'codex-control',
+                'provider': 'codex',
+                'codex_context_mode': 'default',
+                'cwd': 'explicit-control-cwd',
+            }])
+
+        self.assertEqual(runtimes[0]['codex_context_mode'], 'default')
+        self.assertEqual(runtimes[0]['agent'].kwargs['context_mode'], 'default')
+        self.assertFalse(runtimes[0]['agent'].kwargs['isolated_cwd'])
+        self.assertEqual(runtimes[0]['agent'].kwargs['cwd'], 'explicit-control-cwd')
+        self.assertEqual(runtimes[0]['codex_disabled_mcp_servers'], [])
 
     def test_build_model_runtimes_rejects_stateless_player_feedback(self):
         with self.assertRaisesRegex(ValueError, 'thread_mode: per_agent'):
@@ -852,6 +948,8 @@ class InteractionHookTest(unittest.TestCase):
         self.assertEqual(runtimes[0]['agent'].kwargs['model'], 'gpt-5.5')
         self.assertEqual(runtimes[0]['thread_mode'], 'per_agent')
         self.assertEqual(runtimes[0]['agent'].kwargs['thread_mode'], 'per_agent')
+        self.assertEqual(runtimes[0]['codex_context_mode'], 'lean')
+        self.assertEqual(runtimes[0]['agent'].kwargs['context_mode'], 'lean')
 
     def test_auto_reset_message_omits_repeated_task_prompt_but_keeps_new_image(self):
         img = Image.new('RGB', (2, 2), color=(0, 0, 255))

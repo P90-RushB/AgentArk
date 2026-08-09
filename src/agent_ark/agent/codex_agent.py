@@ -17,7 +17,7 @@ import threading
 from copy import deepcopy
 from dataclasses import asdict, dataclass, is_dataclass
 from tempfile import TemporaryDirectory
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .api_agent import APIAgent
 from .base_agent import BaseAgent
@@ -32,6 +32,8 @@ class CodexAgentConfig:
     codex_bin: Optional[str] = None
     cwd: Optional[str] = None
     thread_mode: str = "per_agent"
+    context_mode: str = "default"
+    lean_disabled_mcp_servers: Tuple[str, ...] = ("node_repl", "unityMCP")
     black_box_playtest: bool = False
     isolated_cwd: bool = False
 
@@ -50,6 +52,22 @@ class CodexRunOutput:
 
 class CodexAgent(BaseAgent):
     """Run AgentArk actions through the local Codex Python SDK."""
+
+    _LEAN_DISABLED_FEATURES = (
+        "apps",
+        "browser_use",
+        "computer_use",
+        "goals",
+        "image_generation",
+        "in_app_browser",
+        "multi_agent",
+        "plugins",
+        "shell_tool",
+        "skill_mcp_dependency_install",
+        "tool_suggest",
+        "unified_exec",
+    )
+    _DEFAULT_LEAN_DISABLED_MCP_SERVERS = ("node_repl", "unityMCP")
 
     _PLAYER_FEEDBACK_PROMPT = """
 The environment rollout is now over. Do not output another action.
@@ -125,12 +143,23 @@ Use an empty task_defects list when no concrete task problem was observed.
         codex_bin: Optional[str] = None,
         cwd: Optional[str] = None,
         thread_mode: str = "per_agent",
+        context_mode: str = "default",
+        lean_disabled_mcp_servers: Optional[Sequence[str]] = None,
         black_box_playtest: bool = False,
         isolated_cwd: bool = False,
     ) -> None:
         super().__init__(name)
-        if cwd and isolated_cwd:
-            raise ValueError("CodexAgent cwd and isolated_cwd cannot both be set")
+        normalized_context_mode = (context_mode or "default").strip().lower() or "default"
+        if normalized_context_mode not in ("default", "lean"):
+            raise ValueError("CodexAgent context_mode must be 'default' or 'lean'")
+        effective_isolated_cwd = bool(isolated_cwd or normalized_context_mode == "lean")
+        if cwd and effective_isolated_cwd:
+            raise ValueError(
+                "CodexAgent explicit cwd cannot be combined with isolated_cwd or lean context"
+            )
+        disabled_mcp_servers = self._normalize_disabled_mcp_servers(
+            lean_disabled_mcp_servers
+        )
         self.config = CodexAgentConfig(
             model=model,
             sandbox=sandbox,
@@ -139,8 +168,10 @@ Use an empty task_defects list when no concrete task problem was observed.
             codex_bin=(codex_bin or None),
             cwd=(cwd or None),
             thread_mode=(thread_mode or "per_agent").strip().lower() or "per_agent",
+            context_mode=normalized_context_mode,
+            lean_disabled_mcp_servers=disabled_mcp_servers,
             black_box_playtest=bool(black_box_playtest),
-            isolated_cwd=bool(isolated_cwd),
+            isolated_cwd=effective_isolated_cwd,
         )
         if self.config.thread_mode not in ("per_turn", "per_agent"):
             raise ValueError("CodexAgent thread_mode must be 'per_turn' or 'per_agent'")
@@ -148,6 +179,7 @@ Use an empty task_defects list when no concrete task problem was observed.
         self._codex_cm: Any = None
         self._codex: Any = None
         self._sandbox_cls: Any = None
+        self._approval_mode_cls: Any = None
         self._text_input_cls: Any = None
         self._image_input_cls: Any = None
         self._threads: Dict[int, Any] = {}
@@ -262,7 +294,7 @@ Use an empty task_defects list when no concrete task problem was observed.
             return self._codex
 
         try:
-            from openai_codex import Codex, Sandbox  # type: ignore
+            from openai_codex import ApprovalMode, Codex, Sandbox  # type: ignore
         except ImportError as exc:
             raise ImportError(
                 "provider: codex requires the optional Codex SDK. "
@@ -270,6 +302,7 @@ Use an empty task_defects list when no concrete task problem was observed.
             ) from exc
 
         self._sandbox_cls = Sandbox
+        self._approval_mode_cls = ApprovalMode
         try:
             from openai_codex import TextInput  # type: ignore
             self._text_input_cls = TextInput
@@ -372,6 +405,24 @@ Use an empty task_defects list when no concrete task problem was observed.
         sandbox = self._sandbox_value(self.config.sandbox)
         if sandbox is not None:
             kwargs["sandbox"] = sandbox
+        if self.config.context_mode == "lean":
+            approval_mode_cls = self._approval_mode_cls
+            approval_mode = (
+                getattr(approval_mode_cls, "deny_all", None)
+                if approval_mode_cls is not None
+                else None
+            )
+            if approval_mode is None:
+                raise RuntimeError(
+                    "Codex lean context requires openai-codex with ApprovalMode.deny_all"
+                )
+            kwargs.update({
+                "approval_mode": approval_mode,
+                "base_instructions": "",
+                "developer_instructions": "",
+                "ephemeral": True,
+                "config": self._lean_thread_config(),
+            })
         thread = codex.thread_start(**kwargs)
         if self.config.thread_mode == "per_agent":
             self._threads[agent_idx] = thread
@@ -381,8 +432,44 @@ Use an empty task_defects list when no concrete task problem was observed.
         if not self.config.isolated_cwd:
             return self.config.cwd or os.getcwd()
         if self._isolated_cwd_cm is None:
-            self._isolated_cwd_cm = TemporaryDirectory(prefix="agentark-black-box-player-")
+            self._isolated_cwd_cm = TemporaryDirectory(prefix="agentark-codex-isolated-")
         return self._isolated_cwd_cm.name
+
+    def _lean_thread_config(self) -> Dict[str, Any]:
+        """Return SDK thread-local overrides for a minimal evaluation context."""
+
+        return {
+            "web_search": "disabled",
+            "tools": {
+                "web_search": False,
+                "view_image": False,
+            },
+            "features": {
+                feature: False
+                for feature in self._LEAN_DISABLED_FEATURES
+            },
+            "mcp_servers": {
+                server_name: {"enabled": False}
+                for server_name in self.config.lean_disabled_mcp_servers
+            },
+        }
+
+    @classmethod
+    def _normalize_disabled_mcp_servers(
+        cls,
+        values: Optional[Sequence[str]],
+    ) -> Tuple[str, ...]:
+        if values is None:
+            return cls._DEFAULT_LEAN_DISABLED_MCP_SERVERS
+        if isinstance(values, (str, bytes)):
+            raise ValueError("lean_disabled_mcp_servers must be a list of MCP server names")
+
+        normalized: List[str] = []
+        for value in values:
+            name = str(value or "").strip()
+            if name and name not in normalized:
+                normalized.append(name)
+        return tuple(normalized)
 
     def _sandbox_value(self, name: str) -> Any:
         sandbox_cls = self._sandbox_cls

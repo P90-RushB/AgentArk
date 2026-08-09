@@ -114,6 +114,10 @@ models:
   #   # safer cheap setting; minimal can be rejected when Codex tools are enabled.
   #   reasoning_effort: low
   #   thread_mode: per_agent
+  #   # AgentArk-only minimal SDK thread; normal Codex sessions are unchanged.
+  #   codex_context_mode: lean
+  #   # Add any additional personal MCP server names that must be disabled.
+  #   codex_disabled_mcp_servers: [node_repl, unityMCP]
   #
   # Fresh-thread compatibility mode. Pair with messages.return_mode: full above.
   # This restarts the Codex-side context every turn, so it is usually more expensive.
@@ -124,3 +128,4 @@ models:
   #   timeout_s: 600
   #   reasoning_effort: low
   #   thread_mode: per_turn
+  #   codex_context_mode: default
