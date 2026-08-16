@@ -2163,11 +2163,15 @@ class EnvWrapper(object):
 
         # send run script bool, and script str.
         # self.script_channel.send_bool_and_str(True, code_act[0])
+        requested_agent_ids = list(code_act.keys())
         exec_code_act = {k: v for k, v in code_act.items() if v is not None}
 
         exec_code_act, func_render_errors = self._render_func_code_actions(exec_code_act, log_prefix='EnvWrapper.step')
 
-        self.send_code_act(agent_id=list(exec_code_act.keys()), code_act=exec_code_act)
+        # Every requested agent must receive a side-channel update on every
+        # environment step. Otherwise Unity retains the previous ExecFlag and
+        # CodeString, so a missing or malformed action can replay stale code.
+        self.send_code_act(agent_id=requested_agent_ids, code_act=exec_code_act)
 
         self.env.step()
 
@@ -2339,17 +2343,26 @@ class EnvWrapper(object):
     def get_image_channels(self):
         return [ImageFramesChannel(agent_id=i) for i in range(self.env_num)]
 
-    def send_code_act(self, agent_id=-1, code_act={}):
-        '''agent_id: int
-        code_act: list of str
+    def send_code_act(self, agent_id=-1, code_act=None):
+        '''Send or explicitly clear the code action for each requested agent.
+
+        ``code_act`` may omit an agent (or map it to ``None``) when there is no
+        executable action for the current step, for example after function-call
+        rendering fails. Such agents must receive ``run_flag=False`` so Unity
+        cannot reuse a previous step's latched action.
         '''
+        code_act = code_act or {}
         if agent_id == -1:
             for i, channel in enumerate(self.code_act_channels):
                 channel.send_code_act(False, '')
         else:
             for ml_id in agent_id:
                 unity_id = self.ml_unity_id_map[ml_id]
-                self.code_act_channels[unity_id].send_code_act(True, code_act[ml_id])
+                action = code_act.get(ml_id)
+                if action is None:
+                    self.code_act_channels[unity_id].send_code_act(False, '')
+                else:
+                    self.code_act_channels[unity_id].send_code_act(True, action)
         return
 
     def post_process_obs(self, obs):

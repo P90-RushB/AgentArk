@@ -332,11 +332,12 @@ class ArkSubEnv(object):
         dummy_act = self.env_spec.action_spec.empty_action(len(code_act))
         self.env.set_actions(self.behavior_name, dummy_act)
 
+        requested_agent_ids = list(code_act.keys())
         exec_code_act = {k: v for k, v in code_act.items() if v is not None}
 
         exec_code_act, func_render_errors = self._render_func_code_actions(exec_code_act, log_prefix='ArkSubEnv.step')
 
-        self.send_code_act(agent_id=list(exec_code_act.keys()), code_act=exec_code_act)
+        self.send_code_act(agent_id=requested_agent_ids, code_act=exec_code_act)
         self.env.step()
 
         decision_steps, terminal_steps = self.env.get_steps(self.behavior_name)
