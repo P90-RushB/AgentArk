@@ -61,6 +61,8 @@ class ArkSubEnv(object):
     _get_agent_id_map = EnvWrapper._get_agent_id_map
     _preferred_language_tag = EnvWrapper._preferred_language_tag
     _filter_task_prompt_language = EnvWrapper._filter_task_prompt_language
+    _validate_reset_step_batch = EnvWrapper._validate_reset_step_batch
+    _await_reset_step_batch = EnvWrapper._await_reset_step_batch
     _get_task_prompt_after_reset = EnvWrapper._get_task_prompt_after_reset
     get_empty_obs = EnvWrapper.get_empty_obs
     get_code_act_channels = EnvWrapper.get_code_act_channels
@@ -273,7 +275,7 @@ class ArkSubEnv(object):
 
         self.ml_unity_id_map = self._get_agent_id_map(decision_steps)
 
-        assert len(terminal_steps.agent_id_to_index) == 0
+        # _get_task_prompt_after_reset() already validated this same batch.
         self.episode_agent_id_to_index = deepcopy(decision_steps.agent_id_to_index)
         self.agent_done_dict = {k: False for k in self.episode_agent_id_to_index}
 

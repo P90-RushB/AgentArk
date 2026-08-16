@@ -1714,8 +1714,7 @@ class EnvWrapper(object):
             history_snapshot=history_snapshot,
         )
 
-        # reset agent_idx done
-        assert len(terminal_steps.agent_id_to_index) == 0
+        # _get_task_prompt_after_reset() already validated this same batch.
         self.episode_agent_id_to_index = deepcopy(decision_steps.agent_id_to_index)
         self.agent_done_dict = {k: False for k in self.episode_agent_id_to_index}
 
@@ -2448,12 +2447,60 @@ class EnvWrapper(object):
         # Replace only the first task_prompt body to avoid touching other content.
         return msg.replace(task_body, cleaned_body, 1)
 
+    def _validate_reset_step_batch(self, decision_steps, terminal_steps):
+        decision_count = len(decision_steps)
+        terminal_count = len(terminal_steps.agent_id_to_index)
+        assert decision_count == self.env_num, (
+            'env reset must return a complete new decision batch: '
+            f'expected={self.env_num}, actual={decision_count}, '
+            f'terminal_count={terminal_count}'
+        )
+
+        if terminal_count:
+            decision_ids = sorted(int(agent_id) for agent_id in decision_steps.agent_id_to_index)
+            terminal_ids = sorted(int(agent_id) for agent_id in terminal_steps.agent_id_to_index)
+            print(
+                '[EnvWrapper.reset] Ignoring residual terminal steps batched with '
+                'the complete new decision batch: '
+                f'decision_agent_ids={decision_ids}, terminal_agent_ids={terminal_ids}'
+            )
+
+    def _await_reset_step_batch(self, max_advance_steps=3):
+        for advance_index in range(max_advance_steps + 1):
+            decision_steps, terminal_steps = self.env.get_steps(self.behavior_name)
+            decision_count = len(decision_steps)
+            terminal_count = len(terminal_steps.agent_id_to_index)
+
+            if decision_count == self.env_num:
+                self._validate_reset_step_batch(decision_steps, terminal_steps)
+                return decision_steps, terminal_steps
+
+            assert decision_count == 0, (
+                'env reset returned a partial new decision batch: '
+                f'expected={self.env_num}, actual={decision_count}, '
+                f'terminal_count={terminal_count}'
+            )
+            assert advance_index < max_advance_steps, (
+                'env reset did not produce a complete new decision batch after '
+                f'{max_advance_steps} empty communication advances: '
+                f'expected={self.env_num}, actual={decision_count}, '
+                f'terminal_count={terminal_count}'
+            )
+
+            print(
+                '[EnvWrapper.reset] Waiting for the new decision batch after reset: '
+                f'advance={advance_index + 1}/{max_advance_steps}, '
+                f'terminal_count={terminal_count}'
+            )
+            # There are no decision agents, so UnityEnvironment.step() sends an
+            # empty action batch.  This advances the ML-Agents handshake without
+            # executing a task action in the new episode.
+            self.env.step()
+
     def _get_task_prompt_after_reset(self):
         '''env reset后，从side_channel获取task_prompt
         '''
-        decision_steps, terminal_steps = self.env.get_steps(self.behavior_name)
-        assert len(terminal_steps.agent_id_to_index) == 0
-        assert len(decision_steps) == self.env_num
+        decision_steps, terminal_steps = self._await_reset_step_batch()
 
         task_prompt = {}
         for agent_id, unity_id in decision_steps.agent_id_to_index.items():
