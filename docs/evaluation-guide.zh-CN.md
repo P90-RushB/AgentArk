@@ -319,25 +319,28 @@ AgentArk 任务在运行时配置中选择动作模式。
 任务提示会暴露工具文档。Python 验证工具名称和参数，渲染最小 C# 调用，再发送给
 Unity/Roslyn。
 
-`action_mode: code` 接收完整 C# 脚本：
+显式的 `action_mode: code` 会启用受限 Code Runtime。任务 prompt 会提供 capability
+manifest，模型输出一个普通托管 `AgentAction` 源文件：
 
 ```xml
 <code>
-using UnityEngine;
-
-public class ArkAct_Step0 : MonoBehaviour
+public sealed class AgentAction : CodeAction
 {
-    void Start()
+    public override void Start()
     {
-        var router = GetComponent<ActRouter>();
-        router.Call("ExecutePlan", "L4,U7");
+        int target = Context.Read("read_target").AsInt32();
+        Context.Call("apply_target", CodeValue.FromInt32(target));
+        Context.CompleteStep();
+        Context.StopSelf();
     }
 }
 </code>
 ```
 
-能使用 tool-call 模式时应优先使用。需要跨帧控制、更丰富的程序逻辑或多次调用任务 API
-时再使用完整代码模式。
+上面的 member 名称仅作示例；生成代码只能使用当前任务 manifest 中声明的 member，不能
+直接访问 Unity、场景层级、`ActRouter`、反射、文件、网络或线程。受限 tool call 足够时
+使用 Func Mode；需要分支、循环、持久程序状态，或跨多个由 host 驱动的
+`Tick`/`FixedTick` 回调调用可信 capability 时使用 Code Mode。
 
 ## 评分
 

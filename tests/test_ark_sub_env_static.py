@@ -64,6 +64,22 @@ class ArkSubEnvStaticTest(unittest.TestCase):
         self.assertIn('_attach_image_payloads_to_obs', assigned_names)
         self.assertIn('_get_agent_visual_observations', assigned_names)
 
+    def test_exact_code_mode_detection_is_forwarded_from_envwrapper(self):
+        tree = ast.parse((ROOT / 'src' / 'agent_ark' / 'ark_env' / 'ark_sub_env.py').read_text(encoding='utf-8'))
+        ark_sub_env = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == 'ArkSubEnv'
+        )
+        assigned_names = {
+            target.id
+            for node in ark_sub_env.body
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+
+        self.assertIn('_has_explicit_exact_code_action_mode', assigned_names)
+
 
 if __name__ == '__main__':
     unittest.main()

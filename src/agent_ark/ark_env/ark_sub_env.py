@@ -25,6 +25,7 @@ class ArkSubEnv(object):
     _can_bind_tcp_port = staticmethod(EnvWrapper._can_bind_tcp_port)
 
     _get_action_mode = EnvWrapper._get_action_mode
+    _has_explicit_exact_code_action_mode = EnvWrapper._has_explicit_exact_code_action_mode
     _get_current_resolution = EnvWrapper._get_current_resolution
     _get_no_graphics = EnvWrapper._get_no_graphics
     _get_unity_start_config = EnvWrapper._get_unity_start_config
@@ -661,7 +662,7 @@ def main(argv=None) -> int:
     parser.add_argument(
         '--action',
         default='<tool_call>{"name":"ExecutePlan","arguments":{"plan":"U7,L7"}}</tool_call>',
-        help='Action sent on each step to every active agent; in func mode prefer a <tool_call> payload, while code mode accepts a full C# script or <code> block',
+        help='Action sent on each step to every active agent; in func mode prefer a <tool_call> payload, while exact code mode requires one full raw C# source file',
     )
     parser.add_argument(
         '--action-sequence',
@@ -774,6 +775,7 @@ def main(argv=None) -> int:
             print(f'action={step_action}')
             print(f'reward={reward}')
             print(f'done={done}')
+            print(f'truncated={last_step_info.get("truncated", {})}')
             print(f'step_info_keys={sorted(last_step_info.keys())}')
             print(f'next_obs_keys={sorted(next_obs.keys())}')
             print(f'next_skip_infer={next_item.get("skip_infer") if isinstance(next_item, dict) else None}')

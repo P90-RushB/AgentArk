@@ -410,6 +410,10 @@ class EnvInfoManager(object):
         self.env_config = self._read_clean_base_env_config(env_config)
 
         self.task_cfg_path, self.task_config = self._find_prefab_task_config(selected_task_name)
+        self._validate_raw_code_runtime_config(
+            self.task_config,
+            context=f"prefab task {selected_task_name}",
+        )
         if isinstance(self.task_config, dict) and self.task_config:
             # Prefab mode still runs the selected task's authored observation,
             # timing, resolution, action, and error contract.  Start from the
@@ -426,6 +430,10 @@ class EnvInfoManager(object):
             self.env_config = self._apply_env_config_overrides(self.env_config, env_cfg_overrides)
 
         self.env_config = normalize_max_steps_per_attempt(self.env_config)
+        self._validate_effective_code_runtime_config(
+            self.env_config,
+            context=f"effective prefab task {selected_task_name}",
+        )
         self.env_config['override_by_task'] = False
         self.env_config['load_mod_mode'] = 'none'
         self.env_config['task_name'] = selected_task_name
@@ -623,6 +631,10 @@ class EnvInfoManager(object):
         self.task_config = self._read_yaml(self.task_cfg_path, 'task_config.yaml')
         if self.task_config is None:
             self.task_config = self._read_config(self.task_cfg_path, 'task_config.json') or {}
+        self._validate_raw_code_runtime_config(
+            self.task_config,
+            context=f"task {selected_task_name}",
+        )
 
         if self.env_config.get('override_by_task', True):
             # Overlay only overlapping keys (ignore task-only extras)
@@ -637,6 +649,10 @@ class EnvInfoManager(object):
             self.env_config = self._apply_env_config_overrides(self.env_config, env_cfg_overrides)
 
         self.env_config = normalize_max_steps_per_attempt(self.env_config)
+        self._validate_effective_code_runtime_config(
+            self.env_config,
+            context=f"effective task {selected_task_name}",
+        )
 
         self.env_config = self._require_rollout_budget_config(
             self.env_config,
@@ -848,16 +864,19 @@ class EnvInfoManager(object):
         """Load system prompt text.
 
         action_mode:
-          - 'code' (default): expects LLM to output a full Unity C# script.
+          - exact 'code': expects the restricted plain-object Code Runtime contract.
           - 'func': expects LLM to output only function/argument fills (template provided by task).
+          - missing/tool/unknown: preserves the original legacy Unity C# prompt.
         """
         if len(sys_prompt_path) != 0:
             raise NotImplementedError('暂不支持自定义system_prompt_path')
 
         default_root = os.path.dirname(os.path.abspath(__file__))
-        mode = (action_mode or 'code').strip().lower()
+        mode = action_mode.strip().lower() if isinstance(action_mode, str) else ''
         if mode == 'func':
             sys_prompt_path = os.path.join(default_root, 'info/system_prompt_func.txt')
+        elif mode == 'code':
+            sys_prompt_path = os.path.join(default_root, 'info/system_prompt_code.txt')
         else:
             # Backward-compatible default
             sys_prompt_path = os.path.join(default_root, 'info/system_prompt.txt')
@@ -946,6 +965,82 @@ class EnvInfoManager(object):
 
         merge(result, task_cfg)
         return result
+
+    @staticmethod
+    def _is_exact_code_mode(config: dict) -> bool:
+        if not isinstance(config, dict):
+            return False
+        value = config.get('action_mode', None)
+        return isinstance(value, str) and value.strip().lower() == 'code'
+
+    @classmethod
+    def _validate_raw_code_runtime_config(cls, task_cfg: dict, *, context: str) -> None:
+        """Validate task-authored Code Mode policy before base overlay.
+
+        This must run before merging: safe baseline values must never hide a
+        missing task-local lifecycle decision.
+        """
+        if not cls._is_exact_code_mode(task_cfg):
+            return
+        block = task_cfg.get('code_runtime', None)
+        if not isinstance(block, dict):
+            raise ValueError(f"{context}: exact Code Mode requires a task-local code_runtime mapping")
+        required = {'previous_action_policy', 'max_live_actions'}
+        missing = sorted(required.difference(block))
+        if missing:
+            raise ValueError(f"{context}: code_runtime is missing task-local field(s): {', '.join(missing)}")
+        allowed = required | {'max_source_bytes', 'checkpoint_budget_per_callback'}
+        unknown = sorted(set(block).difference(allowed))
+        if unknown:
+            raise ValueError(f"{context}: unknown code_runtime field(s): {', '.join(unknown)}")
+        cls._validate_code_runtime_block(block, context=context, require_budget_limits=False)
+
+    @classmethod
+    def _validate_effective_code_runtime_config(cls, env_cfg: dict, *, context: str) -> None:
+        if not cls._is_exact_code_mode(env_cfg):
+            return
+        block = env_cfg.get('code_runtime', None)
+        if not isinstance(block, dict):
+            raise ValueError(f"{context}: exact Code Mode requires an effective code_runtime mapping")
+        cls._validate_code_runtime_block(block, context=context, require_budget_limits=True)
+
+    @staticmethod
+    def _validate_code_runtime_block(block: dict, *, context: str, require_budget_limits: bool) -> None:
+        # Keep the cross-platform Code Runtime envelope deliberately small and
+        # uniform.  The Unity host independently enforces the same values; the
+        # wrapper rejects invalid authored/effective configs before they can be
+        # written into Mods or sent over the environment-parameters channel.
+        max_live_actions_limit = 16
+        min_source_bytes = 256
+        max_source_bytes = 65536
+        min_callback_budget = 1
+        max_callback_budget = 1_000_000
+        policy = block.get('previous_action_policy', None)
+        if policy not in ('stop_at_step_boundary', 'keep_until_exit'):
+            raise ValueError(
+                f"{context}: code_runtime.previous_action_policy must be "
+                "stop_at_step_boundary or keep_until_exit"
+            )
+        live = block.get('max_live_actions', None)
+        if isinstance(live, bool) or not isinstance(live, int) or not 1 <= live <= max_live_actions_limit:
+            raise ValueError(
+                f"{context}: code_runtime.max_live_actions must be an integer in [1, {max_live_actions_limit}]"
+            )
+        if policy == 'stop_at_step_boundary' and live != 1:
+            raise ValueError(f"{context}: stop_at_step_boundary requires max_live_actions=1")
+        budget_limits = (
+            ('max_source_bytes', min_source_bytes, max_source_bytes),
+            ('checkpoint_budget_per_callback', min_callback_budget, max_callback_budget),
+        )
+        for key, minimum, maximum in budget_limits:
+            value = block.get(key, None)
+            if value is None and not require_budget_limits:
+                continue
+            if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+                requirement = f"an integer in [{minimum}, {maximum}]"
+                if require_budget_limits:
+                    raise ValueError(f"{context}: code_runtime.{key} must be {requirement}")
+                raise ValueError(f"{context}: authored code_runtime.{key} must be {requirement}")
 
     @staticmethod
     def _apply_env_config_overrides(env_cfg: dict, overrides: dict) -> dict:
@@ -1065,6 +1160,22 @@ class EnvWrapper(object):
         if mode is None and isinstance(self.cfg, dict):
             mode = self.cfg.get('action_mode', None)
         return (mode or 'code').strip().lower()
+
+    def _has_explicit_exact_code_action_mode(self) -> bool:
+        """Return whether the selected config explicitly opts into exact Code Mode.
+
+        ``_get_action_mode`` intentionally keeps its historical default of
+        ``code`` for missing or empty values.  The restricted Code Runtime
+        protocol is newer and must not reinterpret those legacy configurations,
+        so protocol-only behavior uses this provenance-preserving check instead.
+        """
+        env_info_mgr = getattr(self, 'env_info_mgr', None)
+        env_cfg = getattr(env_info_mgr, 'env_config', None)
+        mode = env_cfg.get('action_mode', None) if isinstance(env_cfg, dict) else None
+        cfg = getattr(self, 'cfg', None)
+        if mode is None and isinstance(cfg, dict):
+            mode = cfg.get('action_mode', None)
+        return isinstance(mode, str) and mode.strip().lower() == 'code'
 
     def _prepare_reset_plan(
         self,
@@ -1299,7 +1410,29 @@ class EnvWrapper(object):
         return '\n'.join(lines)
 
     def _render_func_code_actions(self, exec_code_act: Dict[int, Any], log_prefix: str = 'EnvWrapper.step'):
-        if self._get_action_mode() != 'func' or not exec_code_act:
+        action_mode = self._get_action_mode()
+        if (
+            action_mode == 'code'
+            and self._has_explicit_exact_code_action_mode()
+            and exec_code_act
+        ):
+            # The model-facing exact-Code protocol uses <think> + <code>, while
+            # Unity's closed compiler accepts raw C# only. Strip the envelope
+            # here and only here; Func and legacy/tool transport stay untouched.
+            extracted = {}
+            pattern = re.compile(
+                r'^\s*(?:<think>[\s\S]*?</think>\s*)?<code>([\s\S]*)</code>\s*$',
+                re.IGNORECASE,
+            )
+            for ml_id, payload in exec_code_act.items():
+                if isinstance(payload, str):
+                    match = pattern.fullmatch(payload)
+                    extracted[ml_id] = match.group(1).strip() if match else payload
+                else:
+                    extracted[ml_id] = payload
+            return extracted, {}
+
+        if action_mode != 'func' or not exec_code_act:
             return exec_code_act, {}
 
         rendered = {}
@@ -1882,6 +2015,10 @@ class EnvWrapper(object):
     @staticmethod
     def _build_unity_env_params_payload(env_cfg: dict) -> dict:
         env_cfg = env_cfg if isinstance(env_cfg, dict) else {}
+        EnvInfoManager._validate_effective_code_runtime_config(
+            env_cfg,
+            context='Unity env params payload',
+        )
         payload = {
             k: v for k, v in env_cfg.items()
             if k not in ('task_params', 'env_wrapper_cfg')

@@ -348,25 +348,31 @@ AgentArk tasks choose their action mode in runtime config.
 The task prompt exposes tool documentation. Python validates the tool name and
 arguments, renders a minimal C# call, and sends it to Unity/Roslyn.
 
-`action_mode: code` expects a full C# script:
+An explicit `action_mode: code` opts into the restricted Code Runtime. The task
+prompt supplies a capability manifest, and the model returns one plain managed
+`AgentAction` source file:
 
 ```xml
 <code>
-using UnityEngine;
-
-public class ArkAct_Step0 : MonoBehaviour
+public sealed class AgentAction : CodeAction
 {
-    void Start()
+    public override void Start()
     {
-        var router = GetComponent<ActRouter>();
-        router.Call("ExecutePlan", "L4,U7");
+        int target = Context.Read("read_target").AsInt32();
+        Context.Call("apply_target", CodeValue.FromInt32(target));
+        Context.CompleteStep();
+        Context.StopSelf();
     }
 }
 </code>
 ```
 
-Use tool-call mode when possible. Full-code mode is for tasks that require
-cross-frame control, richer program logic, or multiple task API calls.
+The member names above are illustrative; generated code may use only members in
+the current task's manifest. It cannot access Unity, the scene hierarchy,
+`ActRouter`, reflection, files, networking, or threads directly. Use Func Mode
+when bounded tool calls are sufficient. Use Code Mode when the evaluation needs
+branching, loops, persistent program state, or trusted capability calls across
+multiple host-driven `Tick`/`FixedTick` callbacks.
 
 ## Scoring
 

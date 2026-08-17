@@ -66,7 +66,7 @@ class PrefabEnvConfigTest(unittest.TestCase):
                 'override_by_task': False,
                 'load_mod_mode': 'none',
                 'task_name': 'snake_prefab',
-                'action_mode': 'code',
+                'action_mode': 'func',
                 'engine_para': {},
                 'max_attempts': 1,
                 'max_steps_per_attempt': 2,
@@ -89,7 +89,7 @@ class PrefabEnvConfigTest(unittest.TestCase):
                 'override_by_task': False,
                 'load_mod_mode': 'none',
                 'task_name': 'snake_prefab',
-                'action_mode': 'code',
+                'action_mode': 'func',
                 'engine_para': {},
             }), encoding='utf-8')
 
