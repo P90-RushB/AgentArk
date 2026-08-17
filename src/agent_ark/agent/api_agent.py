@@ -90,6 +90,8 @@ class LLMClient:
         messages: List[Dict[str, Any]],
         temperature: Optional[float] = 0.2,
         extra_body: Optional[Dict[str, Any]] = None,
+        reasoning_effort: Optional[str] = None,
+        max_completion_tokens: Optional[int] = 30000,
     ) -> Any:
         kwargs: Dict[str, Any] = {
             "model": self.model,
@@ -98,6 +100,10 @@ class LLMClient:
         }
         if temperature is not None:
             kwargs["temperature"] = temperature
+        if reasoning_effort is not None:
+            kwargs["reasoning_effort"] = reasoning_effort
+        if max_completion_tokens is not None:
+            kwargs["max_completion_tokens"] = int(max_completion_tokens)
         if self.timeout_s is not None:
             kwargs["timeout"] = float(self.timeout_s)
         return self._client.chat.completions.create(**kwargs)
@@ -122,6 +128,9 @@ class APIAgent(BaseAgent):
         provider: str = "auto",
         timeout_s: Optional[float] = 180.0,
         max_retries: int = 2,
+        thinking: Any = None,
+        reasoning_effort: Optional[str] = None,
+        max_completion_tokens: Optional[int] = 30000,
     ) -> None:
         super().__init__(name)
         self.client = LLMClient(LLMClientConfig(
@@ -133,6 +142,14 @@ class APIAgent(BaseAgent):
             max_retries=max_retries,
         ))
         self.temperature = None if temperature is None else float(temperature)
+        self.thinking_type = self._normalize_thinking_type(thinking)
+        self.reasoning_effort = self._normalize_reasoning_effort(reasoning_effort)
+        self.max_completion_tokens = self._normalize_max_completion_tokens(max_completion_tokens)
+        if self.thinking_type == "disabled" and self.reasoning_effort is not None:
+            raise ValueError(
+                "thinking.type=disabled conflicts with reasoning_effort; "
+                "remove reasoning_effort when thinking is disabled"
+            )
 
 
     def reset(self) -> None:
@@ -235,7 +252,8 @@ class APIAgent(BaseAgent):
         return response_text
 
     def _call_api_with_usage(self, messages: List[dict]) -> tuple[str, Optional[Dict[str, Any]]]:
-        extra_body = self._request_extra_body()
+        extra_body, reasoning_effort = self._request_parameters()
+        max_completion_tokens = getattr(self, "max_completion_tokens", 30000)
         empty_choices_retries = max(0, int(os.getenv("AGENTARK_EMPTY_CHOICES_RETRIES", "3") or "0"))
         empty_choices_delay_s = max(0.0, float(os.getenv("AGENTARK_EMPTY_CHOICES_RETRY_DELAY_S", "2") or "0"))
         last_completion: Any = None
@@ -244,6 +262,8 @@ class APIAgent(BaseAgent):
                 messages=messages,
                 temperature=self.temperature,
                 extra_body=extra_body,
+                reasoning_effort=reasoning_effort,
+                max_completion_tokens=max_completion_tokens,
             )
             choices = getattr(completion, "choices", None)
             if choices:
@@ -269,6 +289,8 @@ class APIAgent(BaseAgent):
         messages: List[dict],
         temperature: Optional[float],
         extra_body: Dict[str, Any],
+        reasoning_effort: Optional[str],
+        max_completion_tokens: Optional[int],
     ) -> Any:
         timeout_s = getattr(self.client, "timeout_s", None)
         if timeout_s is None or float(timeout_s) <= 0:
@@ -276,6 +298,8 @@ class APIAgent(BaseAgent):
                 messages=messages,
                 temperature=temperature,
                 extra_body=extra_body,
+                reasoning_effort=reasoning_effort,
+                max_completion_tokens=max_completion_tokens,
             )
 
         result_queue: "queue.Queue[tuple[str, Any]]" = queue.Queue(maxsize=1)
@@ -288,6 +312,8 @@ class APIAgent(BaseAgent):
                         messages=messages,
                         temperature=temperature,
                         extra_body=extra_body,
+                        reasoning_effort=reasoning_effort,
+                        max_completion_tokens=max_completion_tokens,
                     ),
                 ))
             except BaseException as exc:
@@ -307,24 +333,98 @@ class APIAgent(BaseAgent):
             raise payload
         return payload
 
-    def _request_extra_body(self) -> Dict[str, Any]:
+    def _request_parameters(self) -> tuple[Dict[str, Any], Optional[str]]:
         provider = self.client.provider
         if provider == "auto":
             provider = self._infer_provider_from_host(self.client.base_url_host)
 
+        thinking_type = getattr(self, "thinking_type", None)
+        reasoning_effort = getattr(self, "reasoning_effort", None)
+
         if provider in ("openai", "generic", "none"):
-            return {}
+            if thinking_type is not None:
+                raise ValueError(
+                    f"provider={provider} does not define a thinking request field; "
+                    "use provider: volcengine, openrouter, or dashscope"
+                )
+            return {}, reasoning_effort
+        if provider == "volcengine":
+            if reasoning_effort not in (None, "minimal", "low", "medium", "high"):
+                raise ValueError(
+                    "Volcengine reasoning_effort must be one of: "
+                    "minimal, low, medium, high"
+                )
+            extra_body: Dict[str, Any] = {}
+            if thinking_type is not None:
+                extra_body["thinking"] = {"type": thinking_type}
+            return extra_body, reasoning_effort
         if provider == "openrouter":
-            return {"reasoning": {"enabled": True}}
-        if provider in ("dashscope", "qwen"):
-            return {
-                "enable_thinking": True,
-                "thinking_budget": 81920,
+            reasoning: Dict[str, Any] = {
+                # Preserve the existing AgentArk behavior when no explicit
+                # thinking configuration is supplied.
+                "enabled": thinking_type != "disabled",
             }
+            if reasoning_effort is not None:
+                reasoning["effort"] = reasoning_effort
+            return {"reasoning": reasoning}, None
+        if provider in ("dashscope", "qwen"):
+            if reasoning_effort is not None:
+                raise ValueError(
+                    "provider=dashscope does not support reasoning_effort mapping; "
+                    "configure thinking.type only"
+                )
+            enabled = thinking_type != "disabled"
+            extra_body = {"enable_thinking": enabled}
+            if enabled:
+                extra_body["thinking_budget"] = 81920
+            return extra_body, None
         raise ValueError(
             f"Unsupported LLM provider={self.client.provider!r}; "
-            "expected auto, openai, generic, none, openrouter, dashscope, or qwen"
+            "expected auto, openai, generic, none, volcengine, "
+            "openrouter, dashscope, or qwen"
         )
+
+    @staticmethod
+    def _normalize_thinking_type(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, bool):
+            return "enabled" if value else "disabled"
+        if isinstance(value, dict):
+            value = value.get("type", None)
+        if value in (None, ""):
+            raise ValueError("thinking must contain type: enabled or type: disabled")
+        normalized = str(value).strip().lower()
+        if normalized not in ("enabled", "disabled"):
+            raise ValueError("thinking.type must be enabled or disabled")
+        return normalized
+
+    @staticmethod
+    def _normalize_reasoning_effort(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        normalized = str(value).strip().lower()
+        allowed = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+        if normalized not in allowed:
+            raise ValueError(
+                "reasoning_effort must be one of: "
+                "none, minimal, low, medium, high, xhigh, max"
+            )
+        return normalized
+
+    @staticmethod
+    def _normalize_max_completion_tokens(value: Any) -> Optional[int]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, bool):
+            raise ValueError("max_completion_tokens must be a positive integer or null")
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_completion_tokens must be a positive integer or null") from exc
+        if normalized <= 0:
+            raise ValueError("max_completion_tokens must be a positive integer or null")
+        return normalized
 
     def _record_empty_choices_response(self, *, completion: Any, messages: List[dict], attempt: int) -> None:
         path = os.getenv("AGENTARK_API_DEBUG_RESPONSE_PATH", "").strip()

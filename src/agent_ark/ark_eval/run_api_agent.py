@@ -35,6 +35,7 @@ target_attempt_index_from_record = _trajectory_io.target_attempt_index_from_reco
 
 
 _MAX_GROUP_SEED = 2**31 - 2
+_DEFAULT_CODEX_DISABLED_MCP_SERVERS = ('node_repl', 'unityMCP')
 ResumeKey = Tuple[str, str, str, str]
 
 
@@ -75,6 +76,29 @@ def _normalize_codex_thread_mode(value: Any) -> str:
     if normalized not in allowed:
         raise ValueError("Codex thread_mode must be 'per_agent' or 'per_turn'")
     return normalized
+
+
+def _normalize_codex_context_mode(value: Any) -> str:
+    if value in (None, ''):
+        return 'lean'
+    normalized = str(value).strip().lower()
+    allowed = {'default', 'lean'}
+    if normalized not in allowed:
+        raise ValueError("Codex codex_context_mode must be 'default' or 'lean'")
+    return normalized
+
+
+def _normalize_codex_disabled_mcp_servers(value: Any) -> List[str]:
+    if value is None:
+        return list(_DEFAULT_CODEX_DISABLED_MCP_SERVERS)
+    if not isinstance(value, (list, tuple)):
+        raise ValueError('Codex codex_disabled_mcp_servers must be a list')
+    out: List[str] = []
+    for raw_name in value:
+        name = str(raw_name or '').strip()
+        if name and name not in out:
+            out.append(name)
+    return out
 
 
 def _normalize_player_feedback_cfg(value: Any) -> Dict[str, Any]:
@@ -638,13 +662,24 @@ def build_model_runtimes(
                 model_cfg.get('reasoning_effort', model_cfg.get('effort', None))
             )
             thread_mode = _normalize_codex_thread_mode(model_cfg.get('thread_mode', None))
+            context_mode = _normalize_codex_context_mode(
+                model_cfg.get('codex_context_mode', None)
+            )
+            disabled_mcp_servers = _normalize_codex_disabled_mcp_servers(
+                model_cfg.get('codex_disabled_mcp_servers', None)
+            )
             player_feedback_enabled = bool(player_feedback_cfg.get('enabled', False))
             if player_feedback_enabled and thread_mode != 'per_agent':
                 raise ValueError("Codex player_feedback requires thread_mode: per_agent")
             if player_feedback_enabled and sandbox.strip().lower().replace('-', '_') != 'read_only':
                 raise ValueError("Codex player_feedback requires sandbox: read_only")
-            if player_feedback_enabled and model_cfg.get('cwd', None) not in (None, ''):
-                raise ValueError("Codex player_feedback uses an isolated cwd; remove the explicit model cwd")
+            if (
+                player_feedback_enabled or context_mode == 'lean'
+            ) and model_cfg.get('cwd', None) not in (None, ''):
+                raise ValueError(
+                    "Codex lean/player_feedback mode uses an isolated cwd; "
+                    "remove the explicit model cwd"
+                )
             agent = CodexAgent(
                 name=model_name,
                 model=model_id,
@@ -654,8 +689,10 @@ def build_model_runtimes(
                 codex_bin=model_cfg.get('codex_bin', None),
                 cwd=model_cfg.get('cwd', None),
                 thread_mode=thread_mode,
+                context_mode=context_mode,
+                lean_disabled_mcp_servers=disabled_mcp_servers,
                 black_box_playtest=player_feedback_enabled,
-                isolated_cwd=player_feedback_enabled,
+                isolated_cwd=(player_feedback_enabled or context_mode == 'lean'),
             )
             runtimes.append({
                 'name': model_name,
@@ -668,6 +705,10 @@ def build_model_runtimes(
                 'reasoning_effort': reasoning_effort,
                 'sandbox': sandbox,
                 'thread_mode': thread_mode,
+                'codex_context_mode': context_mode,
+                'codex_disabled_mcp_servers': (
+                    list(disabled_mcp_servers) if context_mode == 'lean' else []
+                ),
                 'player_feedback': player_feedback_cfg,
                 'agent': agent,
             })
@@ -686,6 +727,9 @@ def build_model_runtimes(
         if timeout_s is not None:
             timeout_s = float(timeout_s)
         max_retries = int(model_cfg.get('max_retries', 2))
+        max_completion_tokens = APIAgent._normalize_max_completion_tokens(
+            model_cfg.get('max_completion_tokens', 30000)
+        )
         agent = APIAgent(
             name=model_name,
             api_key=api_key,
@@ -695,6 +739,14 @@ def build_model_runtimes(
             provider=provider,
             timeout_s=timeout_s,
             max_retries=max_retries,
+            thinking=model_cfg.get('thinking', None),
+            reasoning_effort=model_cfg.get('reasoning_effort', None),
+            max_completion_tokens=max_completion_tokens,
+        )
+        thinking = (
+            {'type': agent.thinking_type}
+            if agent.thinking_type is not None
+            else None
         )
         runtimes.append({
             'name': model_name,
@@ -705,6 +757,9 @@ def build_model_runtimes(
             'temperature': temperature,
             'timeout_s': timeout_s,
             'max_retries': max_retries,
+            'max_completion_tokens': agent.max_completion_tokens,
+            'thinking': thinking,
+            'reasoning_effort': agent.reasoning_effort,
             'agent': agent,
         })
     if not runtimes:
@@ -1154,6 +1209,11 @@ def evaluate_case(
         'provider': model_runtime.get('provider'),
         'base_url': model_runtime['base_url'],
         'api_key_env': model_runtime['api_key_env'],
+        'thinking': _to_jsonable(model_runtime.get('thinking')),
+        'reasoning_effort': model_runtime.get('reasoning_effort'),
+        'codex_context_mode': model_runtime.get('codex_context_mode'),
+        'codex_disabled_mcp_servers': model_runtime.get('codex_disabled_mcp_servers'),
+        'max_completion_tokens': model_runtime.get('max_completion_tokens'),
         'requested_task_name': rollout['requested_task_name'],
         'requested_group_seed': rollout['requested_group_seed'],
         'requested_env_id': rollout['requested_env_id'],
@@ -1208,6 +1268,11 @@ def build_error_result(model_runtime: Dict[str, Any], case: Dict[str, Any], erro
         'provider': model_runtime.get('provider'),
         'base_url': model_runtime['base_url'],
         'api_key_env': model_runtime['api_key_env'],
+        'thinking': _to_jsonable(model_runtime.get('thinking')),
+        'reasoning_effort': model_runtime.get('reasoning_effort'),
+        'codex_context_mode': model_runtime.get('codex_context_mode'),
+        'codex_disabled_mcp_servers': model_runtime.get('codex_disabled_mcp_servers'),
+        'max_completion_tokens': model_runtime.get('max_completion_tokens'),
         'requested_task_name': case['task_name'],
         'requested_group_seed': int(case['group_seed']),
         'requested_env_id': case.get('env_id', None),

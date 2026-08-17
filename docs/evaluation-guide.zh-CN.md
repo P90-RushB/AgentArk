@@ -60,12 +60,65 @@ models:
     model: replace-with-openrouter-model-id
     base_url: https://openrouter.ai/api/v1
     api_key_env: OPENROUTER_API_KEY
+    thinking:
+      type: enabled
+    reasoning_effort: high
+    max_completion_tokens: 30000
     temperature: 0.0
 ```
 
 根据端点替换 `provider`、`model`、`base_url` 和 `api_key_env`。也可以在本地私有
 配置中直接设置 `api_key`。如果模型或代理提示 `temperature` 已弃用或不受支持，
 请设置 `temperature: null`，让请求省略该参数。
+HTTP API 模型的 `max_completion_tokens` 默认为 `30000`，限制推理 token 与可见
+输出 token 的总量；设置为 `null` 时省略该参数。
+
+HTTP 模型可以使用统一的 `thinking.type`（`enabled` 或 `disabled`）和
+`reasoning_effort` 配置。AgentArk 会按 provider 转换请求字段：
+
+| provider | 实际请求字段 |
+| --- | --- |
+| `volcengine` | `thinking.type` 和顶层 `reasoning_effort` |
+| `openrouter` | `reasoning.enabled` 和 `reasoning.effort` |
+| `dashscope` / `qwen` | `enable_thinking`；不映射 `reasoning_effort` |
+| `openai` / `generic` | 顶层 `reasoning_effort`；不映射 `thinking` |
+
+如果 provider 无法无歧义地映射配置，AgentArk 会在发请求前报错。省略这些配置时，
+保留原有 provider 默认行为。
+
+#### 火山方舟在线推理
+
+火山方舟在线推理兼容 OpenAI SDK。使用 `provider: volcengine`，让 AgentArk 发送
+Chat Completions 请求，并按火山方舟格式传递深度思考配置：
+
+```yaml
+models:
+  - name: doubao-seed-2-1-pro-260628
+    provider: volcengine
+    model: doubao-seed-2-1-pro-260628
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    api_key_env: ARK_API_KEY
+    thinking:
+      type: enabled
+    reasoning_effort: high
+    max_completion_tokens: 30000
+    timeout_s: 180
+    temperature: 1.0
+```
+
+运行前设置 API Key：
+
+```bash
+export ARK_API_KEY="your-api-key"
+```
+
+这里的版本化模型 ID 和 `/api/v3` 地址属于按量计费的在线推理。不要与 Coding Plan
+的 `/api/coding/v3` 地址及 `doubao-seed-2.0-pro` 模型名混用。AgentArk 当前通过
+Chat Completions API 调用模型；`thinking.type: enabled` 显式开启深度思考，
+`reasoning_effort: high` 设置推理力度，`max_completion_tokens: 30000` 限制推理
+token 与可见输出 token 的总量，`temperature: 1.0` 显式设置采样温度。
+视觉任务使用 `high` 时可能超过示例的 180 秒超时；如果
+可以接受更长延迟，请相应提高 `timeout_s`。
 
 对于无状态 HTTP provider，建议返回完整消息上下文：
 
@@ -116,11 +169,27 @@ models:
     # 启用 Codex tools 时 minimal 可能被拒绝。
     reasoning_effort: medium
     thread_mode: per_agent
+    codex_context_mode: lean
+    # 如个人 Codex 还配置了其他 MCP，请把 server name 追加到这里。
+    codex_disabled_mcp_servers: [node_repl, unityMCP]
 ```
 
 AgentArk 会把 OpenAI 风格的评测消息转换成 Codex 文本和图像输入。Data URI 图像观测
 会直接作为 Codex `ImageInput` 传入。需要更低成本或更快响应时，可以用
 `reasoning_effort` 覆盖 Codex turn 的推理深度。
+
+AgentArk 的 `provider: codex` 默认使用 `codex_context_mode: lean`。这是当前 runner
+创建 SDK thread 时传入的局部配置，不会修改 `~/.codex/config.toml`，也不会影响 Codex
+应用、CLI、IDE 插件或其他 SDK session。lean thread 使用空的 Codex base/developer
+instructions、`deny_all` approval、ephemeral thread 和空临时 cwd，并关闭 web/image/shell
+工具、apps、plugins、multi-agent 等 feature。当前环境常见的 `node_repl` 与
+`unityMCP` 也会被显式关闭。
+
+Codex 配置中的 MCP map 会按名称合并，无法用一个空 map 覆盖所有个人 MCP。因此，若
+个人配置里还有其他 MCP server，必须把其名称加到 `codex_disabled_mcp_servers`。需要做
+包含标准 Codex 上下文的对照实验时，可显式设置 `codex_context_mode: default`；这同样
+只影响该次 AgentArk SDK 评测。结果 JSONL 会记录实际的 context mode 和禁用的 MCP
+名称。当前 `openai-codex==0.1.0b3` 已支持这些 thread 参数，不需要为此升级。
 
 `thread_mode` 默认为 `per_agent`，推荐使用该设置。除了 AgentArk 可见的
 `request_messages`，Codex SDK turn 还包含 Codex 侧运行时、系统和工具上下文；这些
@@ -147,6 +216,12 @@ env_cfg:
 如果 Codex 使用 `thread_mode: per_turn`，请改用 `return_mode: full`。使用
 `thread_mode: per_agent` 时，组合 `append_only: true` 与 `return_mode: delta`，
 让持久 Codex thread 在 reset/base prompt 后只接收新的 step delta。
+
+这里的 delta 由 AgentArk 环境的 `messages.return_mode` 决定，不是 `CodexAgent` 无条件
+产生的。启用 messages 时，`return_mode` 的代码默认值是 `delta`；reset 仍返回一次完整
+base message，之后 step/attempt 更新才返回新增消息。为保证批量评测可复现，建议仍像
+上例一样显式写出 `append_only: true`、`return_mode: delta` 和
+`thread_mode: per_agent`。
 
 运行：
 
@@ -184,11 +259,13 @@ player_feedback:
   enabled: true
 ```
 
-此模式会自动增加两项保护：
+默认的 lean player 模式会自动增加这些保护：
 
 - 动作提示要求 Codex 只使用玩家可见消息和图像。
 - Codex thread 从一个新的空临时 cwd 启动，而不是从源码仓库启动；agent 关闭时会删除
   该目录。
+- Codex 的默认 base/developer instructions 置空，并在线程级关闭工具、apps、plugins、
+  multi-agent 和列出的 MCP server。
 
 终止观测后，`run_api_agent` 会要求同一 thread 输出一个结构化
 `<player_feedback>` JSON 报告。报告区分具体任务缺陷与未解出任务、难度、玩家错误或

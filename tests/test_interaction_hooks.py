@@ -143,6 +143,88 @@ class InteractionHookTest(unittest.TestCase):
                 self.assertIn('<tool_call>', response)
                 self.assertEqual(agent.client.calls[0]['extra_body'], expected_extra_body)
 
+    def test_api_agent_maps_unified_reasoning_config_by_provider(self):
+        class FakeClient:
+            def __init__(self, provider, host='example.test'):
+                self.provider = provider
+                self.base_url_host = host
+                self.timeout_s = None
+                self.calls = []
+
+            def chat_completions_create(self, **kwargs):
+                self.calls.append(kwargs)
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(
+                        content='<tool_call>{"name":"PushForward","arguments":{}}</tool_call>',
+                        model_extra={},
+                    ))],
+                    usage=None,
+                )
+
+        cases = [
+            (
+                'volcengine',
+                'example.test',
+                {'type': 'enabled'},
+                'high',
+                {'thinking': {'type': 'enabled'}},
+                'high',
+            ),
+            (
+                'openrouter',
+                'example.test',
+                {'type': 'enabled'},
+                'high',
+                {'reasoning': {'enabled': True, 'effort': 'high'}},
+                None,
+            ),
+            (
+                'openrouter',
+                'example.test',
+                {'type': 'disabled'},
+                None,
+                {'reasoning': {'enabled': False}},
+                None,
+            ),
+            (
+                'dashscope',
+                'example.test',
+                {'type': 'disabled'},
+                None,
+                {'enable_thinking': False},
+                None,
+            ),
+        ]
+        for provider, host, thinking, effort, expected_body, expected_effort in cases:
+            with self.subTest(provider=provider, host=host):
+                agent = object.__new__(APIAgent)
+                agent.client = FakeClient(provider, host)
+                agent.temperature = None
+                agent.thinking_type = APIAgent._normalize_thinking_type(thinking)
+                agent.reasoning_effort = APIAgent._normalize_reasoning_effort(effort)
+
+                agent._call_api([{'role': 'user', 'content': 'hi'}])
+
+                call = agent.client.calls[0]
+                self.assertEqual(call['extra_body'], expected_body)
+                self.assertEqual(call['reasoning_effort'], expected_effort)
+
+    def test_api_agent_rejects_conflicting_or_unmappable_reasoning_config(self):
+        with self.assertRaisesRegex(ValueError, 'conflicts'):
+            APIAgent(
+                api_key='test-key',
+                provider='openrouter',
+                thinking={'type': 'disabled'},
+                reasoning_effort='high',
+            )
+
+        agent = object.__new__(APIAgent)
+        agent.client = SimpleNamespace(provider='dashscope', base_url_host='example.test')
+        agent.thinking_type = 'enabled'
+        agent.reasoning_effort = 'high'
+        with self.assertRaisesRegex(ValueError, 'does not support reasoning_effort'):
+            agent._request_parameters()
+
     def test_llm_client_omits_temperature_when_none(self):
         class FakeCompletions:
             def __init__(self):
@@ -166,6 +248,23 @@ class InteractionHookTest(unittest.TestCase):
         )
 
         self.assertNotIn('temperature', completions.calls[0])
+        self.assertNotIn('reasoning_effort', completions.calls[0])
+        self.assertEqual(completions.calls[0]['max_completion_tokens'], 30000)
+
+        client.chat_completions_create(
+            messages=[{'role': 'user', 'content': 'hi'}],
+            temperature=None,
+            extra_body={'thinking': {'type': 'enabled'}},
+            reasoning_effort='high',
+            max_completion_tokens=4096,
+        )
+
+        self.assertEqual(completions.calls[1]['reasoning_effort'], 'high')
+        self.assertEqual(completions.calls[1]['max_completion_tokens'], 4096)
+        self.assertEqual(
+            completions.calls[1]['extra_body'],
+            {'thinking': {'type': 'enabled'}},
+        )
 
     def test_api_agent_forward_trace_includes_usage(self):
         class FakeClient:
@@ -262,6 +361,8 @@ class InteractionHookTest(unittest.TestCase):
         self.assertEqual(runtimes[0]['base_url'], 'http://203.0.113.10:18081/v1')
         self.assertEqual(runtimes[0]['api_key_env'], None)
         self.assertEqual(runtimes[0]['temperature'], 0.1)
+        self.assertEqual(runtimes[0]['max_completion_tokens'], 30000)
+        self.assertEqual(runtimes[0]['agent'].max_completion_tokens, 30000)
         self.assertEqual(runtimes[0]['agent'].client.provider, 'openai')
         self.assertEqual(runtimes[0]['agent'].client.model, 'example-openai-model')
 
@@ -279,6 +380,39 @@ class InteractionHookTest(unittest.TestCase):
 
         self.assertEqual(runtimes[0]['temperature'], None)
         self.assertEqual(runtimes[0]['agent'].temperature, None)
+
+    def test_build_model_runtimes_configures_max_completion_tokens(self):
+        explicit = build_model_runtimes([{
+            'name': 'explicit-output-limit',
+            'provider': 'openai',
+            'model': 'example-model',
+            'base_url': 'https://example.test/v1',
+            'api_key': 'not-needed',
+            'max_completion_tokens': 4096,
+        }])[0]
+        omitted = build_model_runtimes([{
+            'name': 'omitted-output-limit',
+            'provider': 'openai',
+            'model': 'example-model',
+            'base_url': 'https://example.test/v1',
+            'api_key': 'not-needed',
+            'max_completion_tokens': None,
+        }])[0]
+
+        self.assertEqual(explicit['max_completion_tokens'], 4096)
+        self.assertEqual(explicit['agent'].max_completion_tokens, 4096)
+        self.assertIsNone(omitted['max_completion_tokens'])
+        self.assertIsNone(omitted['agent'].max_completion_tokens)
+
+        with self.assertRaisesRegex(ValueError, 'positive integer'):
+            build_model_runtimes([{
+                'name': 'invalid-output-limit',
+                'provider': 'openai',
+                'model': 'example-model',
+                'base_url': 'https://example.test/v1',
+                'api_key': 'not-needed',
+                'max_completion_tokens': 0,
+            }])
 
     def test_codex_agent_uses_data_uri_image_input_without_writing_file(self):
         class FakeTextInput:
@@ -471,6 +605,78 @@ class InteractionHookTest(unittest.TestCase):
         agent.close()
         self.assertFalse(isolated_path.exists())
 
+    def test_codex_lean_context_uses_only_thread_local_minimal_overrides(self):
+        class FakeCodex:
+            def __init__(self):
+                self.kwargs = None
+
+            def thread_start(self, **kwargs):
+                self.kwargs = kwargs
+                return object()
+
+        fake_codex = FakeCodex()
+        agent = CodexAgent(
+            name='codex-lean',
+            context_mode='lean',
+            lean_disabled_mcp_servers=['node_repl', 'unityMCP', 'customMcp'],
+        )
+        agent._codex = fake_codex
+        agent._sandbox_cls = SimpleNamespace(read_only='read-only')
+        agent._approval_mode_cls = SimpleNamespace(deny_all='deny-all')
+
+        isolated_path = Path(agent._resolve_cwd())
+        agent._get_thread(0)
+
+        self.assertEqual(fake_codex.kwargs['approval_mode'], 'deny-all')
+        self.assertEqual(fake_codex.kwargs['base_instructions'], '')
+        self.assertEqual(fake_codex.kwargs['developer_instructions'], '')
+        self.assertTrue(fake_codex.kwargs['ephemeral'])
+        self.assertEqual(Path(fake_codex.kwargs['cwd']), isolated_path)
+        self.assertTrue(fake_codex.kwargs['config']['features'])
+        self.assertTrue(all(
+            enabled is False
+            for enabled in fake_codex.kwargs['config']['features'].values()
+        ))
+        self.assertEqual(
+            fake_codex.kwargs['config']['mcp_servers'],
+            {
+                'node_repl': {'enabled': False},
+                'unityMCP': {'enabled': False},
+                'customMcp': {'enabled': False},
+            },
+        )
+        self.assertFalse(fake_codex.kwargs['config']['tools']['web_search'])
+        self.assertFalse(fake_codex.kwargs['config']['tools']['view_image'])
+
+        agent.close()
+        self.assertFalse(isolated_path.exists())
+
+    def test_codex_default_context_does_not_add_lean_thread_overrides(self):
+        class FakeCodex:
+            def __init__(self):
+                self.kwargs = None
+
+            def thread_start(self, **kwargs):
+                self.kwargs = kwargs
+                return object()
+
+        fake_codex = FakeCodex()
+        agent = CodexAgent(name='codex-default', context_mode='default')
+        agent._codex = fake_codex
+        agent._sandbox_cls = SimpleNamespace(read_only='read-only')
+
+        agent._get_thread(0)
+
+        self.assertEqual(agent.config.context_mode, 'default')
+        self.assertNotIn('base_instructions', fake_codex.kwargs)
+        self.assertNotIn('developer_instructions', fake_codex.kwargs)
+        self.assertNotIn('approval_mode', fake_codex.kwargs)
+        self.assertNotIn('config', fake_codex.kwargs)
+
+    def test_codex_lean_context_rejects_explicit_cwd(self):
+        with self.assertRaisesRegex(ValueError, 'explicit cwd'):
+            CodexAgent(name='codex-lean', context_mode='lean', cwd='explicit-path')
+
     def test_codex_player_feedback_schema_rejects_invalid_defect_fields(self):
         base_report = {
             'summary': 'observed issue',
@@ -608,6 +814,28 @@ class InteractionHookTest(unittest.TestCase):
         self.assertEqual(runtimes[0]['agent'].kwargs['reasoning_effort'], 'low')
         self.assertEqual(runtimes[0]['thread_mode'], 'per_turn')
         self.assertEqual(runtimes[0]['agent'].kwargs['thread_mode'], 'per_turn')
+        self.assertEqual(runtimes[0]['codex_context_mode'], 'lean')
+        self.assertEqual(runtimes[0]['agent'].kwargs['context_mode'], 'lean')
+        self.assertTrue(runtimes[0]['agent'].kwargs['isolated_cwd'])
+
+    def test_build_model_runtimes_supports_http_reasoning_config(self):
+        runtimes = build_model_runtimes([{
+            'name': 'doubao-test',
+            'provider': 'volcengine',
+            'model': 'doubao-seed-2-1-pro-260628',
+            'base_url': 'https://ark.cn-beijing.volces.com/api/v3',
+            'api_key': 'test-key',
+            'thinking': {'type': 'ENABLED'},
+            'reasoning_effort': 'HIGH',
+            'max_completion_tokens': 8192,
+        }])
+
+        self.assertEqual(runtimes[0]['thinking'], {'type': 'enabled'})
+        self.assertEqual(runtimes[0]['reasoning_effort'], 'high')
+        self.assertEqual(runtimes[0]['agent'].thinking_type, 'enabled')
+        self.assertEqual(runtimes[0]['agent'].reasoning_effort, 'high')
+        self.assertEqual(runtimes[0]['max_completion_tokens'], 8192)
+        self.assertEqual(runtimes[0]['agent'].max_completion_tokens, 8192)
 
     def test_build_model_runtimes_enables_isolated_black_box_player_feedback(self):
         class FakeCodexAgent:
@@ -626,6 +854,27 @@ class InteractionHookTest(unittest.TestCase):
         self.assertTrue(runtimes[0]['player_feedback']['enabled'])
         self.assertTrue(runtimes[0]['agent'].kwargs['black_box_playtest'])
         self.assertTrue(runtimes[0]['agent'].kwargs['isolated_cwd'])
+        self.assertEqual(runtimes[0]['codex_context_mode'], 'lean')
+
+    def test_build_model_runtimes_can_opt_out_of_codex_lean_context(self):
+        class FakeCodexAgent:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.config = SimpleNamespace(lean_disabled_mcp_servers=('node_repl', 'unityMCP'))
+
+        with patch('agent_ark.ark_eval.run_api_agent.CodexAgent', FakeCodexAgent):
+            runtimes = build_model_runtimes([{
+                'name': 'codex-control',
+                'provider': 'codex',
+                'codex_context_mode': 'default',
+                'cwd': 'explicit-control-cwd',
+            }])
+
+        self.assertEqual(runtimes[0]['codex_context_mode'], 'default')
+        self.assertEqual(runtimes[0]['agent'].kwargs['context_mode'], 'default')
+        self.assertFalse(runtimes[0]['agent'].kwargs['isolated_cwd'])
+        self.assertEqual(runtimes[0]['agent'].kwargs['cwd'], 'explicit-control-cwd')
+        self.assertEqual(runtimes[0]['codex_disabled_mcp_servers'], [])
 
     def test_build_model_runtimes_rejects_stateless_player_feedback(self):
         with self.assertRaisesRegex(ValueError, 'thread_mode: per_agent'):
@@ -699,6 +948,8 @@ class InteractionHookTest(unittest.TestCase):
         self.assertEqual(runtimes[0]['agent'].kwargs['model'], 'gpt-5.5')
         self.assertEqual(runtimes[0]['thread_mode'], 'per_agent')
         self.assertEqual(runtimes[0]['agent'].kwargs['thread_mode'], 'per_agent')
+        self.assertEqual(runtimes[0]['codex_context_mode'], 'lean')
+        self.assertEqual(runtimes[0]['agent'].kwargs['context_mode'], 'lean')
 
     def test_auto_reset_message_omits_repeated_task_prompt_but_keeps_new_image(self):
         img = Image.new('RGB', (2, 2), color=(0, 0, 255))
