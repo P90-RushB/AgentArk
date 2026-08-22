@@ -16,6 +16,10 @@ env_cfg:
           history_only_on_attempt_start: true
 
 eval:
+  # Must match the final packaged player-visible observation surface.
+  # Use text only when messages.include_images=false and the player receives no
+  # image blocks; multimodal remains the safe default.
+  player_observation_modality: multimodal
   output_path: tmp/player_feedback_results.jsonl
   stop_on_error: true
   fixed_env_id: 0
@@ -25,7 +29,8 @@ eval:
       group_seed: 1
       env_id: 0
   # Preserve every playtest, including unsuccessful runs. Completion is not the
-  # quality signal for this stage, and exact actions/images should be replayable.
+  # quality signal for this stage. Multimodal runs must retain images; text runs
+  # may set include_images=false and retain text/action evidence only.
   trajectory_save:
     enabled: true
     output_path: tmp/player_feedback_trajectories.jsonl

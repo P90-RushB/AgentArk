@@ -270,8 +270,10 @@ player_feedback:
 终止观测后，`run_api_agent` 会要求同一 thread 输出一个结构化
 `<player_feedback>` JSON 报告。报告区分具体任务缺陷与未解出任务、难度、玩家错误或
 合理探索需求等非缺陷，结果记录将其保存在 `player_feedback` 下。请启用
-`trajectory_save`，设置 `condition: all` 和 `include_images: true`，确保即使玩家没有
-成功，报告的问题也能回放。如果最终报告缺失、失败或不符合 JSON schema，评测结果会
+`trajectory_save` 并设置 `condition: all`。同时按最终打包任务实际交给玩家的消息表面设置
+`eval.player_observation_modality: multimodal|text`：multimodal 必须设置
+`include_images: true`，text 可以设置 `include_images: false`。这样即使玩家没有成功，
+报告的问题也能以对应模态回放。如果最终报告缺失、失败或不符合 JSON schema，评测结果会
 标记为 `status: error`，避免 resume/retry 逻辑误把玩家 gate 当作已完成；rollout 和
 轨迹证据仍会保留。
 
@@ -284,13 +286,16 @@ attempt index。`ArkEnv` 可能有意让早期 attempt 用于探索，并在后�
 疑似缺陷。
 
 玩家分类只是证据，不是最终结论，也不会直接请求源码修改。workflow 会把解析后的报告
-和包含图像的回放交给 task reviewer。reviewer 独立对照已批准的信息揭示设计、
+和对应模态的回放交给 task reviewer。reviewer 独立对照已批准的信息揭示设计、
 task description、实际 `max_attempts`、seed/history 语义和打包回放，再把候选问题
 分类为 `confirmed defect`、`non-defect` 或 `inconclusive`。只有确认的缺陷才交给
 builder；结论不明确时可追加一次定向运行；有意探索仍记录为非缺陷。
 
 串行和并行 runner 都会拒绝缺少以下设置的玩家反馈配置：
-`trajectory_save.enabled: true`、`condition: all`、`include_images: true` 和输出路径。
+`trajectory_save.enabled: true`、`condition: all` 和输出路径。默认
+`player_observation_modality` 为 `multimodal`，这种模式还要求 `include_images: true`；
+显式 `text` 模式允许不保存图像，但验证时必须确认文本 observation/action 非空且玩家请求
+中没有 image block。
 该模式还拒绝人工交互替代、非 Codex provider、非只读沙箱、显式源码 cwd 以及无状态
 Codex thread。
 

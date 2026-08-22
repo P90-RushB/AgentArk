@@ -133,8 +133,22 @@ def validate_player_feedback_eval_contract(
     condition = str(save_cfg.get('condition', '') or '').strip().lower()
     if condition not in ('all', 'always'):
         raise ValueError('Codex player_feedback requires eval.trajectory_save.condition: all')
-    if not _coerce_bool(save_cfg.get('include_images', True), default=True):
-        raise ValueError('Codex player_feedback requires eval.trajectory_save.include_images=true')
+    observation_modality = str(
+        eval_cfg.get('player_observation_modality', 'multimodal') or 'multimodal'
+    ).strip().lower()
+    if observation_modality not in ('multimodal', 'text'):
+        raise ValueError(
+            'Codex player_feedback requires eval.player_observation_modality '
+            'to be multimodal or text'
+        )
+    if (
+        observation_modality == 'multimodal'
+        and not _coerce_bool(save_cfg.get('include_images', True), default=True)
+    ):
+        raise ValueError(
+            'Codex multimodal player_feedback requires '
+            'eval.trajectory_save.include_images=true'
+        )
     if not str(save_cfg.get('output_path', '') or '').strip():
         raise ValueError('Codex player_feedback requires eval.trajectory_save.output_path')
 

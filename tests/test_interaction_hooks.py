@@ -904,13 +904,14 @@ class InteractionHookTest(unittest.TestCase):
                 'player_feedback': {'enabled': True},
             }])
 
-    def test_player_feedback_eval_contract_requires_all_image_trajectories(self):
+    def test_player_feedback_eval_contract_is_observation_modality_aware(self):
         model_cfgs = [{
             'name': 'codex-player',
             'provider': 'codex',
             'player_feedback': {'enabled': True},
         }]
         valid_eval_cfg = {
+            'player_observation_modality': 'multimodal',
             'trajectory_save': {
                 'enabled': True,
                 'output_path': 'tmp/player.jsonl',
@@ -920,6 +921,20 @@ class InteractionHookTest(unittest.TestCase):
         }
 
         validate_player_feedback_eval_contract(model_cfgs, valid_eval_cfg, {})
+
+        validate_player_feedback_eval_contract(
+            model_cfgs,
+            {
+                'player_observation_modality': 'text',
+                'trajectory_save': {
+                    'enabled': True,
+                    'output_path': 'tmp/player-text.jsonl',
+                    'condition': 'all',
+                    'include_images': False,
+                },
+            },
+            {},
+        )
 
         invalid_configs = {
             'disabled': {'enabled': False, 'output_path': 'tmp/player.jsonl', 'condition': 'all', 'include_images': True},
@@ -935,6 +950,21 @@ class InteractionHookTest(unittest.TestCase):
                         {'trajectory_save': trajectory_save},
                         {},
                     )
+
+        with self.assertRaisesRegex(ValueError, 'player_observation_modality'):
+            validate_player_feedback_eval_contract(
+                model_cfgs,
+                {
+                    'player_observation_modality': 'audio',
+                    'trajectory_save': {
+                        'enabled': True,
+                        'output_path': 'tmp/player.jsonl',
+                        'condition': 'all',
+                        'include_images': True,
+                    },
+                },
+                {},
+            )
 
     def test_codex_provider_defaults_to_gpt55(self):
         class FakeCodexAgent:
