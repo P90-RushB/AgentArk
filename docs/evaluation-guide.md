@@ -247,7 +247,7 @@ python -m agent_ark.ark_eval.run_api_agent \
 ```
 
 `task_name` must match a folder under `Mods/all_tasks`. The packaged runtime
-includes 32 starter tasks, such as `MarbleStop`, `Snake`, `Pushbox`,
+includes 51 starter tasks, such as `MarbleStop`, `Snake`, `Pushbox`,
 `ObjectRotationMatch`, and `StarterRouteJump3D`.
 
 ### Black-Box Player Feedback

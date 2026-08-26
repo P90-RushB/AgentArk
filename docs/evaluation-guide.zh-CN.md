@@ -230,7 +230,7 @@ python -m agent_ark.ark_eval.run_api_agent \
   --config config/ark_env/eval_seed1.example.yaml
 ```
 
-`task_name` 必须匹配 `Mods/all_tasks` 下的目录。打包运行时包含 32 个首发任务，
+`task_name` 必须匹配 `Mods/all_tasks` 下的目录。打包运行时包含 51 个首发任务，
 例如 `MarbleStop`、`Snake`、`Pushbox`、`ObjectRotationMatch` 和
 `StarterRouteJump3D`。
 

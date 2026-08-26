@@ -15,6 +15,9 @@ AgentArk 的目标不是固化一套静态 benchmark，而是为持续增长的�
 动作、评分规则和终止条件。Coding Agent 可以协助把新的任务创意实现为经过验证的
 Mod，同一批任务随后可用于多模态模型评测、轨迹回放和强化学习。
 
+目前已经开发了 200+ 个任务环境。经过验证的任务正通过 AgentArk Hub 和
+Hugging Face 分批发布，并向 2026 年 1K+ 任务库的目标持续扩展。
+
 本仓库提供用于运行时控制、模型评测、回放、环境服务和强化学习集成的 Python 包。
 
 ## AgentArk 能做什么
@@ -32,6 +35,29 @@ Mod，同一批任务随后可用于多模态模型评测、轨迹回放和强�
 - **广泛的任务类型。** AgentArk 面向 2D/3D 场景、物理校准、时序控制、路径规划、
   视频级观测、小游戏、GUI 类任务，以及未来任何能够用可加载 Mod 和可验证评分表达的
   任务类型。
+
+## 精选视频
+
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="https://www.bilibili.com/video/BV1PEu36AEe5">
+        <img src="https://i1.hdslb.com/bfs/archive/b8a594bff949741c5701597521ff9d4a42ea12e0.jpg" alt="GPT 游玩 AgentArk 贪吃蛇" width="100%">
+      </a>
+      <br>
+      <a href="https://www.bilibili.com/video/BV1PEu36AEe5"><strong>▶ GPT: 啊？你们不会玩贪吃蛇啊？</strong></a>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="https://www.bilibili.com/video/BV1D4MS6jEw4">
+        <img src="https://i1.hdslb.com/bfs/archive/9cd38624e49968a4c4f00445f881ee7ef8337bb3.jpg" alt="AI 智能体游玩 AgentArk 打弹珠" width="100%">
+      </a>
+      <br>
+      <a href="https://www.bilibili.com/video/BV1D4MS6jEw4"><strong>▶ AI电竞：打弹珠 “豆姐你倒是动啊！！！”</strong></a>
+    </td>
+  </tr>
+</table>
+
+点击封面或标题即可前往 B 站观看。
 
 ## 先体验 AgentArk
 
@@ -65,7 +91,7 @@ Kaggle 评测通过其 OpenAI 兼容的 Model Proxy 运行。排行榜评测在�
 ## 1. 安装
 
 AgentArk 的本地评测、回放和环境服务需要本仓库中的 Python 包，以及 Hugging Face
-上与之匹配的 Unity 打包运行时。当前运行时版本为 `env-1.0.1`，包含 32 个首发任务。
+上与之匹配的 Unity 打包运行时。当前运行时版本为 `env-1.0.3`，包含 51 个首发任务。
 
 安装、运行时下载、本地路径配置和冒烟测试请参阅
 [docs/setup.zh-CN.md](docs/setup.zh-CN.md)。
@@ -149,8 +175,8 @@ AgentArk 的长期目标是实现模型与环境共同演化：智能体识别�
 
 近期开发重点包括：
 
-- **2026 年达到 1K+ 任务规模。** 将公开任务库从当前首发套件扩展到一千个以上
-  可复现、可训练的任务 Mod。
+- **2026 年达到 1K+ 任务规模。** 在已开发的 200+ 个任务环境基础上，持续分批发布
+  经过验证、可复现、可训练的任务 Mod。
 - **动态课程。** 根据模型成功率、错误类型、任务参数和能力覆盖情况选择任务。
 - **长程记忆。** 为长交互历史的任务压缩观测、动作、分数和错误分析。
 - **更丰富的环境来源。** 将生成式资产、3D 生成和世界模型与 AgentArk 可验证的

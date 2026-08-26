@@ -8,7 +8,7 @@
 `https://huggingface.co/datasets/P90-RushB/AgentArk`
 
 该 dataset 提供带版本的 `manifest.json` 和 `registry/*.jsonl`。请优先读取这些
-registry 文件，而不是硬编码目录扫描。当前版本为 `env-1.0.1`。
+registry 文件，而不是硬编码目录扫描。当前版本为 `env-1.0.3`。
 
 ## Python
 
@@ -45,13 +45,13 @@ uv pip install -e .
 
 ## 下载运行时
 
-当前打包运行时包含 32 个首发任务。可以通过直链或 Hugging Face CLI 下载对应系统的
+当前打包运行时包含 51 个首发任务。可以通过直链或 Hugging Face CLI 下载对应系统的
 运行时。
 
 ### 直接下载
 
-- Linux：`https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/main/artifacts/envs/1.0.1/linux/AgentArk-env-1.0.1-linux.zip`
-- Windows：`https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/main/artifacts/envs/1.0.1/windows/AgentArk-env-1.0.1-windows.zip`
+- Linux：`https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/main/artifacts/envs/1.0.3/linux/AgentArk-env-1.0.3-linux.zip`
+- Windows：`https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/main/artifacts/envs/1.0.3/windows/AgentArk-env-1.0.3-windows.zip`
 
 ### Hugging Face CLI
 
@@ -64,7 +64,7 @@ uv pip install -U huggingface_hub
 Linux：
 
 ```bash
-hf download P90-RushB/AgentArk artifacts/envs/1.0.1/linux/AgentArk-env-1.0.1-linux.zip \
+hf download P90-RushB/AgentArk artifacts/envs/1.0.3/linux/AgentArk-env-1.0.3-linux.zip \
   --type dataset \
   --local-dir downloads/agentark-assets
 ```
@@ -72,13 +72,13 @@ hf download P90-RushB/AgentArk artifacts/envs/1.0.1/linux/AgentArk-env-1.0.1-lin
 Windows `cmd`：
 
 ```bat
-hf download P90-RushB/AgentArk artifacts/envs/1.0.1/windows/AgentArk-env-1.0.1-windows.zip --type dataset --local-dir downloads/agentark-assets
+hf download P90-RushB/AgentArk artifacts/envs/1.0.3/windows/AgentArk-env-1.0.3-windows.zip --type dataset --local-dir downloads/agentark-assets
 ```
 
 解压 zip。Linux 下如有需要，请为 Unity 可执行文件添加执行权限：
 
 ```bash
-chmod +x /path/to/AgentArk-env-1.0.1-linux/AgentArk.x86_64
+chmod +x /path/to/AgentArk-env-1.0.3-linux/AgentArk.x86_64
 ```
 
 ## 配置本地运行时路径
@@ -92,10 +92,10 @@ cp .env.example .env
 Linux 示例：
 
 ```dotenv
-AGENTARK_ENV_PATH=/path/to/AgentArk-env-1.0.1-linux/AgentArk.x86_64
-AGENTARK_MOD_PATH=/path/to/AgentArk-env-1.0.1-linux/AgentArk_Data/Resources/Mods
+AGENTARK_ENV_PATH=/path/to/AgentArk-env-1.0.3-linux/AgentArk.x86_64
+AGENTARK_MOD_PATH=/path/to/AgentArk-env-1.0.3-linux/AgentArk_Data/Resources/Mods
 AGENTARK_TASK_STORE_PATH=${AGENTARK_MOD_PATH}/all_tasks
-AGENTARK_RUNTIME_TEMPLATE_ROOT=/path/to/AgentArk-env-1.0.1-linux
+AGENTARK_RUNTIME_TEMPLATE_ROOT=/path/to/AgentArk-env-1.0.3-linux
 AGENTARK_RUNTIME_POOL_ROOT=/tmp/agentark_runtime_pool
 MLAGENTS_PYTHON_BIN=/path/to/agentark/.venv/bin/python
 ```
@@ -103,10 +103,10 @@ MLAGENTS_PYTHON_BIN=/path/to/agentark/.venv/bin/python
 Windows 示例：
 
 ```dotenv
-AGENTARK_ENV_PATH=C:\path\to\AgentArk-env-1.0.1-windows
-AGENTARK_MOD_PATH=C:\path\to\AgentArk-env-1.0.1-windows\AgentArk_Data\Resources\Mods
+AGENTARK_ENV_PATH=C:\path\to\AgentArk-env-1.0.3-windows
+AGENTARK_MOD_PATH=C:\path\to\AgentArk-env-1.0.3-windows\AgentArk_Data\Resources\Mods
 AGENTARK_TASK_STORE_PATH=${AGENTARK_MOD_PATH}\all_tasks
-AGENTARK_RUNTIME_TEMPLATE_ROOT=C:\path\to\AgentArk-env-1.0.1-windows
+AGENTARK_RUNTIME_TEMPLATE_ROOT=C:\path\to\AgentArk-env-1.0.3-windows
 AGENTARK_RUNTIME_POOL_ROOT=C:\path\to\agentark-runtime-pool
 MLAGENTS_PYTHON_BIN=C:\path\to\AgentArk\.venv\Scripts\python.exe
 ```
@@ -205,7 +205,7 @@ python -m agent_ark.ark_env.ark_sub_env --task-name ObjectRotationMatch --group-
 
 ## 额外任务 Mod
 
-打包运行时已经包含 32 个首发任务。额外任务 Mod archive 列在
+打包运行时已经包含 51 个首发任务。额外任务 Mod archive 列在
 `registry/tasks.jsonl` 中，每个任务和平台对应一行。
 
 下载 registry：
