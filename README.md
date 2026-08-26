@@ -219,3 +219,8 @@ Near-term development will focus on:
 The Python package in this repository is Apache-2.0. Runtime builds, task mods,
 and records on Hugging Face are distributed under the license stated on the
 dataset card, currently CC BY-NC 4.0 unless otherwise noted.
+
+## Contact
+
+- Email: [agentark@qq.com](mailto:agentark@qq.com)
+- WeChat: `dada_biubiubiu`

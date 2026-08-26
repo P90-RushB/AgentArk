@@ -197,3 +197,8 @@ AgentArk 的长期目标是实现模型与环境共同演化：智能体识别�
 
 本仓库中的 Python 包采用 Apache-2.0 许可证。Hugging Face 上的运行时构建、任务 Mod
 和记录遵循 dataset card 中声明的许可证；当前若无其他说明，为 CC BY-NC 4.0。
+
+## 联系方式
+
+- 邮箱：[agentark@qq.com](mailto:agentark@qq.com)
+- 微信：`dada_biubiubiu`
