@@ -31,6 +31,12 @@ export AGENTARK_SERVER_URL=http://127.0.0.1:PORT
 export AGENTARK_RUNTIME_CONFIG=/path/to/agentark-runtime.yaml
 ```
 
+除非命令中明确使用了绝对路径，本文后续命令均从 AgentArk 仓库根目录执行：
+
+```bash
+cd "$AGENTARK_ROOT"
+```
+
 训练时建议将源码、模型、数据集、日志和 checkpoint 放在当前机器性能稳定的本地存储
 上。网络盘或其他共享存储是否适合运行，需要根据机器的 I/O 特性自行判断。
 

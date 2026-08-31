@@ -8,6 +8,9 @@
 AgentArk 返回的 OpenAI 多模态 messages，并能生成任务要求的代码或工具调用格式，就可以
 使用同一套训练流程。模型大小主要由训练机器的 GPU、内存和并发配置决定。
 
+AgentArk 支持同时训练多个任务；如需查看仅训练 Snake 的单任务完整示例，请参阅
+[`tutorial/README.zh-CN.md`](tutorial/README.zh-CN.md)。
+
 ## 快速开始
 
 下面的顺序是一条完整的最小运行路径：
