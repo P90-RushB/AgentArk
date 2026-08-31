@@ -1,0 +1,46 @@
+server:
+  host: http://127.0.0.1
+  port: 8000
+  timeout: 1200
+
+warmup:
+  num_envs: 1
+  step_once: false
+  close_envs_after_warmup: false
+
+env_cfg:
+  # Replace every /path/to/... value with an absolute path on this machine.
+  env_path: /path/to/AgentArk-env/AgentArk.x86_64
+  mod_path: /path/to/AgentArk-env/AgentArk_Data/Resources/Mods
+  task_type: RLTask
+  acquire_start_max_retries: 2
+  max_interactions_per_runtime: 64
+  runtime_sandbox:
+    enabled: true
+    runtime_platform: linux
+    template_root: /path/to/AgentArk-env
+    template_env_path: /path/to/AgentArk-env/AgentArk.x86_64
+    template_mod_path: /path/to/AgentArk-env/AgentArk_Data/Resources/Mods
+    shared_task_store_path: /path/to/AgentArk-env/AgentArk_Data/Resources/Mods/all_tasks
+    pool_root: /path/to/runtime_pool
+    pool_size: 1
+    auto_prepare: true
+    link_mode: symlink
+  env_config_overrides:
+    num_parallel_envs: 1
+    virtual_display: true
+    virtual_display_render_env:
+      GALLIUM_NUM_THREADS: 1
+    env_wrapper_cfg:
+      context_manager:
+        history:
+          max_history_attempts: 0
+          max_history_steps_per_attempt: 0
+          sample_size: 0
+        messages:
+          enabled: true
+          only_return_messages: true
+          append_only: true
+          return_mode: delta
+          history_only_on_attempt_start: true
+          repeat_task_prompt_on_auto_reset: false
