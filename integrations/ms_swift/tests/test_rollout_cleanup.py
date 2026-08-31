@@ -45,7 +45,7 @@ def invoke_async_hook(coro: Any) -> Any:
 
 def install_for(trainer_cls: type[Any]) -> bool:
     return install_rollout_cleanup_patch(
-        detected_version="4.4.1",
+        detected_version="4.5.0.dev0",
         trainer_mixin_cls=trainer_cls,
         invoke_async_hook_fn=invoke_async_hook,
         agentark_scheduler_cls=FakeAgentArkScheduler,
@@ -170,7 +170,27 @@ class RolloutCleanupPatchTest(unittest.TestCase):
 
         self.assertFalse(installed)
         self.assertIs(Trainer._infer_single_or_multi_turn, original)
-        self.assertIn("requires ms-swift==4.4.1", "\n".join(logs.output))
+        self.assertIn("supports ms-swift versions", "\n".join(logs.output))
+
+    def test_megatron_style_mixin_is_supported(self) -> None:
+        class MegatronTrainer:
+            def __init__(self) -> None:
+                self.multi_turn_scheduler = FakeAgentArkScheduler()
+
+            def _infer_single_or_multi_turn(self) -> str:
+                return "megatron-result"
+
+        self.assertTrue(
+            install_rollout_cleanup_patch(
+                detected_version="4.5.0.dev0",
+                trainer_mixin_cls=MegatronTrainer,
+                invoke_async_hook_fn=invoke_async_hook,
+                agentark_scheduler_cls=FakeAgentArkScheduler,
+            )
+        )
+        trainer = MegatronTrainer()
+        self.assertEqual(trainer._infer_single_or_multi_turn(), "megatron-result")
+        self.assertEqual(trainer.multi_turn_scheduler.finalize_reasons, ["rollout_boundary"])
 
 
 if __name__ == "__main__":

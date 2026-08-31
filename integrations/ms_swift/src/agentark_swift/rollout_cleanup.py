@@ -1,10 +1,11 @@
-"""Version-gated rollout-boundary cleanup for ms-swift 4.4.1.
+"""Version-gated rollout-boundary cleanup for supported ms-swift releases.
 
-ms-swift 4.4.1 does not expose a public trajectory-finally hook around the
-colocate multi-turn rollout boundary.  AgentArk installs this deliberately
-small compatibility patch so Python exceptions release live leases promptly;
-the server-side lease TTL remains the final recovery mechanism for process
-crashes and other failures that cannot execute ``finally``.
+The supported ms-swift releases do not expose a public trajectory-finally hook
+around the colocate multi-turn rollout boundary.  AgentArk installs this
+deliberately small compatibility patch so Python exceptions release live
+leases promptly; the server-side lease TTL remains the final recovery
+mechanism for process crashes and other failures that cannot execute
+``finally``.
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ from typing import Any, Callable, Optional, Type
 
 logger = logging.getLogger(__name__)
 
+SUPPORTED_MS_SWIFT_VERSIONS = frozenset({"4.4.1", "4.5.0.dev0"})
+# Kept for downstream imports written against the original 4.4.1-only patch.
 SUPPORTED_MS_SWIFT_VERSION = "4.4.1"
 PATCH_SENTINEL = "__agentark_rollout_boundary_cleanup_patch__"
 ORIGINAL_METHOD_ATTR = "__agentark_original_infer_single_or_multi_turn__"
@@ -48,7 +51,7 @@ def install_rollout_cleanup_patch(
     invoke_async_hook_fn: Optional[Callable[[Any], Any]] = None,
     agentark_scheduler_cls: Optional[Type[Any]] = None,
 ) -> bool:
-    """Install the 4.4.1 compatibility wrapper once.
+    """Install the compatibility wrapper once on the available trainer paths.
 
     Optional dependency injection keeps the patch testable without constructing
     a Swift trainer.  Production callers use the defaults and only pass the
@@ -59,12 +62,12 @@ def install_rollout_cleanup_patch(
     """
 
     resolved_version = get_ms_swift_version() if detected_version is _VERSION_UNSET else detected_version
-    if resolved_version != SUPPORTED_MS_SWIFT_VERSION:
+    if resolved_version not in SUPPORTED_MS_SWIFT_VERSIONS:
         logger.warning(
-            "AgentArk rollout-boundary cleanup patch requires ms-swift==%s; "
+            "AgentArk rollout-boundary cleanup patch supports ms-swift versions %s; "
             "detected %s. AgentArk env/scheduler registration remains enabled, "
             "but lease cleanup now relies on normal scheduler finalization and lease TTL.",
-            SUPPORTED_MS_SWIFT_VERSION,
+            ", ".join(sorted(SUPPORTED_MS_SWIFT_VERSIONS)),
             resolved_version or "not installed",
         )
         return False
@@ -84,46 +87,62 @@ def install_rollout_cleanup_patch(
             agentark_scheduler_cls = AgentArkScheduler
     except Exception:
         logger.warning(
-            "AgentArk could not import the ms-swift 4.4.1 rollout patch targets; "
+            "AgentArk could not import the ms-swift rollout patch targets; "
             "env/scheduler registration remains enabled and lease TTL remains active.",
             exc_info=True,
         )
         return False
 
-    current = trainer_mixin_cls._infer_single_or_multi_turn
-    if getattr(current, PATCH_SENTINEL, False):
-        return False
-
-    original = current
-
-    @wraps(original)
-    def _agentark_infer_with_cleanup(self: Any, *args: Any, **kwargs: Any) -> Any:
+    # The HF and Megatron trainers have separate mixins in 4.5.  Keep the
+    # injection point singular for tests and callers that only need one path.
+    trainer_mixins = [trainer_mixin_cls]
+    if trainer_mixin_cls is not None and trainer_mixin_cls.__module__.startswith("swift.rlhf_trainers"):
         try:
-            return original(self, *args, **kwargs)
-        finally:
-            cleanup_coro = None
-            try:
-                scheduler = getattr(self, "multi_turn_scheduler", None)
-                if isinstance(scheduler, agentark_scheduler_cls):
-                    cleanup_coro = scheduler.finalize_all(reason="rollout_boundary")
-                    invoke_async_hook_fn(cleanup_coro)
-            except BaseException:
-                # Cleanup is best effort. Never replace the rollout's return
-                # value or the exception already propagating from ``original``.
-                if cleanup_coro is not None:
-                    _close_unawaited(cleanup_coro)
-                logger.exception("AgentArk rollout-boundary cleanup failed")
+            from swift.megatron.trainers.rollout_mixin import RolloutTrainerMixin as MegatronRolloutTrainerMixin
+        except Exception:
+            MegatronRolloutTrainerMixin = None
+        if MegatronRolloutTrainerMixin is not None:
+            trainer_mixins.append(MegatronRolloutTrainerMixin)
 
-    setattr(_agentark_infer_with_cleanup, PATCH_SENTINEL, True)
-    setattr(_agentark_infer_with_cleanup, ORIGINAL_METHOD_ATTR, original)
-    trainer_mixin_cls._infer_single_or_multi_turn = _agentark_infer_with_cleanup
-    return True
+    installed = False
+    for mixin in trainer_mixins:
+        current = getattr(mixin, "_infer_single_or_multi_turn", None)
+        if current is None or getattr(current, PATCH_SENTINEL, False):
+            continue
+
+        original = current
+
+        @wraps(original)
+        def _agentark_infer_with_cleanup(self: Any, *args: Any, _original: Any = original, **kwargs: Any) -> Any:
+            try:
+                return _original(self, *args, **kwargs)
+            finally:
+                cleanup_coro = None
+                try:
+                    scheduler = getattr(self, "multi_turn_scheduler", None)
+                    if isinstance(scheduler, agentark_scheduler_cls):
+                        cleanup_coro = scheduler.finalize_all(reason="rollout_boundary")
+                        invoke_async_hook_fn(cleanup_coro)
+                except BaseException:
+                    # Cleanup is best effort. Never replace the rollout's
+                    # return value or the exception from the original method.
+                    if cleanup_coro is not None:
+                        _close_unawaited(cleanup_coro)
+                    logger.exception("AgentArk rollout-boundary cleanup failed")
+
+        setattr(_agentark_infer_with_cleanup, PATCH_SENTINEL, True)
+        setattr(_agentark_infer_with_cleanup, ORIGINAL_METHOD_ATTR, original)
+        mixin._infer_single_or_multi_turn = _agentark_infer_with_cleanup
+        installed = True
+
+    return installed
 
 
 __all__ = [
     "ORIGINAL_METHOD_ATTR",
     "PATCH_SENTINEL",
     "SUPPORTED_MS_SWIFT_VERSION",
+    "SUPPORTED_MS_SWIFT_VERSIONS",
     "get_ms_swift_version",
     "install_rollout_cleanup_patch",
 ]

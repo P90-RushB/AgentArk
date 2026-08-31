@@ -181,6 +181,31 @@ class AgentArkSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.release_calls, ["env-1"])
         self.assertNotIn(request.uuid, scheduler._envs)
 
+    async def test_stale_lease_invalidates_trajectory_without_killing_rollout_driver(self):
+        from agentark_swift.client import AgentArkStaleLeaseError
+
+        assistant = "ExecutePlan stale"
+        scheduler, request, _env, client = await self._started_scheduler(
+            step_payloads=[
+                AgentArkStaleLeaseError(
+                    "lease identity does not own env_id; it may belong to an older generation",
+                    status_code=409,
+                    code="stale_lease",
+                )
+            ]
+        )
+        choice = make_choice(assistant)
+        append_generated_assistant(request, assistant)
+
+        result = await scheduler.on_turn_end(request, choice, current_turn=1)
+
+        self.assertTrue(result["done"])
+        self.assertTrue(result["rollout_infos"]["trajectory_invalid"])
+        self.assertEqual(result["rollout_infos"]["lease_recovery"], "discard_trajectory")
+        self.assertEqual(result["rollout_infos"]["termination_reason"], "stale_lease")
+        self.assertEqual(client.release_calls, ["env-1"])
+        self.assertNotIn(request.uuid, scheduler._envs)
+
     async def test_acquire_exception_leaves_no_scheduler_state(self):
         from agentark_swift.env import AgentArkEnv
         from agentark_swift.scheduler import AgentArkScheduler

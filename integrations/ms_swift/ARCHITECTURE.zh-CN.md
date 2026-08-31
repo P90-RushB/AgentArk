@@ -378,7 +378,7 @@ thread，把同一 Server 的所有 lease 合成批量 heartbeat。
 | `client.py` | v1/v2 HTTP client、稳定 operation ID 和安全重试策略 |
 | `heartbeat.py` | lease handle、本地 deadline、进程级批量 heartbeat |
 | `messages.py` | OpenAI messages 校验、action 提取、去除 assistant echo |
-| `rollout_cleanup.py` | 仅对 ms-swift 4.4.1 安装幂等 rollout-boundary finally 包装 |
+| `rollout_cleanup.py` | 对支持的 ms-swift 版本安装幂等 rollout-boundary finally 包装 |
 
 ### 9.3 AgentArk Server 模块
 
@@ -394,7 +394,7 @@ thread，把同一 Server 的所有 lease 合成批量 heartbeat。
 | 文件 | 职责 |
 | --- | --- |
 | `configs/agentark_grpo.env.example` | 两套 Python 路径、模型与 tuner、smoke/训练默认值模板；复制为被忽略的 `*.local` 后使用 |
-| `pyproject.toml` | 独立 `agentark-swift` 包元数据，固定 `ms-swift==4.4.1`；vLLM 因 CUDA/platform 差异由用户环境单独安装 |
+| `pyproject.toml` | 独立 `agentark-swift` 包元数据，约束 `ms-swift` 在支持范围内；vLLM 因 CUDA/platform 差异由用户环境单独安装 |
 | `data/generated/.gitignore` | 保持目录存在，同时让默认生成的 tickets/runs 不进入 Git |
 | `tests/` | HTTP、Env、Scheduler、heartbeat、cleanup 和 ticket/launcher 回归测试 |
 
@@ -471,6 +471,8 @@ launcher 会在加载模型前验证 ticket 和 idle Unity 数量。
 - `AGENTARK_MAX_COMPLETION_LENGTH`；
 - `AGENTARK_VLLM_MAX_MODEL_LEN`；
 - `AGENTARK_VLLM_GPU_MEMORY_UTILIZATION`；
+- `AGENTARK_VLLM_MM_PROCESSOR_CACHE_GB`（默认 `0`，通过
+  `--vllm_mm_processor_cache_gb` 显式传递；当前 AgentArk 图像多轮 rollout 默认关闭）；
 - tensor parallel、tuner、dtype、冻结策略和 learning rate 等 Swift 参数。
 
 任务和模型之间的图片数量、视觉 token、文本长度及显存需求差异很大。smoke 示例中的

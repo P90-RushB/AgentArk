@@ -30,8 +30,8 @@ Unity 评测，再继续下面的训练配置。
 
 ### 2. 安装 Swift trainer
 
-AgentArk Env Server 和 Swift trainer 使用各自的 Python 环境。当前发布版本固定并验证于
-ms-swift `4.4.1`；下面是已经回归通过的软件栈：
+AgentArk Env Server 和 Swift trainer 使用各自的 Python 环境。当前 adapter 支持并验证于
+ms-swift `4.4.1` 和 `4.5.0.dev0`；下面是已经回归通过的软件栈：
 
 ```bash
 python -m pip install -U uv
@@ -49,7 +49,7 @@ uv pip install -e integrations/ms_swift \
 ```
 
 这套版本用于 Linux、NVIDIA CUDA 和 vLLM colocate。若硬件需要其他 Torch/vLLM wheel，
-保持 `ms-swift==4.4.1`，按照相应 CUDA 兼容关系安装，并重新执行本页 smoke。
+保持 `ms-swift` 在 `4.4.1` 至 `<4.6.0` 的支持范围内，按照相应 CUDA 兼容关系安装，并重新执行本页 smoke。
 
 ### 3. 创建本地配置
 
@@ -214,6 +214,21 @@ checkpoint 空间和 vLLM colocate 显存；`AGENTARK_SAVE_ONLY_MODEL=true` 可�
 | `AGENTARK_GRADIENT_CHECKPOINTING` | full 默认 `true` | 用计算换显存 |
 | `AGENTARK_VLLM_TENSOR_PARALLEL_SIZE` | `1` | 单机 vLLM tensor parallel |
 | `AGENTARK_VLLM_GPU_MEMORY_UTILIZATION` | `0.30` | colocate vLLM 显存比例 |
+| `AGENTARK_VLLM_MM_PROCESSOR_CACHE_GB` | `0` | vLLM 多模态 processor cache 大小；`0` 表示关闭 |
+
+`AGENTARK_VLLM_MM_PROCESSOR_CACHE_GB` 会被 launcher 显式透传为
+`--vllm_mm_processor_cache_gb`。对于 AgentArk 的图像多轮 rollout，默认关闭该 cache
+是当前已验证的安全配置：开启时 vLLM P0/P1 多模态缓存可能在 offload/sleep 或多轮请求
+之间出现生命周期不同步，导致 `Expected a cached item for mm_hash=...`。
+
+如果后续升级 vLLM 并验证了 cache 生命周期，可以显式设置容量，例如：
+
+```bash
+export AGENTARK_VLLM_MM_PROCESSOR_CACHE_GB=4
+```
+
+不要把该参数和 KV cache 的 `AGENTARK_VLLM_GPU_MEMORY_UTILIZATION` 混为一谈；前者
+缓存图片 processor/视觉特征，后者控制 vLLM 的 GPU/KV cache 显存预算。
 
 ## 扩大到正式训练
 
@@ -387,7 +402,7 @@ rollout 日志调整长度、显存比例、TTL 和 Unity 并发。
 
 ## 兼容性与安全
 
-- 当前 adapter 和 rollout cleanup 固定验证于 ms-swift `4.4.1`。
+- 当前 adapter 和 rollout cleanup 验证于 ms-swift `4.4.1` 与 `4.5.0.dev0`。
 - 已验证运行平台为 Linux、NVIDIA CUDA、单机 vLLM colocate。
 - bundled launcher 提供单机多卡参数和预检，当前端到端回归基线为单卡；多节点和 vLLM
   server mode 需要额外的容量与路由实现。

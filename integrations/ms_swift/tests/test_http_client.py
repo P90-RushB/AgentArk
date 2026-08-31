@@ -6,7 +6,13 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from ._fakes import delta_messages, initial_messages
+from ._fakes import (
+    append_generated_assistant,
+    delta_messages,
+    initial_messages,
+    make_choice,
+    make_request,
+)
 
 
 class _AgentArkHandler(BaseHTTPRequestHandler):
@@ -106,6 +112,17 @@ class _AgentArkHandler(BaseHTTPRequestHandler):
                             "message": "wrong turn",
                             "retryable": False,
                         }
+                    },
+                )
+                return
+            if action_id == "stale-identity" or action_id.startswith("e2e-stale:"):
+                self._send_json(
+                    409,
+                    {
+                        "detail": (
+                            "lease identity does not own env_id "
+                            "'v2-http-env'; it may belong to an older generation"
+                        )
                     },
                 )
                 return
@@ -367,6 +384,88 @@ class AgentArkHttpClientTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(raised.exception.status_code, status)
             self.assertEqual(_AgentArkHandler.v2_action_attempts[action_id], 1)
         await client.aclose()
+
+    async def test_stale_lease_conflict_is_classified_and_not_retried(self):
+        from agentark_swift.client import AgentArkStaleLeaseError, AgentArkHttpClient
+        from agentark_swift.heartbeat import LeaseHandle
+
+        client = AgentArkHttpClient(
+            self.base_url,
+            timeout_s=2,
+            release_timeout_s=2,
+            protocol_version="v2",
+            client_id="stale-client",
+            v2_max_attempts=3,
+            v2_retry_base_delay_s=0,
+            v2_retry_max_delay_s=0,
+        )
+        started = await client.acquire_start(
+            {"runtime": "stale"},
+            uid="stale-group",
+            acquire_request_id="stale-acquire",
+        )
+        lease = LeaseHandle.from_acquire_response(
+            started,
+            client_id=client.client_id,
+            acquire_request_id="stale-acquire",
+            release_request_id="stale-release",
+        )
+
+        with self.assertRaises(AgentArkStaleLeaseError):
+            await client.step(
+                lease,
+                action="stale-identity",
+                assistant="stale-identity",
+                action_id="stale-identity",
+                turn_index=1,
+            )
+
+        calls = [
+            body for path, body in _AgentArkHandler.requests
+            if path.endswith("/step") and body.get("action_id") == "stale-identity"
+        ]
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(lease.expired)
+        self.assertIn("stale lease identity", lease.expired_reason)
+        await client.aclose()
+
+    async def test_stale_lease_409_through_http_env_and_scheduler_is_contained(self):
+        from agentark_swift.scheduler import AgentArkScheduler
+
+        request = make_request(uuid="e2e-stale", group_uid="e2e-stale-group")
+        request.data_dict["env_config"].update(
+            {
+                "server_url": self.base_url,
+                "http_timeout_s": 2,
+                "release_timeout_s": 2,
+                "heartbeat_timeout_s": 2,
+            }
+        )
+        scheduler = AgentArkScheduler(max_turns=4)
+        await scheduler.on_trajectory_start([request])
+        assistant = "stale-identity"
+        choice = make_choice(assistant)
+        append_generated_assistant(request, assistant)
+        request_count_before = len(_AgentArkHandler.requests)
+
+        result = await scheduler.on_turn_end(request, choice, current_turn=1)
+
+        requests_after = _AgentArkHandler.requests[request_count_before:]
+        stale_steps = [
+            body for path, body in requests_after
+            if path.endswith("/step") and body.get("action_id") == "e2e-stale:1"
+        ]
+        releases = [
+            body for path, body in requests_after
+            if path.endswith("/release")
+        ]
+        self.assertEqual(len(stale_steps), 1)
+        self.assertEqual(len(releases), 1)
+        self.assertTrue(result["done"])
+        self.assertTrue(result["rollout_infos"]["trajectory_invalid"])
+        self.assertEqual(result["rollout_infos"]["termination_reason"], "stale_lease")
+        self.assertEqual(result["rollout_infos"]["lease_recovery"], "discard_trajectory")
+        self.assertNotIn(request.uuid, scheduler._envs)
 
 
 if __name__ == "__main__":

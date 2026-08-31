@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from swift.infer_engine.protocol import ChatCompletionResponseChoice, RolloutInferRequest
 from swift.rollout.multi_turn import GYMScheduler
 
+from .client import AgentArkStaleLeaseError
 from .env import AgentArkEnv
 from .messages import new_environment_messages
 
@@ -167,6 +168,12 @@ class AgentArkScheduler(GYMScheduler):
                 action_id=f"{uuid}:{current_turn}",
                 turn_index=current_turn,
             )
+        except AgentArkStaleLeaseError as exc:
+            infos = await self.finalize_trajectory(uuid, reason="stale_lease")
+            infos["trajectory_invalid"] = True
+            infos["lease_recovery"] = "discard_trajectory"
+            infos["stale_lease_error"] = str(exc)
+            return {"done": True, "rollout_infos": _json_safe(infos)}
         except BaseException:
             await self.finalize_trajectory(uuid, reason="step_error")
             raise
