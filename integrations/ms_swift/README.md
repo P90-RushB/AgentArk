@@ -34,13 +34,22 @@ Unity 评测，再继续下面的训练配置。
 ### 2. 安装 Swift trainer
 
 AgentArk Env Server 和 Swift trainer 使用各自的 Python 环境。当前 adapter 支持并验证于
-ms-swift `4.4.1` 和 `4.5.0.dev0`；下面是已经回归通过的软件栈：
+ms-swift `4.4.1` 和 `4.5.0.dev0`。
+
+在精确 token 修复合入 ms-swift 官仓并随正式版本发布前，AgentArk 的 agentic 多步 rollout
+训练需要使用临时 fork 的 `fix/agentic-rollout-exact-tokens` 分支。下面固定到已审查的提交，
+避免后续分支更新改变训练环境：
 
 ```bash
+export SWIFT_ROOT=/path/to/ms-swift
+git clone --branch fix/agentic-rollout-exact-tokens --single-branch \
+  https://github.com/P90-RushB/ms-swift.git "$SWIFT_ROOT"
+git -C "$SWIFT_ROOT" switch --detach 1b4c00f15dd637d61ad1e5773e7bd2c477fd774c
+
 python -m pip install -U uv
 uv venv .venv-swift --python 3.12
 source .venv-swift/bin/activate
-uv pip install -e integrations/ms_swift \
+uv pip install -e "$SWIFT_ROOT" -e integrations/ms_swift \
   "torch==2.10.0" \
   "vllm==0.19.0" \
   "transformers==5.14.1" \
@@ -50,6 +59,9 @@ uv pip install -e integrations/ms_swift \
   "datasets==4.8.4" \
   --torch-backend=auto
 ```
+
+不要省略 `-e "$SWIFT_ROOT"`，否则依赖解析可能改为安装尚未包含该修复的 PyPI 版本。
+待修复进入 ms-swift 的正式发行版后，本说明会恢复为直接安装官仓版本。
 
 这套版本用于 Linux、NVIDIA CUDA 和 vLLM colocate。若硬件需要其他 Torch/vLLM wheel，
 保持 `ms-swift` 在 `4.4.1` 至 `<4.6.0` 的支持范围内，按照相应 CUDA 兼容关系安装，并重新执行本页 smoke。
