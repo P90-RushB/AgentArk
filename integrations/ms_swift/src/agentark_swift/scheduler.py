@@ -118,6 +118,8 @@ class AgentArkScheduler(GYMScheduler):
         *,
         gym_done: bool,
         termination_reason: str | None = None,
+        finish_reason: str | None = None,
+        end_turn: int | None = None,
     ) -> dict[str, Any]:
         infos: dict[str, Any] = {
             **deepcopy(self._metadata.get(uuid, {})),
@@ -126,9 +128,10 @@ class AgentArkScheduler(GYMScheduler):
             "step_rewards": list(self._step_rewards.get(uuid, [])),
             "step_infos": deepcopy(self._step_infos.get(uuid, [])),
             "gym_done": bool(gym_done),
+            "termination_reason": termination_reason or "unknown",
+            "finish_reason": finish_reason or "unknown",
+            "end_turn": end_turn if end_turn is not None else len(self._step_rewards.get(uuid, [])),
         }
-        if termination_reason:
-            infos["termination_reason"] = termination_reason
         return _json_safe(infos)
 
     async def on_turn_end(
@@ -141,7 +144,12 @@ class AgentArkScheduler(GYMScheduler):
         if not uuid or uuid not in self._envs:
             return {
                 "done": True,
-                "rollout_infos": {"gym_done": False, "termination_reason": "missing_env"},
+                "rollout_infos": {
+                    "gym_done": False,
+                    "termination_reason": "missing_env",
+                    "finish_reason": response_choice.finish_reason or "unknown",
+                    "end_turn": current_turn,
+                },
             }
 
         token_ids = response_choice.token_ids
@@ -155,7 +163,13 @@ class AgentArkScheduler(GYMScheduler):
         # A length-truncated code/tool call is not a valid action. Releasing it
         # here also avoids GYMScheduler's done override bypassing check_finished.
         if response_choice.finish_reason == "length":
-            infos = self._rollout_infos(uuid, gym_done=False, termination_reason="length")
+            infos = self._rollout_infos(
+                uuid,
+                gym_done=False,
+                termination_reason="length",
+                finish_reason=response_choice.finish_reason,
+                end_turn=current_turn,
+            )
             finalized = await self.finalize_trajectory(uuid, reason="length")
             if "release_error" in finalized:
                 infos["release_error"] = finalized["release_error"]
@@ -173,6 +187,8 @@ class AgentArkScheduler(GYMScheduler):
             infos["trajectory_invalid"] = True
             infos["lease_recovery"] = "discard_trajectory"
             infos["stale_lease_error"] = str(exc)
+            infos["finish_reason"] = response_choice.finish_reason or "unknown"
+            infos["end_turn"] = current_turn
             return {"done": True, "rollout_infos": _json_safe(infos)}
         except BaseException:
             await self.finalize_trajectory(uuid, reason="step_error")
@@ -200,6 +216,8 @@ class AgentArkScheduler(GYMScheduler):
             uuid,
             gym_done=bool(env_done),
             termination_reason=termination_reason,
+            finish_reason=response_choice.finish_reason,
+            end_turn=current_turn,
         )
         if should_stop:
             finalized = await self.finalize_trajectory(uuid, reason=termination_reason or "finished")

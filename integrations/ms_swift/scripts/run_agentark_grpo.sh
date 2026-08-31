@@ -17,6 +17,7 @@ PLUGIN_PATH="${AGENTARK_SWIFT_PLUGIN:-$INTEGRATION_ROOT/src/agentark_swift/plugi
 SWIFT_PYTHON_BIN="${AGENTARK_SWIFT_PYTHON:-python}"
 SWIFT_BIN="${AGENTARK_SWIFT_BIN:-}"
 MODEL_DIR="${AGENTARK_MODEL:-}"
+MODEL_TYPE="${AGENTARK_MODEL_TYPE:-}"
 TUNER_TYPE="${AGENTARK_TUNER_TYPE:-lora}"
 TORCH_DTYPE="${AGENTARK_TORCH_DTYPE:-bfloat16}"
 LEARNING_RATE="${AGENTARK_LEARNING_RATE:-}"
@@ -48,6 +49,8 @@ VLLM_TENSOR_PARALLEL_SIZE="${AGENTARK_VLLM_TENSOR_PARALLEL_SIZE:-1}"
 # multi-turn colocate rollouts.
 VLLM_MM_PROCESSOR_CACHE_GB="${AGENTARK_VLLM_MM_PROCESSOR_CACHE_GB:-0}"
 AGENTARK_ASSISTANT_LOSS_SCOPE="${AGENTARK_ASSISTANT_LOSS_SCOPE:-all_turns}"
+LR_SCHEDULER_TYPE="${AGENTARK_LR_SCHEDULER_TYPE:-cosine}"
+LOSS_TYPE="${AGENTARK_LOSS_TYPE:-grpo}"
 
 AGENTARK_SERVER_URL="${AGENTARK_SERVER_URL:-http://127.0.0.1:18080}"
 AGENTARK_PROTOCOL_VERSION="${AGENTARK_PROTOCOL_VERSION:-v2}"
@@ -73,7 +76,7 @@ for AGENTARK_EXTRA_ARG in "$@"; do
       sequence_parallel_size|dynamic_sample|max_resample_times|truncation_strategy|\
       model|external_plugins|multi_turn_scheduler|gym_env|use_gym_env|use_vllm|\
       vllm_mode|max_turns|loss_scale|output_dir|tuner_type|torch_dtype|\
-      learning_rate|optim|gradient_checkpointing|save_only_model|enable_thinking|\
+      learning_rate|lr_scheduler_type|loss_type|optim|gradient_checkpointing|save_only_model|enable_thinking|\
       freeze_vit|freeze_aligner|freeze_llm)
       echo "[ERR] Do not override --$AGENTARK_EXTRA_KEY through trailing CLI arguments." >&2
       echo "      Use the documented AGENTARK_* variable; this keeps preflight and Swift arguments identical." >&2
@@ -160,6 +163,9 @@ else
 fi
 
 SWIFT_MODEL_ARGS=(--torch_dtype "$TORCH_DTYPE")
+if [[ -n "$MODEL_TYPE" ]]; then
+  SWIFT_MODEL_ARGS+=(--model_type "$MODEL_TYPE")
+fi
 if [[ -n "$ENABLE_THINKING" ]]; then
   SWIFT_MODEL_ARGS+=(--enable_thinking "$ENABLE_THINKING")
 fi
@@ -183,6 +189,7 @@ fi
 if [[ -n "$SAVE_ONLY_MODEL" ]]; then
   SWIFT_OPTIM_ARGS+=(--save_only_model "$SAVE_ONLY_MODEL")
 fi
+SWIFT_OPTIM_ARGS+=(--lr_scheduler_type "$LR_SCHEDULER_TYPE" --loss_type "$LOSS_TYPE")
 
 SWIFT_VERSION="$($SWIFT_PYTHON_BIN -c "import importlib.metadata as m; print(m.version('ms-swift'))")"
 if [[ "$SWIFT_VERSION" != "4.4.1" && "$SWIFT_VERSION" != "4.5.0.dev0" ]]; then
