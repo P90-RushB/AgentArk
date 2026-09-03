@@ -1,11 +1,15 @@
-# AgentArk × ms-swift 接入架构与训练流程
+# AgentArk × ms-swift 接入架构与实现语义
 
-本文解释 AgentArk 如何接入 ms-swift、一次 GRPO rollout 从 ticket 到 Unity 再回到
-策略损失的完整数据流，以及这套实现与现有 VERL recipe 的区别。当前发布依赖固定并
-验证于 ms-swift 4.4.1；下文只在行为与版本直接相关时再次标注版本。
+[English](ARCHITECTURE.md) | 简体中文
 
-如果你的目标只是安装和运行，请先看 [README.md](README.md)；如果要修改 adapter、
-排查多模态轨迹或规划扩容，再阅读本文。
+本文面向需要维护 adapter、排查轨迹或设计扩容方案的开发者，解释 AgentArk 如何接入
+ms-swift、一次 GRPO rollout 从 ticket 到 Unity 再回到策略损失的完整数据流，以及这套
+实现与现有 VERL recipe 的区别。当前已验证版本以 README 和 launcher 的版本检查为准；
+下文只在行为与版本直接相关时再次标注版本。
+
+本文不重复安装、启动和训练命令。如果目标只是跑通训练，请看
+[README.zh-CN.md](README.zh-CN.md)；
+Snake 单任务完整示例见 [tutorial/README.zh-CN.md](tutorial/README.zh-CN.md)。
 
 ## 1. 接入方案与能力边界
 
@@ -19,8 +23,9 @@
   heartbeat 和 TTL 回收；
 - adapter 的消息和环境协议不绑定具体模型；模型需要由当前 Swift template/processor 与
   vLLM 支持，并能生成 AgentArk task 定义的代码或工具 action；
-- 通用 launcher 支持 LoRA 和 full，并提供单机多卡参数与预检；当前端到端回归基线为
-  单卡，扩大后需按实际 GPU、CPU、内存与 Unity 启动稳定性重新做 smoke。
+- 通用 launcher 支持 LoRA 和 full，并提供单机多卡参数与预检；仓库 smoke 回归基线为
+  单卡，Snake 教程另记录了完整 8 卡实跑。扩大后仍需按实际 GPU、CPU、内存与 Unity
+  启动稳定性重新做 smoke。
 
 AgentArk 已经通过独立 Server 提供 runtime sandbox、按 scene/task reset、并发池和任务
 选择器，因此 Swift adapter 直接连接这套服务，保留快速 reload 和共享 pool 语义。
@@ -398,89 +403,29 @@ thread，把同一 Server 的所有 lease 合成批量 heartbeat。
 | `data/generated/.gitignore` | 保持目录存在，同时让默认生成的 tickets/runs 不进入 Git |
 | `tests/` | HTTP、Env、Scheduler、heartbeat、cleanup 和 ticket/launcher 回归测试 |
 
-## 10. 扩大训练规模：什么时候只改配置
+## 10. 扩容时必须保持的架构不变量
 
-### 10.1 同一台机器、同一模型、更多 optimizer steps
+具体参数和命令由 [README.zh-CN.md](README.zh-CN.md) 维护；本节只说明扩容不能破坏的约束。
 
-不需要修改 adapter。至少调整：
+### 10.1 只需调整配置的情况
 
-```bash
-export AGENTARK_MAX_STEPS=1000
-export AGENTARK_OUTPUT_DIR=/persistent/path/run-001
-export AGENTARK_RUN_ID=run-001
-```
+增加 optimizer steps、改变单机 batch/G、调整轨迹长度或更换模型，通常不需要修改
+adapter，但必须同时满足：
 
-未指定 `AGENTARK_TICKET_DATASET` 时 launcher 会按新步数自动生成足够 ticket；指定自有
-dataset 时，capacity checker 会拒绝容量不足的文件。
+- `generation_batch_size` 能被 `num_generations` 和 global train batch 整除；
+- runtime pool 与 v2 warmup 数量都不小于 `generation_batch_size`；
+- ticket 容量满足第 3.2 节的 generation reuse 公式；
+- vLLM 上下文覆盖训练序列和每轮 completion，显存设置与模型及视觉 token 匹配；
+- 每次修改 runtime config 后重启 Server，并用同一份最终配置重建和预热 pool。
 
-### 10.2 增大 G、batch 或 gradient accumulation
+`G=num_generations` 单独增大不会让 Unity 并发超过 generation batch，但会改变每个
+rollout batch 的唯一 group 数，并继续要求 `D % G == 0`。当前 idle preflight 只按协议
+namespace 计数，不按 runtime config fingerprint 筛选，因此不能在同一个 Server 中混合
+不同配置的训练池。
 
-以下参数必须一起考虑：
+### 10.2 需要继续写代码的情况
 
-```text
-AGENTARK_PER_DEVICE_TRAIN_BATCH_SIZE
-AGENTARK_WORLD_SIZE
-AGENTARK_GRADIENT_ACCUMULATION_STEPS
-AGENTARK_GENERATION_BATCH_SIZE（可选）
-AGENTARK_NUM_GENERATIONS
-AGENTARK_NUM_ITERATIONS
-```
-
-同时需要：
-
-```text
-runtime_sandbox.pool_size >= generation_batch_size
-v2 warmup 数量               >= generation_batch_size
-```
-
-例如单机默认 generation batch 为 `4 × 1 × 2 = 8` 时，应把 sandbox pool 至少设为 8，
-并预热 8 个 v2 env：
-
-```bash
-PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}" \
-"$AGENTARK_PYTHON_BIN" -m agent_ark.ark_env.serving.warmup_envs \
-  --config "$AGENTARK_RUNTIME_CONFIG" \
-  --num-envs 8 \
-  --protocol-version v2
-```
-
-然后训练端设置：
-
-```bash
-export AGENTARK_PER_DEVICE_TRAIN_BATCH_SIZE=4
-export AGENTARK_GRADIENT_ACCUMULATION_STEPS=2
-export AGENTARK_NUM_GENERATIONS=4
-```
-
-launcher 会在加载模型前验证 ticket 和 idle Unity 数量。
-
-`G=num_generations` 单独增大不会让 Unity 并发超过 D；D 不变时仍然只需要 D 个 env，
-但每个 generation batch 的唯一 group 数从 `D/G_old` 变为 `D/G_new`，并要求
-`D % G == 0`。
-
-当前 idle preflight 只按 v1/v2 namespace 计数，不按 runtime config fingerprint 筛选。
-修改 runtime config 后必须重启 Server，并用最终同一份 config 重建/预热 v2 pool；不要
-在同一个 Server 中混合不同 config 的训练池。
-
-### 10.3 更长轨迹或更大模型
-
-通常仍是配置和资源调优，而不是修改 adapter：
-
-- `AGENTARK_MAX_TURNS`；
-- `AGENTARK_MAX_LENGTH`；
-- `AGENTARK_MAX_COMPLETION_LENGTH`；
-- `AGENTARK_VLLM_MAX_MODEL_LEN`；
-- `AGENTARK_VLLM_GPU_MEMORY_UTILIZATION`；
-- `AGENTARK_VLLM_MM_PROCESSOR_CACHE_GB`（默认 `0`，通过
-  `--vllm_mm_processor_cache_gb` 显式传递；当前 AgentArk 图像多轮 rollout 默认关闭）；
-- tensor parallel、tuner、dtype、冻结策略和 learning rate 等 Swift 参数。
-
-任务和模型之间的图片数量、视觉 token、文本长度及显存需求差异很大。smoke 示例中的
-长度与显存设置需要按所选模型和 task 重新校准。
-
-### 10.4 需要继续写代码的扩容
-
-以下目标超出当前“改配置即可”的范围：
+以下目标超出当前“改配置即可”的能力边界：
 
 - 多个 env-server 进程共享同一个 pool 或置于随机负载均衡器之后；
 - 多机 env-server 路由、集中 lease store 或跨进程幂等；

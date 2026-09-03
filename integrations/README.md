@@ -11,7 +11,7 @@ real Unity evaluation, then choose an integration below.
 
 | Integration | Adapter location | Env protocol | Start here |
 | --- | --- | --- | --- |
-| ms-swift GRPO | Maintained in this repository under `integrations/ms_swift` | v2 | [ms-swift runbook (Chinese)](ms_swift/README.md) |
+| ms-swift GRPO | Maintained in this repository under `integrations/ms_swift` | v2 | [ms-swift runbook](ms_swift/README.md) |
 | VERL GRPO | Maintained in the public [`agentark_rl` fork](https://github.com/P90-RushB/verl/tree/agentark_rl/agentark_recipe/agentark_env_agent) | Legacy v1, as used by the current recipe | [VERL integration guide](verl/README.md) |
 
 The ms-swift runbook is the complete installation and training path for the
@@ -53,5 +53,5 @@ Before increasing training scale, confirm that:
 
 For shared architecture, grouping and task-selection semantics, and operational
 background, see the [RL training guide](../docs/rl-training.md). The
-[ms-swift architecture note (Chinese)](ms_swift/ARCHITECTURE.zh-CN.md) describes
+[ms-swift architecture and implementation semantics](ms_swift/ARCHITECTURE.md) describes
 that adapter's data flow and compares it with the VERL implementation.

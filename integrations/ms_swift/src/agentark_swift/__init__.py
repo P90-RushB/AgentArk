@@ -1,4 +1,4 @@
-"""ms-swift 4.4.1 integration for AgentArk.
+"""Supported ms-swift integration for AgentArk.
 
 Import :mod:`agentark_swift.plugin` from ms-swift's ``--external_plugins``
 option to register the environment and scheduler.

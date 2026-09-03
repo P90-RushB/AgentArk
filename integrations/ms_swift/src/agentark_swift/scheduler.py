@@ -1,4 +1,4 @@
-"""AgentArk-specific multi-turn scheduler for ms-swift 4.4.1."""
+"""AgentArk-specific multi-turn scheduler for supported ms-swift releases."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def _json_safe(value: Any) -> Any:
 class AgentArkScheduler(GYMScheduler):
     """Drive AgentArk while preserving rollout-produced IDs and inline media.
 
-    Version 0.1 targets ms-swift 4.4.1's colocate multi-turn driver. Every
+    Version 0.1 targets the supported ms-swift colocate multi-turn driver. Every
     nonterminal turn returns the exact IDs emitted by vLLM. The colocate driver
     adds the final turn's IDs itself.
     """
@@ -241,7 +241,7 @@ class AgentArkScheduler(GYMScheduler):
 
         token_ids = response_choice.token_ids
         if token_ids is None:
-            # on_turn_end validates this first in both Swift 4.4.1 drivers.
+            # on_turn_end validates this first in the supported Swift drivers.
             raise RuntimeError("AgentArkScheduler requires exact response_choice.token_ids")
         ids = list(token_ids)
         loss_scope = self._loss_scopes.get(uuid, "all_turns")

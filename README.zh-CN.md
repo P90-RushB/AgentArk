@@ -160,7 +160,7 @@ runtime wrapper 和 Env Server 使用 AgentArk Python 3.10.12 环境，每个 tr
 
 目前提供两种 GRPO 集成：
 
-- [ms-swift](integrations/ms_swift/README.md)：在本仓库中维护。
+- [ms-swift](integrations/ms_swift/README.zh-CN.md)：在本仓库中维护。
 - [VERL](integrations/verl/README.zh-CN.md)：trainer 侧实现位于公开
   `agentark_rl` fork。
 

@@ -43,9 +43,9 @@ def invoke_async_hook(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
-def install_for(trainer_cls: type[Any]) -> bool:
+def install_for(trainer_cls: type[Any], *, detected_version: str = "4.5.0.dev0") -> bool:
     return install_rollout_cleanup_patch(
-        detected_version="4.5.0.dev0",
+        detected_version=detected_version,
         trainer_mixin_cls=trainer_cls,
         invoke_async_hook_fn=invoke_async_hook,
         agentark_scheduler_cls=FakeAgentArkScheduler,
@@ -53,6 +53,14 @@ def install_for(trainer_cls: type[Any]) -> bool:
 
 
 class RolloutCleanupPatchTest(unittest.TestCase):
+    def test_current_official_version_is_supported(self) -> None:
+        class Trainer:
+            def _infer_single_or_multi_turn(self) -> str:
+                return "result"
+
+        self.assertTrue(install_for(Trainer, detected_version="4.6.0.dev0"))
+        self.assertEqual(Trainer()._infer_single_or_multi_turn(), "result")
+
     def test_install_is_idempotent(self) -> None:
         class Trainer:
             def __init__(self) -> None:

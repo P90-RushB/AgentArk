@@ -18,7 +18,7 @@ from typing import Any, Callable, Optional, Type
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_MS_SWIFT_VERSIONS = frozenset({"4.4.1", "4.5.0.dev0"})
+SUPPORTED_MS_SWIFT_VERSIONS = frozenset({"4.4.1", "4.5.0.dev0", "4.6.0.dev0"})
 # Kept for downstream imports written against the original 4.4.1-only patch.
 SUPPORTED_MS_SWIFT_VERSION = "4.4.1"
 PATCH_SENTINEL = "__agentark_rollout_boundary_cleanup_patch__"

@@ -44,6 +44,7 @@ MAX_COMPLETION_LENGTH="${AGENTARK_MAX_COMPLETION_LENGTH:-512}"
 VLLM_MAX_MODEL_LEN="${AGENTARK_VLLM_MAX_MODEL_LEN:-$((MAX_LENGTH + MAX_COMPLETION_LENGTH))}"
 VLLM_GPU_MEMORY_UTILIZATION="${AGENTARK_VLLM_GPU_MEMORY_UTILIZATION:-0.30}"
 VLLM_TENSOR_PARALLEL_SIZE="${AGENTARK_VLLM_TENSOR_PARALLEL_SIZE:-1}"
+USE_VLLM="${AGENTARK_USE_VLLM:-true}"
 # Keep the multimodal processor cache disabled by default. With the cache
 # enabled, vLLM P0/P1 cache lifetimes can diverge during image-heavy
 # multi-turn colocate rollouts.
@@ -124,6 +125,10 @@ if [[ "$TUNER_TYPE" != "lora" && "$TUNER_TYPE" != "full" ]]; then
   echo "[ERR] AGENTARK_TUNER_TYPE must be lora or full." >&2
   exit 2
 fi
+if [[ "$USE_VLLM" != "true" && "$USE_VLLM" != "false" ]]; then
+  echo "[ERR] AGENTARK_USE_VLLM must be true or false." >&2
+  exit 2
+fi
 for AGENTARK_BOOL_NAME in GRADIENT_CHECKPOINTING SAVE_ONLY_MODEL ENABLE_THINKING FREEZE_VIT FREEZE_ALIGNER FREEZE_LLM; do
   AGENTARK_BOOL_VALUE="${!AGENTARK_BOOL_NAME}"
   if [[ -n "$AGENTARK_BOOL_VALUE" && "$AGENTARK_BOOL_VALUE" != "true" && "$AGENTARK_BOOL_VALUE" != "false" ]]; then
@@ -192,8 +197,8 @@ fi
 SWIFT_OPTIM_ARGS+=(--lr_scheduler_type "$LR_SCHEDULER_TYPE" --loss_type "$LOSS_TYPE")
 
 SWIFT_VERSION="$($SWIFT_PYTHON_BIN -c "import importlib.metadata as m; print(m.version('ms-swift'))")"
-if [[ "$SWIFT_VERSION" != "4.4.1" && "$SWIFT_VERSION" != "4.5.0.dev0" ]]; then
-  echo "[ERR] This integration supports ms-swift 4.4.1 and 4.5.0.dev0; found $SWIFT_VERSION." >&2
+if [[ "$SWIFT_VERSION" != "4.4.1" && "$SWIFT_VERSION" != "4.5.0.dev0" && "$SWIFT_VERSION" != "4.6.0.dev0" ]]; then
+  echo "[ERR] This integration supports ms-swift 4.4.1, 4.5.0.dev0, and 4.6.0.dev0; found $SWIFT_VERSION." >&2
   exit 2
 fi
 
@@ -263,18 +268,22 @@ export PYTHONPATH="$INTEGRATION_ROOT/src:${AGENTARK_SWIFT_COMPAT_DIR:-$SCRIPT_DI
 export NPROC_PER_NODE="$WORLD_SIZE"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 
-SWIFT_ROLLOUT_ARGS=(
-  --use_vllm true
-  --vllm_mode colocate
-  --vllm_gpu_memory_utilization "$VLLM_GPU_MEMORY_UTILIZATION"
-  --vllm_tensor_parallel_size "$VLLM_TENSOR_PARALLEL_SIZE"
-  --vllm_max_model_len "$VLLM_MAX_MODEL_LEN"
-  --vllm_mm_processor_cache_gb "$VLLM_MM_PROCESSOR_CACHE_GB"
-)
+if [[ "$USE_VLLM" == "true" ]]; then
+  SWIFT_ROLLOUT_ARGS=(
+    --use_vllm true
+    --vllm_mode colocate
+    --vllm_gpu_memory_utilization "$VLLM_GPU_MEMORY_UTILIZATION"
+    --vllm_tensor_parallel_size "$VLLM_TENSOR_PARALLEL_SIZE"
+    --vllm_max_model_len "$VLLM_MAX_MODEL_LEN"
+    --vllm_mm_processor_cache_gb "$VLLM_MM_PROCESSOR_CACHE_GB"
+  )
+else
+  SWIFT_ROLLOUT_ARGS=(--use_vllm false)
+fi
 
 echo "[INFO] ms-swift=$SWIFT_VERSION model=$MODEL_DIR tuner=$TUNER_TYPE dtype=$TORCH_DTYPE"
 echo "[INFO] tickets=$TICKET_DATASET required_unique_groups=$REQUIRED_TICKETS"
-echo "[INFO] rollout_trajectories=$REQUIRED_IDLE server=$AGENTARK_SERVER_URL"
+echo "[INFO] rollout_trajectories=$REQUIRED_IDLE use_vllm=$USE_VLLM server=$AGENTARK_SERVER_URL"
 echo "[INFO] vllm_mm_processor_cache_gb=$VLLM_MM_PROCESSOR_CACHE_GB"
 echo "[INFO] output=$OUTPUT_DIR"
 

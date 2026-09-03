@@ -5,8 +5,9 @@
 AgentArk 把 Unity runtime pool 作为 HTTP 环境服务提供给 RL trainer。目前维护两条
 GRPO 接入路径；操作命令以各自的运行指南为准：
 
-- [ms-swift 运行指南](../integrations/ms_swift/README.md)：adapter 完整位于本仓库，
-  当前基于已验证的 ms-swift 4.4.1，默认使用 AgentArk HTTP protocol v2。
+- [ms-swift 运行指南](../integrations/ms_swift/README.zh-CN.md)：adapter 完整位于本仓库，
+  支持文档列出的 ms-swift 4.4–4.6 环境，直接使用已经合入 PR #10012 精确 token 修复的
+  官方仓库，并默认使用 AgentArk HTTP protocol v2。
 - [VERL 接入指南](../integrations/verl/README.zh-CN.md)：AgentArk 侧桥接位于本仓库，
   trainer adapter 位于公开的 `agentark_rl` fork，当前 recipe 使用 protocol v1。
 
@@ -55,7 +56,7 @@ agent loop 也在 batch worker 内异步调度轨迹。
 ```
 
 所以当前 ms-swift 所说的“异步”主要是批内环境 I/O 并发；正式训练仍在 rollout batch 与
-optimizer update 之间同步交替。当前 ms-swift 4.4.1 的多轮 Gym scheduler 未启用
+optimizer update 之间同步交替。当前支持的多轮 Gym 路径未启用
 `async_generate` 跨批流水。
 
 ## 3. GRPO group、task 与 seed
@@ -93,8 +94,8 @@ ms-swift adapter 提供两个明确选项：
 - `last_round`：中间 assistant 轮 mask 为 0，只保留最后一轮 assistant。
 
 设置方法和当前 Swift driver 的 token/mask 处理见
-[ms-swift 运行指南](../integrations/ms_swift/README.md)及
-[接入架构](../integrations/ms_swift/ARCHITECTURE.zh-CN.md)。当前 VERL recipe 使用其
+[ms-swift 运行指南](../integrations/ms_swift/README.zh-CN.md)及
+[接入架构与实现语义](../integrations/ms_swift/ARCHITECTURE.zh-CN.md)。当前 VERL recipe 使用其
 agent-loop response mask，对 assistant 输出计算策略损失、对环境 observation 屏蔽；它
 没有复用本仓库的 Swift loss-scope 开关。
 
@@ -161,4 +162,4 @@ runtime。v1 client 可重试 transport/5xx，但没有这些身份信息，step
 路径是重启 Server、用精确配置重新预热，再从 checkpoint 恢复。
 
 更细的 ms-swift 数据流、脚本职责、mask 和 v2 生命周期见
-[ms-swift 接入架构与训练流程](../integrations/ms_swift/ARCHITECTURE.zh-CN.md)。
+[ms-swift 接入架构与实现语义](../integrations/ms_swift/ARCHITECTURE.zh-CN.md)。

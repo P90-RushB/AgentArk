@@ -288,6 +288,10 @@ class SwiftColocateDriverTests(unittest.TestCase):
         from swift.infer_engine.protocol import RequestConfig
         from swift.rollout.agent_loop import run_multi_turn
 
+        class FakeTokenizer:
+            def decode(self, token_ids, skip_special_tokens=False):
+                return f"decoded-{list(token_ids)}"
+
         first_assistant = "ExecutePlan R1"
         final_assistant = "ExecutePlan U2"
         client = FakeAgentArkClient(
@@ -298,7 +302,10 @@ class SwiftColocateDriverTests(unittest.TestCase):
         )
         request = make_request(uuid=f"driver-{loss_scope}", group_uid="driver-group", loss_scope=loss_scope)
         env = AgentArkEnv(request.data_dict["env_config"], client=client)
-        scheduler = AgentArkScheduler(max_turns=4)
+        # ms-swift 4.6 materializes ID-backed assistant history before calling
+        # scheduler hooks. Production passes the real tokenizer from the
+        # trainer; the driver fixture supplies the smallest equivalent.
+        scheduler = AgentArkScheduler(max_turns=4, tokenizer=FakeTokenizer())
         scheduler._create_env = lambda _env_config: env
         asyncio.run(scheduler.on_trajectory_start([request]))
 
