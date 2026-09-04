@@ -11,13 +11,14 @@ real Unity evaluation, then choose an integration below.
 
 | Integration | Adapter location | Env protocol | Start here |
 | --- | --- | --- | --- |
-| ms-swift GRPO | Maintained in this repository under `integrations/ms_swift` | v2 | [ms-swift runbook](ms_swift/README.md) |
+| ms-swift GRPO | AgentArk-enabled Swift; Server helpers and legacy fallback here | v2 | [ms-swift runbook](ms_swift/README.md) |
 | VERL GRPO | Maintained in the public [`agentark_rl` fork](https://github.com/P90-RushB/verl/tree/agentark_rl/agentark_recipe/agentark_env_agent) | Legacy v1, as used by the current recipe | [VERL integration guide](verl/README.md) |
 
-The ms-swift runbook is the complete installation and training path for the
-repository-local adapter. The VERL guide prepares and verifies the AgentArk
-side, then hands off to the external fork for its dataset, agent-loop, and
-trainer configuration.
+The ms-swift runbook is the complete installation and training path for Swift's
+built-in AgentArk integration; this repository temporarily retains the external
+adapter for older supported Swift releases. The VERL guide prepares and verifies
+the AgentArk side, then hands off to the external fork for its dataset, agent-loop,
+and trainer configuration.
 
 ## Shared process layout
 

@@ -1,7 +1,8 @@
-"""Supported ms-swift integration for AgentArk.
+"""Legacy external ms-swift integration for AgentArk.
 
 Import :mod:`agentark_swift.plugin` from ms-swift's ``--external_plugins``
-option to register the environment and scheduler.
+option to register the environment and scheduler when Swift does not provide
+the built-in AgentArk integration.
 """
 
 from .client import AgentArkHttpClient, AgentArkHttpError, AgentArkStaleLeaseError

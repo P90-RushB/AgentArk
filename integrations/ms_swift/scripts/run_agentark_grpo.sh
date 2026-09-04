@@ -14,6 +14,7 @@ if [[ -f "$AGENTARK_REPO_ROOT/.env" ]]; then
   unset AGENTARK_EXPORTED_ENV_SNAPSHOT
 fi
 PLUGIN_PATH="${AGENTARK_SWIFT_PLUGIN:-$INTEGRATION_ROOT/src/agentark_swift/plugin.py}"
+SWIFT_INTEGRATION="${AGENTARK_SWIFT_INTEGRATION:-auto}"
 SWIFT_PYTHON_BIN="${AGENTARK_SWIFT_PYTHON:-python}"
 SWIFT_BIN="${AGENTARK_SWIFT_BIN:-}"
 MODEL_DIR="${AGENTARK_MODEL:-}"
@@ -105,10 +106,6 @@ if [[ -z "$MODEL_DIR" ]]; then
   echo "[ERR] Set AGENTARK_MODEL to a local model directory or a Swift-supported model ID." >&2
   exit 2
 fi
-if [[ ! -f "$PLUGIN_PATH" ]]; then
-  echo "[ERR] AgentArk Swift plugin not found: $PLUGIN_PATH" >&2
-  exit 2
-fi
 if [[ ! -f "$AGENTARK_RUNTIME_CONFIG" ]]; then
   echo "[ERR] AgentArk runtime config not found: $AGENTARK_RUNTIME_CONFIG" >&2
   exit 2
@@ -127,6 +124,10 @@ if [[ "$TUNER_TYPE" != "lora" && "$TUNER_TYPE" != "full" ]]; then
 fi
 if [[ "$USE_VLLM" != "true" && "$USE_VLLM" != "false" ]]; then
   echo "[ERR] AGENTARK_USE_VLLM must be true or false." >&2
+  exit 2
+fi
+if [[ "$SWIFT_INTEGRATION" != "auto" && "$SWIFT_INTEGRATION" != "builtin" && "$SWIFT_INTEGRATION" != "external" ]]; then
+  echo "[ERR] AGENTARK_SWIFT_INTEGRATION must be auto, builtin, or external." >&2
   exit 2
 fi
 for AGENTARK_BOOL_NAME in GRADIENT_CHECKPOINTING SAVE_ONLY_MODEL ENABLE_THINKING FREEZE_VIT FREEZE_ALIGNER FREEZE_LLM; do
@@ -197,9 +198,40 @@ fi
 SWIFT_OPTIM_ARGS+=(--lr_scheduler_type "$LR_SCHEDULER_TYPE" --loss_type "$LOSS_TYPE")
 
 SWIFT_VERSION="$($SWIFT_PYTHON_BIN -c "import importlib.metadata as m; print(m.version('ms-swift'))")"
-if [[ "$SWIFT_VERSION" != "4.4.1" && "$SWIFT_VERSION" != "4.5.0.dev0" && "$SWIFT_VERSION" != "4.6.0.dev0" ]]; then
-  echo "[ERR] This integration supports ms-swift 4.4.1, 4.5.0.dev0, and 4.6.0.dev0; found $SWIFT_VERSION." >&2
+if "$SWIFT_PYTHON_BIN" -c \
+  "from swift.rollout.gym_env import envs; from swift.rollout.multi_turn import multi_turns; raise SystemExit(0 if 'agentark' in envs and 'agentark_scheduler' in multi_turns else 1)" \
+  >/dev/null 2>&1; then
+  SWIFT_HAS_BUILTIN_AGENTARK=true
+else
+  SWIFT_HAS_BUILTIN_AGENTARK=false
+fi
+
+if [[ "$SWIFT_INTEGRATION" == "auto" ]]; then
+  if [[ "$SWIFT_HAS_BUILTIN_AGENTARK" == "true" ]]; then
+    SWIFT_INTEGRATION=builtin
+  else
+    SWIFT_INTEGRATION=external
+  fi
+elif [[ "$SWIFT_INTEGRATION" == "builtin" && "$SWIFT_HAS_BUILTIN_AGENTARK" != "true" ]]; then
+  echo "[ERR] The selected ms-swift does not provide the built-in AgentArk environment and scheduler." >&2
+  echo "      Use an AgentArk-enabled Swift checkout, or set AGENTARK_SWIFT_INTEGRATION=external." >&2
   exit 2
+fi
+
+SWIFT_PLUGIN_ARGS=()
+SWIFT_PYTHONPATH_PREFIX="${AGENTARK_SWIFT_COMPAT_DIR:-$SCRIPT_DIR/compat}"
+if [[ "$SWIFT_INTEGRATION" == "external" ]]; then
+  if [[ "$SWIFT_VERSION" != "4.4.1" && "$SWIFT_VERSION" != "4.5.0.dev0" && "$SWIFT_VERSION" != "4.6.0.dev0" ]]; then
+    echo "[ERR] The legacy external adapter supports ms-swift 4.4.1, 4.5.0.dev0, and 4.6.0.dev0; found $SWIFT_VERSION." >&2
+    echo "      Prefer an AgentArk-enabled Swift checkout with AGENTARK_SWIFT_INTEGRATION=builtin." >&2
+    exit 2
+  fi
+  if [[ ! -f "$PLUGIN_PATH" ]]; then
+    echo "[ERR] AgentArk Swift plugin not found: $PLUGIN_PATH" >&2
+    exit 2
+  fi
+  SWIFT_PLUGIN_ARGS=(--external_plugins "$PLUGIN_PATH")
+  SWIFT_PYTHONPATH_PREFIX="$INTEGRATION_ROOT/src:$SWIFT_PYTHONPATH_PREFIX"
 fi
 
 CAPACITY_ARGS=(
@@ -264,7 +296,7 @@ export AGENTARK_SERVER_URL AGENTARK_PROTOCOL_VERSION AGENTARK_RUNTIME_CONFIG
 export AGENTARK_HTTP_TIMEOUT AGENTARK_RELEASE_TIMEOUT AGENTARK_HEARTBEAT_TIMEOUT
 export AGENTARK_ASSISTANT_LOSS_SCOPE
 export PATH="$(dirname "$SWIFT_BIN"):$PATH"
-export PYTHONPATH="$INTEGRATION_ROOT/src:${AGENTARK_SWIFT_COMPAT_DIR:-$SCRIPT_DIR/compat}${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$SWIFT_PYTHONPATH_PREFIX${PYTHONPATH:+:$PYTHONPATH}"
 export NPROC_PER_NODE="$WORLD_SIZE"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 
@@ -281,7 +313,7 @@ else
   SWIFT_ROLLOUT_ARGS=(--use_vllm false)
 fi
 
-echo "[INFO] ms-swift=$SWIFT_VERSION model=$MODEL_DIR tuner=$TUNER_TYPE dtype=$TORCH_DTYPE"
+echo "[INFO] ms-swift=$SWIFT_VERSION agentark_integration=$SWIFT_INTEGRATION model=$MODEL_DIR tuner=$TUNER_TYPE dtype=$TORCH_DTYPE"
 echo "[INFO] tickets=$TICKET_DATASET required_unique_groups=$REQUIRED_TICKETS"
 echo "[INFO] rollout_trajectories=$REQUIRED_IDLE use_vllm=$USE_VLLM server=$AGENTARK_SERVER_URL"
 echo "[INFO] vllm_mm_processor_cache_gb=$VLLM_MM_PROCESSOR_CACHE_GB"
@@ -294,7 +326,7 @@ echo "[INFO] output=$OUTPUT_DIR"
   --dataset "$TICKET_DATASET" \
   --split_dataset_ratio 0 \
   --load_from_cache_file false \
-  --external_plugins "$PLUGIN_PATH" \
+  "${SWIFT_PLUGIN_ARGS[@]}" \
   --multi_turn_scheduler agentark_scheduler \
   --gym_env agentark \
   --use_gym_env true \

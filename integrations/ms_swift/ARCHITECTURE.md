@@ -6,7 +6,8 @@ This document is for developers who maintain the adapter, diagnose trajectories,
 or design scaling changes. It explains how AgentArk integrates with ms-swift, how a
 GRPO rollout moves from a ticket through Unity and back into policy loss, and how
 this path differs from the existing VERL recipe. The README and launcher are the
-source of truth for validated versions.
+source of truth for selecting the built-in integration or its version-gated legacy
+fallback.
 
 Installation and training commands live in the [runbook](README.md). For a complete
 single-task example, see the [Snake tutorial](tutorial/README.md).
@@ -30,6 +31,11 @@ The repository smoke baseline is single-GPU. The Snake tutorial documents a comp
 eight-GPU run-through, but every larger setup must be recalibrated for its model,
 CPU, memory, GPU topology, and Unity startup behavior.
 
+The preferred trainer implementation now lives in the AgentArk-enabled Swift
+checkout under `swift/rollout/agentark`. This repository retains the former external
+adapter only as a temporary fallback for supported Swift releases that do not yet
+contain those modules. Both paths implement the same Server protocol.
+
 Within one generation batch, reset and step calls wait concurrently through
 coroutines. Rollout batches and optimizer updates still alternate synchronously;
 this is not a cross-batch asynchronous generation pipeline.
@@ -39,7 +45,7 @@ this is not a cross-batch asynchronous generation pipeline.
 ```mermaid
 flowchart LR
     D[Ticket JSONL] --> S[ms-swift GRPO trainer]
-    P[agentark_swift plugin] --> S
+    P[Swift built-in AgentArk Env + Scheduler] --> S
     S --> V[vLLM colocated generation]
     S <--> A[AgentArkEnv + AgentArkScheduler]
     A <--> H[AgentArk HTTP protocol v2]
@@ -157,16 +163,19 @@ increasing the step count of the current design.
 
 `run_agentark_grpo.sh` performs these operations before starting Swift:
 
-1. validates the Swift Python, CLI, model, plugin, and runtime configuration;
-2. checks the installed ms-swift version against the adapter contract;
+1. validates the Swift Python, CLI, model, and runtime configuration;
+2. detects the built-in `agentark` Env and `agentark_scheduler`; if absent, validates
+   the legacy external adapter and its supported ms-swift version;
 3. computes ticket capacity from batch, accumulation, G, iterations, and steps;
 4. atomically generates tickets when no dataset is supplied;
 5. validates ticket uniqueness, group completeness, and task/seed constraints;
 6. derives `required_idle=generation_batch_size`;
 7. checks that the selected protocol pool contains enough started, idle runtimes;
-8. adds the adapter and compatibility shim to `PYTHONPATH`;
-9. starts `swift rlhf` and loads the external plugin;
-10. registers the Env and Scheduler and installs rollout-boundary cleanup.
+8. adds the process compatibility shim to `PYTHONPATH`, plus the legacy adapter only
+   when fallback mode is selected;
+9. starts `swift rlhf`, passing `--external_plugins` only in fallback mode;
+10. uses the Env, Scheduler, and trajectory finalization provided by the selected
+    implementation.
 
 Ticket and Unity-capacity failures therefore happen before the model occupies GPU
 memory.
@@ -294,7 +303,7 @@ replacement for protocol TTL.
 
 | Dimension | VERL recipe | ms-swift adapter |
 | --- | --- | --- |
-| Location | External `agentark_rl` fork | This repository |
+| Location | External `agentark_rl` fork | AgentArk-enabled Swift; legacy fallback in this repository |
 | Current AgentArk protocol | v1 | v2 by default; v1 compatibility remains |
 | Trainer integration | Custom agent loop and recipe | Native Gym Env and multi-turn Scheduler |
 | Runtime ownership | AgentArk Server | AgentArk Server |
@@ -324,15 +333,20 @@ of being duplicated inside each trainer.
 
 ### 9.2 Swift adapter modules
 
+The primary copies of `env.py`, `scheduler.py`, `client.py`, `heartbeat.py`, and
+`messages.py` live under `swift/rollout/agentark` in the AgentArk-enabled Swift
+checkout. Swift registers the Env and Scheduler directly and provides generic
+trajectory finalization. The similarly named modules under this repository's
+`src/agentark_swift` directory, together with `plugin.py` and
+`rollout_cleanup.py`, are the temporary external fallback.
+
 | File | Responsibility |
 | --- | --- |
-| `plugin.py` | Register Env/Scheduler and install rollout cleanup |
 | `env.py` | Resolve runtime config and implement reset/step/close |
 | `scheduler.py` | Batch reset, message injection, reward, masks, and cleanup |
 | `client.py` | v1/v2 HTTP client, stable operation IDs, and safe retries |
 | `heartbeat.py` | Lease handle, local deadline, and process-level heartbeat |
 | `messages.py` | Validate messages, extract actions, and remove assistant echo |
-| `rollout_cleanup.py` | Add version-gated rollout-boundary finalization |
 
 ### 9.3 AgentArk Server modules
 
@@ -345,8 +359,9 @@ of being duplicated inside each trainer.
 
 ### 9.4 Configuration, packaging, and tests
 
-Configuration templates, generated-data ignore rules, packaging metadata, and tests
-live beside the adapter so the integration remains independently testable.
+Configuration templates, generated-data ignore rules, launcher tests, Server tests,
+and the legacy adapter tests remain here. Built-in adapter tests live with the Swift
+implementation. `pyproject.toml` packages only the temporary external fallback.
 
 ## 10. Scaling invariants
 

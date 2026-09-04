@@ -5,9 +5,9 @@
 AgentArk 把 Unity runtime pool 作为 HTTP 环境服务提供给 RL trainer。目前维护两条
 GRPO 接入路径；操作命令以各自的运行指南为准：
 
-- [ms-swift 运行指南](../integrations/ms_swift/README.zh-CN.md)：adapter 完整位于本仓库，
-  支持文档列出的 ms-swift 4.4–4.6 环境，直接使用已经合入 PR #10012 精确 token 修复的
-  官方仓库，并默认使用 AgentArk HTTP protocol v2。
+- [ms-swift 运行指南](../integrations/ms_swift/README.zh-CN.md)：推荐的 adapter 内置于
+  AgentArk-enabled Swift 分支，默认使用 AgentArk HTTP protocol v2；本仓库暂时保留
+  外置 fallback，以兼容文档列出的 ms-swift 4.4–4.6 环境。
 - [VERL 接入指南](../integrations/verl/README.zh-CN.md)：AgentArk 侧桥接位于本仓库，
   trainer adapter 位于公开的 `agentark_rl` fork，当前 recipe 使用 protocol v1。
 
@@ -103,7 +103,7 @@ agent-loop response mask，对 assistant 输出计算策略损失、对环境 ob
 
 | 维度 | ms-swift | VERL |
 | --- | --- | --- |
-| adapter 位置 | 本仓库 `integrations/ms_swift` | 外部 fork；本仓库提供 bridge/preflight |
+| adapter 位置 | AgentArk-enabled Swift；本仓库保留旧版 fallback | 外部 fork；本仓库提供 bridge/preflight |
 | 环境抽象 | Swift Gym Env + multi-turn scheduler | VERL async agent loop |
 | 当前协议 | v2 | v1 |
 | sibling 身份 | 静态 ticket `group_uid` + 独立 request UUID | 每次 occurrence 的 `uid` |

@@ -1,6 +1,6 @@
 ---
 name: agentark-snake-grpo
-description: 使用官方 ms-swift 的 GRPO 流程训练 AgentArk Snake，并协助准备 Python、Unity、dataset、runtime server、1-step smoke、正式训练和验收。要求先审计实际路径、官方 checkout 与版本，再启动训练。
+description: 使用包含 AgentArk 的 ms-swift GRPO 流程训练 AgentArk Snake，并协助准备 Python、Unity、dataset、runtime server、1-step smoke、正式训练和验收。要求先审计实际路径、当前 checkout 与版本，再启动训练。
 ---
 
 # AgentArk Snake GRPO 运行 skill
@@ -52,10 +52,15 @@ Python venv 不包含 base interpreter。不能只复制 venv 目录并假设 `b
 
 不要擅自把教程中的示例值当成当前实验的强制值。
 
-## 官方 ms-swift checkout
+## 包含 AgentArk 的 ms-swift checkout
 
-- 默认使用 `modelscope/ms-swift` 官方仓库，不再使用旧临时 fork；
-- PR #10012 的精确 token-in/token-out 修复已经合入官方仓库；
+- AgentArk 内置支持正式发布到上游前，使用 `P90-RushB/ms-swift:feat/agentark`；发布后
+  使用已经包含该集成的官方版本；
+- 内置路径不要安装或传入本仓库的外置 adapter；
+- 正式验收设置 `AGENTARK_SWIFT_INTEGRATION=builtin`；
+- 检查 Swift registry 中同时存在 `agentark` 和 `agentark_scheduler`；
+- PR #10012 的精确 token-in/token-out 修复已经合入上游，它与 AgentArk 内置接入是
+  两项独立修改；
 - 启动前打印 checkout 的 resolved path、`swift.__file__` 和包版本；
 - 检查 `PYTHONPATH`、console script 和 worker 命令行，防止旧 site-packages 覆盖 checkout。
 

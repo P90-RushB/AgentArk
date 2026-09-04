@@ -14,8 +14,8 @@ runtimes. It does not bind AgentArk to one model or one task.
 If this is your first AgentArk training run, follow the
 [Snake training tutorial](tutorial/README.md). It is the executable, end-to-end
 example for this integration: preparing Snake, configuring Unity runtimes,
-installing official ms-swift, running a one-step smoke test, and starting a longer
-run.
+installing an AgentArk-enabled ms-swift, running a one-step smoke test, and starting
+a longer run.
 
 This README intentionally does not repeat those commands. Use these documents for
 the corresponding purpose:
@@ -37,7 +37,7 @@ configuration. This README is an orientation guide for adapting that example.
 ms-swift trainer
     │  ticket / generated action
     ▼
-AgentArk Swift adapter ──HTTP──► AgentArk Env Server
+Swift built-in AgentArk adapter ──HTTP──► AgentArk Env Server
                                   │
                                   ├── Unity runtime 1
                                   ├── Unity runtime 2
@@ -47,9 +47,10 @@ AgentArk Swift adapter ──HTTP──► AgentArk Env Server
 ```
 
 The Swift trainer and AgentArk Env Server run in separate Python environments.
-The adapter is installed in the trainer environment and talks to the Server over
+The preferred adapter is built into the Swift trainer and talks to the Server over
 protocol v2. The Server owns the Unity processes and leases one runtime to each
-active trajectory.
+active trajectory. This repository temporarily retains the old external adapter for
+official Swift releases that predate the built-in integration.
 
 Five terms are useful when reading the tutorial and logs:
 
@@ -60,6 +61,21 @@ Five terms are useful when reading the tutorial and logs:
 | **GRPO group** | Sibling trajectories that start from the same task and seed. |
 | **Ticket** | A lightweight dataset row that identifies one GRPO group; the real prompt and images arrive from Unity after reset. |
 | **Lease** | The Server's temporary assignment of one runtime to one trajectory. |
+
+## Choose the Swift integration
+
+Until AgentArk support is merged and released upstream, use the
+[`P90-RushB/ms-swift` `feat/agentark` branch](https://github.com/P90-RushB/ms-swift/tree/feat/agentark).
+It contains the native Gym Env and scheduler, so do not install or pass this
+repository's external plugin. Once an official ms-swift release includes AgentArk,
+use that release instead.
+
+`run_agentark_grpo.sh` defaults `AGENTARK_SWIFT_INTEGRATION=auto`: it selects the
+built-in implementation when both `agentark` and `agentark_scheduler` are registered,
+otherwise it falls back to the legacy external adapter on the explicitly supported
+Swift 4.4--4.6 versions. For a formal run with an AgentArk-enabled checkout, set
+`AGENTARK_SWIFT_INTEGRATION=builtin`; this fails early instead of silently training
+with the legacy copy.
 
 ## Adapting the Snake example
 
@@ -147,11 +163,10 @@ the errors encountered while running the example. The
 
 ## Compatibility and safety
 
-- The adapter and rollout cleanup currently accept ms-swift `4.4.1`, `4.5.0.dev0`,
-  and `4.6.0.dev0`. Use the official
-  [modelscope/ms-swift repository](https://github.com/modelscope/ms-swift); the
-  token-consistency fix required for AgentArk's agentic rollouts was merged upstream
-  in [PR #10012](https://github.com/modelscope/ms-swift/pull/10012).
+- The preferred built-in path is currently available from the AgentArk-enabled Swift
+  branch linked above. The repository-local external fallback accepts only ms-swift
+  `4.4.1`, `4.5.0.dev0`, and `4.6.0.dev0`. The earlier token-consistency prerequisite
+  was merged upstream in [PR #10012](https://github.com/modelscope/ms-swift/pull/10012).
 - The validated deployment is Linux with NVIDIA CUDA and single-host colocated
   rollout. Multi-node training and vLLM server mode require additional routing and
   capacity work.

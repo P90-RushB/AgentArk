@@ -160,7 +160,8 @@ runtime wrapper 和 Env Server 使用 AgentArk Python 3.10.12 环境，每个 tr
 
 目前提供两种 GRPO 集成：
 
-- [ms-swift](integrations/ms_swift/README.zh-CN.md)：在本仓库中维护。
+- [ms-swift](integrations/ms_swift/README.zh-CN.md)：trainer 接入位于包含 AgentArk 的
+  Swift；本仓库维护 Server、运行指南和临时旧版 fallback。
 - [VERL](integrations/verl/README.zh-CN.md)：trainer 侧实现位于公开
   `agentark_rl` fork。
 
@@ -189,8 +190,8 @@ AgentArk 的长期目标是实现模型与环境共同演化：智能体识别�
 - `agent_ark.ark_env`：Unity 运行时生命周期、任务 reset/step 协议、运行时沙箱、
   环境服务、预热和 HTTP client 工具。
 - `agent_ark.ark_eval`：API 模型评测、并行评测、回放以及轨迹保存/加载。
-- `integrations`：RL 框架 adapter 与运行指南；VERL trainer 侧 recipe 仍位于其
-  公开 fork 中。
+- `integrations`：RL 框架运行指南、Server 辅助脚本与临时兼容 adapter；ms-swift 内置
+  接入目前位于其 feature 分支，VERL trainer recipe 仍位于公开 fork。
 - `agent_ark.interaction`：本地浏览器 viewer 和人工交互 hook。
 
 ## 许可证

@@ -1,11 +1,11 @@
-# 使用官方 ms-swift 全参数训练 AgentArk Snake
+# 使用 ms-swift 全参数训练 AgentArk Snake
 
 [English](README.md) | 简体中文
 
-本文给出一条已经实际跑通的端到端路径：准备 16 个并发 Unity runtime，然后使用官方
-ms-swift 对 Qwen3.5-9B 进行 8 卡 GRPO 全参数训练。目标是帮助你验证 AgentArk 的
-多模态 rollout、Unity 交互、reward、反向传播和 checkpoint 链路，不要求复现实验中的
-具体 reward 或耗时。
+本文给出一套完整的 8 卡 Qwen3.5-9B 全参数配置；该配置此前已经使用旧外置 adapter
+实际跑通。trainer 接入现已移入 AgentArk-enabled Swift 分支，新实验应使用其内置路径，
+并先完成一步 smoke，再启动长时间训练。目标是帮助你验证 AgentArk 的多模态 rollout、
+Unity 交互、reward、反向传播和 checkpoint 链路，不要求复现实验中的具体 reward 或耗时。
 
 [Snake](https://p90-rushb.github.io/agentark-hub/tasks/snake/) 是 AgentArk Hub 托管的一个
 2D 网格任务：agent 根据画面控制蛇寻找食物，同时避免撞墙或撞到自身。它的规则简单，
@@ -23,12 +23,13 @@ Hub 中发布的任务默认使用 `20×20` 地图。本文把逻辑地图临时
 
 ## 1. 跑通示例配置
 
-下面是一组已经跑通的参考参数。它描述的是可工作的资源组合，不是必须逐项复现的基准：
+下面是一组已经用旧外置 adapter 跑通的参考参数。它描述的是可工作的资源组合，不是必须
+逐项复现的基准；切换到 Swift 内置接入后仍应先完成一步 smoke：
 
 | 项目 | 配置 |
 | --- | --- |
 | AgentArk Unity 包 | `AgentArk-env-1.0.3-linux` |
-| ms-swift | 官方仓库（跑通时为 `4.6.0.dev0`） |
+| ms-swift | `4.6.0.dev0`；完整训练使用旧外置 adapter，内置接入另行通过 smoke |
 | PyTorch / vLLM | `2.10.0+cu128` / `0.19.0` |
 | 任务 | Snake，逻辑地图 `8×8` |
 | 模型 | Qwen3.5-9B，本地 BF16 权重 |
@@ -79,7 +80,7 @@ Unity pool 必须按 rollout 并发量配置为 16，不能按 8 卡训练 micro
 - AgentArk 源码；
 - AgentArk Linux Unity 环境包；
 - 可以启动 AgentArk/ML-Agents 的 Python 环境；
-- 已经安装并可运行的官方 ms-swift 环境；
+- 已安装并可运行 `swift rlhf`、且包含 AgentArk 的 ms-swift 环境；
 - 本地 Qwen3.5-9B 模型；
 - 8 张约 80GB 的 NVIDIA GPU；
 - Linux 图形运行依赖和 Xvfb。
@@ -87,18 +88,23 @@ Unity pool 必须按 rollout 并发量配置为 16，不能按 8 卡训练 micro
 AgentArk server 和 ms-swift trainer 可以使用两个独立的 Python 环境。该示例分别使用
 Python 3.10 和 Python 3.12。
 
-### 2.1 获取官方 ms-swift
+### 2.1 获取包含 AgentArk 的 ms-swift
 
-PR [#10012](https://github.com/modelscope/ms-swift/pull/10012) 的精确 token-in/token-out
-修复已经合入官方仓库，直接使用官方源码即可：
+在 AgentArk 内置接入合并并正式发布到上游前，使用 AgentArk 维护者 fork 的
+`feat/agentark` 分支：
 
 ```bash
-export SWIFT_ROOT=/absolute/path/to/official-ms-swift
-git clone https://github.com/modelscope/ms-swift.git "$SWIFT_ROOT"
+export SWIFT_ROOT=/absolute/path/to/ms-swift
+export SWIFT_PYTHON_BIN=/absolute/path/to/swift-env/bin/python
+git clone --branch feat/agentark https://github.com/P90-RushB/ms-swift.git "$SWIFT_ROOT"
+"$SWIFT_PYTHON_BIN" -m pip install -e "$SWIFT_ROOT"
 ```
 
-不再需要旧的临时 fork。安装依赖和 AgentArk adapter 的命令见上级
-[`README.zh-CN.md`](../README.zh-CN.md)。
+该分支已经内置 AgentArk Gym Env 和多轮 scheduler，不要安装本仓库中的
+`agentark-swift` 包，也不要添加 `--external_plugins`。官方 ms-swift 发布包含 AgentArk
+的版本后，直接改用该官方版本即可，后续步骤不变。另一个独立前置修改——精确
+token-in/token-out——已经通过 [PR #10012](https://github.com/modelscope/ms-swift/pull/10012)
+合入上游。
 
 ### 2.2 定义本机路径
 
@@ -132,11 +138,17 @@ PYTHONPATH="$SWIFT_ROOT" \
 "$SWIFT_PYTHON_BIN" -c \
   'import importlib.metadata as m, swift; print(m.version("ms-swift")); print(swift.__file__)'
 
+PYTHONPATH="$SWIFT_ROOT" \
+"$SWIFT_PYTHON_BIN" -c \
+  'from swift.rollout.gym_env import envs; from swift.rollout.multi_turn import multi_turns; assert "agentark" in envs and "agentark_scheduler" in multi_turns; print("built-in AgentArk: OK")'
+
 "$SWIFT_BIN" --help >/dev/null
 ```
 
-第二条命令应输出当前 ms-swift 版本和目标官方 checkout 中的源码路径。不要让全局
-site-packages 或旧 `PYTHONPATH` 覆盖目标源码。后续命令均从 AgentArk 仓库根目录执行：
+Swift 检查应输出当前版本、目标 AgentArk-enabled checkout 中的源码路径以及
+`built-in AgentArk: OK`。
+不要让全局 site-packages 或旧 `PYTHONPATH` 覆盖目标源码。后续命令均从 AgentArk
+仓库根目录执行：
 
 ```bash
 cd "$AGENTARK_ROOT"
@@ -385,13 +397,14 @@ unset SWIFT_SINGLE_DEVICE_MODE
 export AGENTARK_REPO_ROOT="$AGENTARK_ROOT"
 export AGENTARK_SWIFT_PYTHON="$SWIFT_PYTHON_BIN"
 export AGENTARK_SWIFT_BIN="$SWIFT_BIN"
+export AGENTARK_SWIFT_INTEGRATION=builtin
 export AGENTARK_MODEL="$MODEL_PATH"
 export AGENTARK_TICKET_DATASET="$DATASET_PATH"
 export AGENTARK_SERVER_URL
 export AGENTARK_RUNTIME_CONFIG
 export AGENTARK_PROTOCOL_VERSION=v2
 
-# 确保 trainer 使用目标官方 ms-swift checkout。
+# 确保 trainer 使用目标 AgentArk-enabled ms-swift checkout。
 export PYTHONPATH="$SWIFT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 # 全参数 BF16；使用 DeepSpeed ZeRO-2 分片，不启用 CPU optimizer/model offload。
@@ -531,7 +544,8 @@ v0-*/checkpoint-200
 }
 ```
 
-本次已验证实跑结果如下。它用于记录这组配置，不是其他模型或 seed 组合的验收阈值。
+此前的外置 adapter 训练结果如下。它只用于记录当时的配置，并不表示当前内置路径已经
+完成同一轮 600-step 训练，也不是其他模型或 seed 组合的验收阈值。
 
 | 指标 | 结果 |
 | --- | --- |
@@ -617,8 +631,8 @@ export CPLUS_INCLUDE_PATH=/usr/local/include/python3.12
 自动化执行时，应按以下门禁逐步推进，不要直接启动 600-step 训练：
 
 1. 读取本教程、上级 README、runtime 模板和 launcher；
-2. 只读确认 AgentArk、官方 ms-swift、两个 Python、Unity、模型和输出路径；
-3. 确认 `swift.__file__` 来自官方 checkout，并记录实际包版本；
+2. 只读确认 AgentArk、AgentArk-enabled ms-swift、两个 Python、Unity、模型和输出路径；
+3. 确认 `swift.__file__` 来自该 checkout、内置 AgentArk 已注册，并记录实际包版本；
 4. 只在训练专用 Unity 副本内调整 Snake，不修改或删除原包；
 5. 生成 ticket 后运行 capacity check；
 6. 启动 Server、warmup，并要求 16 个 idle runtime；

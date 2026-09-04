@@ -1,12 +1,14 @@
-# Training AgentArk Snake with Official ms-swift
+# Training AgentArk Snake with ms-swift
 
 English | [简体中文](README.zh-CN.md)
 
-This tutorial gives an end-to-end path that has been run successfully: prepare 16
-concurrent Unity runtimes and use official ms-swift to perform eight-GPU,
-full-parameter GRPO training of Qwen3.5-9B. The goal is to verify AgentArk's
-multimodal rollout, Unity interaction, reward, backward, and checkpoint path. You do
-not need to reproduce any particular reward or runtime.
+This tutorial gives a complete eight-GPU, full-parameter Qwen3.5-9B recipe whose
+configuration was run successfully with the former external adapter. The trainer
+integration has since moved into the AgentArk-enabled Swift branch; use its built-in
+path for new runs and complete the one-step smoke test before starting the long run.
+The goal is to verify AgentArk's multimodal rollout, Unity interaction, reward,
+backward, and checkpoint path. You do not need to reproduce any particular reward or
+runtime.
 
 [Snake](https://p90-rushb.github.io/agentark-hub/tasks/snake/) is a 2D grid task
 hosted on AgentArk Hub. The agent controls a snake from visual observations, moves
@@ -34,7 +36,7 @@ reproduced exactly:
 | Item | Example value |
 | --- | --- |
 | AgentArk Unity package | `AgentArk-env-1.0.3-linux` |
-| ms-swift | Official repository (`4.6.0.dev0` when tested) |
+| ms-swift | `4.6.0.dev0`; full run used the former external adapter, built-in integration separately smoke-tested |
 | PyTorch / vLLM | `2.10.0+cu128` / `0.19.0` |
 | Task | Snake with an `8×8` logical grid |
 | Model | Local BF16 Qwen3.5-9B checkpoint |
@@ -87,7 +89,7 @@ Prepare:
 - an AgentArk checkout;
 - the AgentArk Linux Unity environment package;
 - a Python environment that can start AgentArk and ML-Agents;
-- an official ms-swift environment that can run `swift rlhf`;
+- an AgentArk-enabled ms-swift environment that can run `swift rlhf`;
 - a local Qwen3.5-9B checkpoint;
 - eight approximately 80 GB NVIDIA GPUs for this full-training topology;
 - Linux graphics dependencies and Xvfb.
@@ -95,19 +97,24 @@ Prepare:
 The Server and trainer may use separate environments. The working example used
 Python 3.10 for AgentArk and Python 3.12 for ms-swift.
 
-### 2.1 Obtain official ms-swift
+### 2.1 Obtain an AgentArk-enabled ms-swift
 
-The exact token-in/token-out fix from PR
-[#10012](https://github.com/modelscope/ms-swift/pull/10012) is upstream, so use the
-official repository directly:
+Until the built-in AgentArk integration is merged and released upstream, use the
+`feat/agentark` branch of the AgentArk maintainer's fork:
 
 ```bash
-export SWIFT_ROOT=/absolute/path/to/official-ms-swift
-git clone https://github.com/modelscope/ms-swift.git "$SWIFT_ROOT"
+export SWIFT_ROOT=/absolute/path/to/ms-swift
+export SWIFT_PYTHON_BIN=/absolute/path/to/swift-env/bin/python
+git clone --branch feat/agentark https://github.com/P90-RushB/ms-swift.git "$SWIFT_ROOT"
+"$SWIFT_PYTHON_BIN" -m pip install -e "$SWIFT_ROOT"
 ```
 
-The old temporary fork is no longer needed. Follow the parent
-[runbook](../README.md) to install the trainer dependencies and AgentArk adapter.
+This branch contains AgentArk's Gym Env and multi-turn scheduler. Do not install the
+repository-local `agentark-swift` package and do not add `--external_plugins`.
+After an official ms-swift release includes AgentArk, use that release instead; the
+remaining steps are unchanged. PR
+[#10012](https://github.com/modelscope/ms-swift/pull/10012), a separate prerequisite
+for exact token-in/token-out behavior, is already upstream.
 
 ### 2.2 Define machine-local paths
 
@@ -142,12 +149,17 @@ PYTHONPATH="$SWIFT_ROOT" \
 "$SWIFT_PYTHON_BIN" -c \
   'import importlib.metadata as m, swift; print(m.version("ms-swift")); print(swift.__file__)'
 
+PYTHONPATH="$SWIFT_ROOT" \
+"$SWIFT_PYTHON_BIN" -c \
+  'from swift.rollout.gym_env import envs; from swift.rollout.multi_turn import multi_turns; assert "agentark" in envs and "agentark_scheduler" in multi_turns; print("built-in AgentArk: OK")'
+
 "$SWIFT_BIN" --help >/dev/null
 ```
 
-The second command must print the active ms-swift version and a source path inside
-the official checkout. Do not let global site-packages or stale `PYTHONPATH` entries
-override it. Run the remaining commands from the AgentArk root:
+The Swift checks must print the active version, a source path inside the intended
+AgentArk-enabled checkout, and `built-in AgentArk: OK`. Do not let global
+site-packages or stale `PYTHONPATH` entries override it. Run the remaining commands
+from the AgentArk root:
 
 ```bash
 cd "$AGENTARK_ROOT"
@@ -379,6 +391,7 @@ unset SWIFT_SINGLE_DEVICE_MODE
 export AGENTARK_REPO_ROOT="$AGENTARK_ROOT"
 export AGENTARK_SWIFT_PYTHON="$SWIFT_PYTHON_BIN"
 export AGENTARK_SWIFT_BIN="$SWIFT_BIN"
+export AGENTARK_SWIFT_INTEGRATION=builtin
 export AGENTARK_MODEL="$MODEL_PATH"
 export AGENTARK_TICKET_DATASET="$DATASET_PATH"
 export AGENTARK_SERVER_URL
@@ -517,8 +530,10 @@ Inspect the final `trainer_state.json`. A completed 600-step example should reco
 }
 ```
 
-The verified run produced the following reference results. They document the tested
-configuration; they are not pass/fail thresholds for another model or seed set.
+The earlier external-adapter run produced the following reference results. They
+document that tested configuration; they are not a claim that the current built-in
+path has completed the same 600-step run, nor are they pass/fail thresholds for
+another model or seed set.
 
 | Metric | Result |
 | --- | --- |
@@ -607,10 +622,10 @@ An automated agent should advance through these gates instead of starting 600-st
 training immediately:
 
 1. read this tutorial, the parent runbook, runtime template, and launcher;
-2. inspect the AgentArk checkout, official ms-swift checkout, both Python environments,
+2. inspect the AgentArk checkout, AgentArk-enabled ms-swift checkout, both Python environments,
    Unity package, model, dataset, and output paths without changing them;
-3. confirm that `swift.__file__` resolves to the official checkout and record the
-   active package version;
+3. confirm that `swift.__file__` resolves to that checkout, verify built-in AgentArk
+   registration, and record the active package version;
 4. modify only a dedicated Unity package copy, never the source package;
 5. generate tickets and pass capacity validation;
 6. start the Server, warm runtimes, and require 16 idle environments;

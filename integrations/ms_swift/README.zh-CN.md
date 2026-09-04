@@ -11,7 +11,8 @@
 
 如果这是你第一次运行 AgentArk 训练，请直接按照
 [Snake 训练教程](tutorial/README.zh-CN.md)操作。它是本集成可执行的端到端示例，涵盖准备
-Snake、配置 Unity runtime、安装官方 ms-swift、运行一步 smoke，以及启动较长训练。
+Snake、配置 Unity runtime、安装包含 AgentArk 的 ms-swift、运行一步 smoke，以及启动
+较长训练。
 
 本 README 不再重复教程中的命令。不同目标请阅读对应文档：
 
@@ -32,7 +33,7 @@ Snake、配置 Unity runtime、安装官方 ms-swift、运行一步 smoke，以�
 ms-swift trainer
     │  ticket / 模型生成的 action
     ▼
-AgentArk Swift adapter ──HTTP──► AgentArk Env Server
+Swift 内置 AgentArk adapter ──HTTP──► AgentArk Env Server
                                   │
                                   ├── Unity runtime 1
                                   ├── Unity runtime 2
@@ -41,9 +42,10 @@ AgentArk Swift adapter ──HTTP──► AgentArk Env Server
     └──── messages、图像、reward ──────┘
 ```
 
-Swift trainer 和 AgentArk Env Server 使用两个独立的 Python 环境。adapter 安装在 trainer
-环境中，通过 v2 协议访问 Server。Server 管理 Unity 进程，并为每条活动 trajectory
-临时分配一个 runtime。
+Swift trainer 和 AgentArk Env Server 使用两个独立的 Python 环境。推荐的 adapter 已内置
+在 Swift trainer 中，通过 v2 协议访问 Server。Server 管理 Unity 进程，并为每条活动
+trajectory 临时分配一个 runtime。本仓库暂时保留旧的外置 adapter，用来兼容尚未包含
+AgentArk 的官方 Swift 版本。
 
 阅读教程和日志时，需要理解五个名词：
 
@@ -54,6 +56,19 @@ Swift trainer 和 AgentArk Env Server 使用两个独立的 Python 环境。adap
 | **GRPO group** | 从相同任务和 seed 开始的一组 sibling trajectory。 |
 | **Ticket** | 标识一个 GRPO group 的轻量 dataset 行；真正的 prompt 和图像在 Unity reset 后产生。 |
 | **Lease** | Server 将一个 runtime 临时分配给一条 trajectory 的记录。 |
+
+## 选择 Swift 接入方式
+
+在 AgentArk 支持合入并发布到上游之前，请使用
+[`P90-RushB/ms-swift` 的 `feat/agentark` 分支](https://github.com/P90-RushB/ms-swift/tree/feat/agentark)。
+该分支已经内置 Gym Env 和 scheduler，不需要安装或传入本仓库的外置 plugin。官方
+ms-swift 发布包含 AgentArk 的版本后，再直接改用相应官方版本。
+
+`run_agentark_grpo.sh` 默认使用 `AGENTARK_SWIFT_INTEGRATION=auto`：检测到 Swift 已注册
+`agentark` 和 `agentark_scheduler` 时使用内置实现，否则只在明确支持的 Swift 4.4--4.6
+版本上回退到旧外置 adapter。正式使用包含 AgentArk 的 Swift checkout 时，建议设置
+`AGENTARK_SWIFT_INTEGRATION=builtin`；如果实际加载了错误的 Swift，它会提前报错，而不是
+静默使用旧实现训练。
 
 ## 从 Snake 示例改成自己的实验
 
@@ -131,10 +146,9 @@ launcher 会根据训练参数计算并检查 ticket 容量，因此应优先使
 
 ## 兼容性与安全
 
-- adapter 和 rollout cleanup 当前接受 ms-swift `4.4.1`、`4.5.0.dev0` 和
-  `4.6.0.dev0`。请使用 [modelscope/ms-swift 官方仓库](https://github.com/modelscope/ms-swift)；
-  AgentArk agentic rollout 所需的 token 一致性修复已通过
-  [PR #10012](https://github.com/modelscope/ms-swift/pull/10012)合入上游。
+- 推荐的内置路径目前由上文链接的 AgentArk-enabled Swift 分支提供。本仓库保留的外置
+  fallback 仅接受 ms-swift `4.4.1`、`4.5.0.dev0` 和 `4.6.0.dev0`。此前依赖的 token
+  一致性修复已通过 [PR #10012](https://github.com/modelscope/ms-swift/pull/10012)合入上游。
 - 已验证部署环境为 Linux、NVIDIA CUDA 和单机 colocated rollout。多节点训练和 vLLM
   server mode 需要额外实现路由与容量管理。
 - ms-swift 4.4.1 的 `async_generate` 与本集成的多轮 scheduler 不兼容。提供的 launcher

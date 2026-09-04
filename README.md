@@ -175,8 +175,8 @@ while each trainer keeps its own Python environment and dependency stack.
 
 Two GRPO integrations are available:
 
-- [ms-swift](integrations/ms_swift/README.md), maintained in this repository
-  with a Chinese runbook.
+- [ms-swift](integrations/ms_swift/README.md), with the trainer integration in
+  AgentArk-enabled Swift and the Server, runbook, and temporary legacy fallback here.
 - [VERL](integrations/verl/README.md), with its trainer-side implementation in
   the public `agentark_rl` fork.
 
@@ -210,8 +210,9 @@ Near-term development will focus on:
   runtime sandboxing, env server, warmup, and HTTP client utilities.
 - `agent_ark.ark_eval`: API model evaluation, parallel evaluation, replay, and
   trajectory save/load.
-- `integrations`: framework-specific RL adapters and runbooks; the VERL
-  trainer-side recipe remains in its public fork.
+- `integrations`: framework-specific RL runbooks, Server helpers, and temporary
+  compatibility adapters; the ms-swift built-in integration is currently in its
+  feature branch, while the VERL trainer recipe remains in its public fork.
 - `agent_ark.interaction`: local browser viewer and human-interaction hooks.
 
 ## Licensing

@@ -1,6 +1,6 @@
 ---
 name: agentark-snake-grpo
-description: Run AgentArk Snake GRPO with official ms-swift and help prepare Python, Unity, tickets, the runtime server, a one-step smoke test, full training, and acceptance checks. Audit real paths, the official checkout, and versions before starting training.
+description: Run AgentArk Snake GRPO with an AgentArk-enabled ms-swift and help prepare Python, Unity, tickets, the runtime server, a one-step smoke test, full training, and acceptance checks. Audit real paths, the active checkout, and versions before starting training.
 ---
 
 # AgentArk Snake GRPO execution skill
@@ -55,10 +55,15 @@ Unless the user already provided them, confirm:
 
 Tutorial values are examples, not mandatory settings for the current experiment.
 
-## Official ms-swift checkout
+## AgentArk-enabled ms-swift checkout
 
-- Use the official `modelscope/ms-swift` repository, not the old temporary fork.
-- The exact token-in/token-out work from PR #10012 is upstream.
+- Until built-in AgentArk support is released upstream, use
+  `P90-RushB/ms-swift:feat/agentark`; afterward use the official release that contains it.
+- Do not install or pass the repository-local external adapter on the built-in path.
+- Set `AGENTARK_SWIFT_INTEGRATION=builtin` for formal validation.
+- Verify that `agentark` and `agentark_scheduler` are present in Swift's registries.
+- The exact token-in/token-out work from PR #10012 is already upstream and is separate
+  from the built-in AgentArk integration.
 - Before launch, print the resolved checkout path, `swift.__file__`, and package version.
 - Inspect `PYTHONPATH`, the console script, and worker command lines so stale
   site-packages cannot override the intended checkout.

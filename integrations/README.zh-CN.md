@@ -11,12 +11,12 @@ AgentArk 将 Unity runtime pool 作为 HTTP 环境服务提供给 RL trainer，�
 
 | 集成 | Adapter 位置 | 环境协议 | 从这里开始 |
 | --- | --- | --- | --- |
-| ms-swift GRPO | 本仓库 `integrations/ms_swift` | v2 | [ms-swift 运行指南](ms_swift/README.zh-CN.md) |
+| ms-swift GRPO | 包含 AgentArk 的 Swift；本仓库提供 Server 辅助脚本和旧版 fallback | v2 | [ms-swift 运行指南](ms_swift/README.zh-CN.md) |
 | VERL GRPO | 公开 [`agentark_rl` fork](https://github.com/P90-RushB/verl/tree/agentark_rl/agentark_recipe/agentark_env_agent) | 当前 recipe 使用 legacy v1 | [VERL 接入指南](verl/README.zh-CN.md) |
 
-ms-swift 运行指南是仓库内 adapter 的完整安装和训练路径。VERL 指南先
-准备并验证 AgentArk 侧，再交接到外部 fork 中的 dataset、agent loop 和
-trainer 配置。
+ms-swift 运行指南给出 Swift 内置 AgentArk 接入的完整安装和训练路径；本仓库暂时保留
+外置 adapter 以兼容明确支持的旧 Swift 版本。VERL 指南先准备并验证 AgentArk 侧，再
+交接到外部 fork 中的 dataset、agent loop 和 trainer 配置。
 
 ## 共用进程结构
 

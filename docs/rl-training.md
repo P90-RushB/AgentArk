@@ -5,10 +5,10 @@ English | [简体中文](rl-training.zh-CN.md)
 AgentArk exposes its Unity runtime pool as an HTTP environment service. Two
 GRPO paths are maintained; use their runbooks for executable instructions:
 
-- [ms-swift runbook](../integrations/ms_swift/README.md): the adapter
-  lives in this repository, supports the documented ms-swift 4.4–4.6 stacks,
-  uses the official ms-swift repository where the exact-token fix from PR
-  #10012 was merged, and defaults to AgentArk HTTP protocol v2.
+- [ms-swift runbook](../integrations/ms_swift/README.md): the preferred adapter
+  is built into the AgentArk-enabled Swift branch and defaults to AgentArk HTTP
+  protocol v2. This repository temporarily retains an external fallback for the
+  documented ms-swift 4.4–4.6 stacks.
 - [VERL integration guide](../integrations/verl/README.md): the AgentArk bridge
   lives here, while the trainer adapter lives in the public `agentark_rl` fork
   and currently uses protocol v1.
@@ -118,7 +118,7 @@ observations; it does not consume the Swift-specific loss-scope switch.
 
 | Dimension | ms-swift | VERL |
 | --- | --- | --- |
-| Adapter location | `integrations/ms_swift` in this repository | External fork; local bridge/preflight |
+| Adapter location | AgentArk-enabled Swift; legacy fallback here | External fork; local bridge/preflight |
 | Environment abstraction | Swift Gym Env + multi-turn scheduler | VERL async agent loop |
 | Current protocol | v2 | v1 |
 | Sibling identity | Static ticket `group_uid` + distinct request UUID | Per-occurrence `uid` |
