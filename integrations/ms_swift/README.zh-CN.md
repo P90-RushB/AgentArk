@@ -103,6 +103,7 @@ runtime config 中的 `warmup.num_envs` 与
 | [`tutorial/README.zh-CN.md`](tutorial/README.zh-CN.md) | 完整命令和已跑通的 Snake 流程。 |
 | [`configs/agentark_grpo.env.example`](configs/agentark_grpo.env.example) | 通用的模型、trainer、rollout 和输出设置。请将所需值复制到本机配置，不要提交本机路径。 |
 | [`tutorial/config/agentark_runtime_config.snake.example.yaml`](tutorial/config/agentark_runtime_config.snake.example.yaml) | Snake 示例使用的 runtime pool 模板。 |
+| [`tutorial/config/deepspeed_zero2_adafactor.json`](tutorial/config/deepspeed_zero2_adafactor.json) | 已验证 Snake 长序列全参数训练使用的 ZeRO-2 配置，不启用 CPU optimizer offload。 |
 | [`scripts/run_agentark_server.sh`](scripts/run_agentark_server.sh) | 启动 AgentArk Env Server。 |
 | [`scripts/run_agentark_grpo.sh`](scripts/run_agentark_grpo.sh) | 检查容量并启动 `swift rlhf`。 |
 | [`scripts/smoke_agentark_unity.sh`](scripts/smoke_agentark_unity.sh) | 检查两条并发 Unity trajectory 和 lease 清理。 |

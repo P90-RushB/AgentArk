@@ -39,13 +39,19 @@ reproduced exactly:
 | Task | Snake with an `8×8` logical grid |
 | Model | Local BF16 Qwen3.5-9B checkpoint |
 | GPU | 8 × NVIDIA H800 80 GB |
-| Training | Full parameter, ordinary eight-GPU DDP |
+| Training | Full parameter, eight-GPU DeepSpeed ZeRO-2 |
 | Optimizer | Adafactor |
-| DeepSpeed / ZeRO | Disabled |
-| CPU offload | Disabled |
+| LR scheduler | `constant` |
+| Loss | `dapo` |
+| DeepSpeed / ZeRO | ZeRO-2; see `config/deepspeed_zero2_adafactor.json` |
+| CPU optimizer offload | Disabled (`device=none`) |
 | Rollout | Colocated vLLM, TP=1 |
 | vLLM memory utilization | `0.35` |
 | vLLM maximum context | `16384` |
+| Swift maximum sequence length | `12288` |
+| Per-round completion limit | `4096` |
+| `max_new_tokens` | `4096` |
+| `response_length` | `4096` |
 | Per-device training batch | `1` |
 | Gradient accumulation | `2` |
 | Effective optimizer batch | `1 × 8 × 2 = 16` |
@@ -380,7 +386,7 @@ export AGENTARK_RUNTIME_CONFIG
 export AGENTARK_PROTOCOL_VERSION=v2
 export PYTHONPATH="$SWIFT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-# Full BF16 training without DeepSpeed, ZeRO, or CPU offload.
+# Full BF16 training with DeepSpeed ZeRO-2 and no CPU optimizer/model offload.
 export AGENTARK_TUNER_TYPE=full
 export AGENTARK_TORCH_DTYPE=bfloat16
 export AGENTARK_FREEZE_LLM=false
@@ -388,7 +394,8 @@ export AGENTARK_FREEZE_VIT=false
 export AGENTARK_FREEZE_ALIGNER=false
 export AGENTARK_OPTIM=adafactor
 export AGENTARK_LEARNING_RATE=1e-6
-export AGENTARK_LR_SCHEDULER_TYPE=cosine
+export AGENTARK_LR_SCHEDULER_TYPE=constant
+export AGENTARK_LOSS_TYPE=dapo
 export AGENTARK_GRADIENT_CHECKPOINTING=true
 
 # Eight trainer processes and one 16-sibling GRPO group.
@@ -401,8 +408,8 @@ export AGENTARK_NUM_ITERATIONS=1
 
 # Six-round multimodal rollout.
 export AGENTARK_MAX_TURNS=6
-export AGENTARK_MAX_LENGTH=6144
-export AGENTARK_MAX_COMPLETION_LENGTH=512
+export AGENTARK_MAX_LENGTH=12288
+export AGENTARK_MAX_COMPLETION_LENGTH=4096
 export AGENTARK_ENABLE_THINKING=true
 export AGENTARK_ASSISTANT_LOSS_SCOPE=all_turns
 
@@ -418,6 +425,11 @@ export AGENTARK_TICKET_RESERVE_PERCENT=0
 export AGENTARK_LOGGING_STEPS=1
 export AGENTARK_REPORT_TO=none
 ```
+
+The launcher forwards `AGENTARK_LR_SCHEDULER_TYPE=constant` and
+`AGENTARK_LOSS_TYPE=dapo` as `--lr_scheduler_type constant` and
+`--loss_type dapo`. These are preflight-managed settings; do not override them again
+at the end of the launch command.
 
 `vllm_gpu_memory_utilization=0.35` controls only vLLM's allocation; it is not the
 total process memory fraction. Full model weights, gradients, optimizer state, and
@@ -444,6 +456,9 @@ export AGENTARK_SAVE_STEPS=1
 export AGENTARK_SAVE_TOTAL_LIMIT=1
 
 bash integrations/ms_swift/scripts/run_agentark_grpo.sh \
+  --deepspeed "$AGENTARK_ROOT/integrations/ms_swift/tutorial/config/deepspeed_zero2_adafactor.json" \
+  --max_new_tokens 4096 \
+  --response_length 4096 \
   --completion_length_limit_scope per_round
 ```
 
@@ -457,8 +472,9 @@ Minimum acceptance criteria:
 - Env Server `active_v2_leases` returns to zero;
 - all 16 runtimes are idle again.
 
-No exact reward, mean length, or mean turn count is required. `max_turns=6` is an
-upper bound, and Snake may terminate trajectories earlier.
+No exact reward, mean length, or mean turn count is required. With the long-sequence
+ZeRO-2 configuration, those values vary with the model, seed, and sampling result.
+`max_turns=6` is an upper bound, and Snake may terminate trajectories earlier.
 
 ## 9. Start the 600-step run
 
@@ -475,12 +491,18 @@ export AGENTARK_SAVE_STEPS=100
 export AGENTARK_SAVE_TOTAL_LIMIT=2
 
 bash integrations/ms_swift/scripts/run_agentark_grpo.sh \
+  --deepspeed "$AGENTARK_ROOT/integrations/ms_swift/tutorial/config/deepspeed_zero2_adafactor.json" \
+  --max_new_tokens 4096 \
+  --response_length 4096 \
   --completion_length_limit_scope per_round
 ```
 
-Do not append `--deepspeed` if you intend to use this topology. It uses ordinary
-eight-GPU DDP and Adafactor with no ZeRO or CPU offload. Swift creates a timestamped
-`v0-*` directory below the output directory containing `logging.jsonl`,
+This verified topology uses eight-GPU DeepSpeed ZeRO-2 with Adafactor. The config sets
+`zero_optimization.stage` to `2` and `offload_optimizer.device` to `none`, so it does
+not use CPU optimizer offload; Swift model and optimizer offload also remain disabled.
+Keep `--max_new_tokens`, `--response_length`, and
+`--completion_length_limit_scope per_round` together with the long-sequence settings.
+Swift creates a timestamped `v0-*` directory below the output directory containing `logging.jsonl`,
 `completions.jsonl`, and periodic checkpoints. `save_total_limit=2` retains only the
 latest two.
 
@@ -494,6 +516,21 @@ Inspect the final `trainer_state.json`. A completed 600-step example should reco
   "epoch": 1.0
 }
 ```
+
+The verified run produced the following reference results. They document the tested
+configuration; they are not pass/fail thresholds for another model or seed set.
+
+| Metric | Result |
+| --- | --- |
+| Training status | `600/600`, exit code 0 |
+| `train_runtime` | 13,930.41 seconds (about 3 h 52 min 10 s) |
+| Mean speed | about 23.22 seconds/step (`0.043` step/s) |
+| Mean reward, first 20 steps | 0.593750 |
+| Mean reward, all 600 steps | 1.471146 |
+| Mean reward, final 20 steps | 1.859375 |
+| Final-step reward | 2.5 |
+| Final model parameters | 9,409,813,744 |
+| Final BF16 weight size | 18,819,635,168 bytes |
 
 Check the Server again:
 
@@ -516,8 +553,9 @@ reward trends, and completion contents to judge whether the training signal is r
 
 Do not confuse `generation_batch_size=16` with
 `per_device_train_batch_size=16`. The example uses batch 1 per GPU, eight GPUs, and
-gradient accumulation 2. A single-GPU full-training batch of 16 will generally fail
-during backward.
+gradient accumulation 2. Long-sequence full-parameter colocated training uses
+`deepspeed_zero2_adafactor.json` to shard gradients with ZeRO-2; a single GPU or
+ordinary DDP may fail during backward at these sequence lengths.
 
 ### vLLM conflicts with `device_map`
 
@@ -533,8 +571,10 @@ version and must be established with a one-step smoke test.
 ### DeepSpeed CPUAdam reports a CUDA mismatch
 
 The system CUDA toolkit, PyTorch CUDA wheel, and DeepSpeed extension are incompatible.
-The working topology avoids DeepSpeed and CPU offload. Align those versions and rerun
-smoke before enabling ZeRO or offload.
+The verified configuration avoids CPU optimizer offload and instead uses
+`deepspeed_zero2_adafactor.json`: ZeRO stage 2, Adafactor, and
+`offload_optimizer.device=none`. Align the CUDA versions before enabling CPU offload;
+do not use `deepspeed_zero2_cpu.json` for this run.
 
 ### Triton reports `Python.h: No such file or directory`
 

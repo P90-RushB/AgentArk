@@ -33,13 +33,19 @@ Hub 中发布的任务默认使用 `20×20` 地图。本文把逻辑地图临时
 | 任务 | Snake，逻辑地图 `8×8` |
 | 模型 | Qwen3.5-9B，本地 BF16 权重 |
 | GPU | 8 × NVIDIA H800 80GB |
-| 训练方式 | 全参数训练，普通 8 卡 DDP |
+| 训练方式 | 全参数训练，8 卡 DeepSpeed ZeRO-2 |
 | optimizer | Adafactor |
-| DeepSpeed / ZeRO | 未使用 |
-| CPU offload | 未使用 |
+| lr scheduler | `constant` |
+| loss | `dapo` |
+| DeepSpeed / ZeRO | ZeRO-2，见 `config/deepspeed_zero2_adafactor.json` |
+| CPU optimizer offload | 未使用，`device=none` |
 | rollout | vLLM colocate，TP=1 |
 | vLLM 显存比例 | `0.35` |
 | vLLM 最大上下文 | `16384` |
+| Swift 最大序列长度 | `12288` |
+| 每轮 completion 上限 | `4096` |
+| `max_new_tokens` | `4096` |
+| `response_length` | `4096` |
 | 每卡训练 batch | `1` |
 | 梯度累积 | `2` |
 | effective optimizer batch | `1 × 8 × 2 = 16` |
@@ -388,7 +394,7 @@ export AGENTARK_PROTOCOL_VERSION=v2
 # 确保 trainer 使用目标官方 ms-swift checkout。
 export PYTHONPATH="$SWIFT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-# 全参数 BF16；该跑通示例不使用 DeepSpeed、ZeRO 或 CPU offload。
+# 全参数 BF16；使用 DeepSpeed ZeRO-2 分片，不启用 CPU optimizer/model offload。
 export AGENTARK_TUNER_TYPE=full
 export AGENTARK_TORCH_DTYPE=bfloat16
 export AGENTARK_FREEZE_LLM=false
@@ -396,7 +402,8 @@ export AGENTARK_FREEZE_VIT=false
 export AGENTARK_FREEZE_ALIGNER=false
 export AGENTARK_OPTIM=adafactor
 export AGENTARK_LEARNING_RATE=1e-6
-export AGENTARK_LR_SCHEDULER_TYPE=cosine
+export AGENTARK_LR_SCHEDULER_TYPE=constant
+export AGENTARK_LOSS_TYPE=dapo
 export AGENTARK_GRADIENT_CHECKPOINTING=true
 
 # 8 卡训练 batch 与一个 16-sibling GRPO group。
@@ -409,8 +416,8 @@ export AGENTARK_NUM_ITERATIONS=1
 
 # 六轮多模态 rollout。
 export AGENTARK_MAX_TURNS=6
-export AGENTARK_MAX_LENGTH=6144
-export AGENTARK_MAX_COMPLETION_LENGTH=512
+export AGENTARK_MAX_LENGTH=12288
+export AGENTARK_MAX_COMPLETION_LENGTH=4096
 export AGENTARK_ENABLE_THINKING=true
 export AGENTARK_ASSISTANT_LOSS_SCOPE=all_turns
 
@@ -426,6 +433,10 @@ export AGENTARK_TICKET_RESERVE_PERCENT=0
 export AGENTARK_LOGGING_STEPS=1
 export AGENTARK_REPORT_TO=none
 ```
+
+launcher 会把 `AGENTARK_LR_SCHEDULER_TYPE=constant` 和
+`AGENTARK_LOSS_TYPE=dapo` 分别透传为 `--lr_scheduler_type constant` 和
+`--loss_type dapo`。这两个参数属于预检配置，不要在命令尾部重复覆盖。
 
 `vllm_gpu_memory_utilization=0.35` 只控制 vLLM 的显存预算，不代表整个训练进程只占 35%。
 全参数训练模型、梯度、optimizer 和 vLLM colocate 的总显存会明显更高。
@@ -450,6 +461,9 @@ export AGENTARK_SAVE_STEPS=1
 export AGENTARK_SAVE_TOTAL_LIMIT=1
 
 bash integrations/ms_swift/scripts/run_agentark_grpo.sh \
+  --deepspeed "$AGENTARK_ROOT/integrations/ms_swift/tutorial/config/deepspeed_zero2_adafactor.json" \
+  --max_new_tokens 4096 \
+  --response_length 4096 \
   --completion_length_limit_scope per_round
 ```
 
@@ -463,8 +477,9 @@ smoke 成功的最低标准：
 - Env Server 的 `active_v2_leases` 回到 0；
 - 16 个 runtime 再次全部 idle。
 
-这里不要求 reward、平均长度或轮数匹配某个固定值。`max_turns=6` 是上限；Snake 提前
-结束时，实际平均轮数可以小于 6。跑通标准是 rollout、有限梯度、保存和 lease 回收均正常。
+更新版使用长序列和 ZeRO-2；这里不要求 reward、平均长度或轮数匹配某个固定值，它们会随
+模型、seed 和采样结果变化。`max_turns=6` 是上限；Snake 提前结束时，实际平均轮数可以
+小于 6。跑通标准是 rollout、有限梯度、保存和 lease 回收均正常。
 
 ## 9. 启动 600-step 正式训练
 
@@ -481,11 +496,17 @@ export AGENTARK_SAVE_STEPS=100
 export AGENTARK_SAVE_TOTAL_LIMIT=2
 
 bash integrations/ms_swift/scripts/run_agentark_grpo.sh \
+  --deepspeed "$AGENTARK_ROOT/integrations/ms_swift/tutorial/config/deepspeed_zero2_adafactor.json" \
+  --max_new_tokens 4096 \
+  --response_length 4096 \
   --completion_length_limit_scope per_round
 ```
 
-不要追加 `--deepspeed`，否则就不再是本文已验证的配置。本文使用普通 8 卡 DDP +
-Adafactor，没有 ZeRO-2，也没有 model/optimizer CPU offload。
+本文使用 8 卡 DeepSpeed ZeRO-2 + Adafactor。`deepspeed_zero2_adafactor.json` 的
+`zero_optimization.stage` 为 `2`，但 `offload_optimizer.device` 为 `none`，因此不使用
+CPU optimizer offload；Swift 层的 `offload_model` 和 `offload_optimizer` 也保持关闭。
+`--max_new_tokens`、`--response_length` 和 `--completion_length_limit_scope per_round`
+需要与本节的长序列配置一起使用。
 
 Swift 会在 `AGENTARK_OUTPUT_DIR` 下创建带时间戳的 `v0-*` 子目录。运行期间可以查看：
 
@@ -510,6 +531,20 @@ v0-*/checkpoint-200
 }
 ```
 
+本次已验证实跑结果如下。它用于记录这组配置，不是其他模型或 seed 组合的验收阈值。
+
+| 指标 | 结果 |
+| --- | --- |
+| 训练状态 | `600/600`，exit code 0 |
+| `train_runtime` | 13,930.41 秒（约 3 小时 52 分 10 秒） |
+| 平均速度 | 约 23.22 秒/step（`0.043` step/s） |
+| 前 20 step 平均 reward | 0.593750 |
+| 全 600 step 平均 reward | 1.471146 |
+| 最后 20 step 平均 reward | 1.859375 |
+| 最终 step reward | 2.5 |
+| 最终模型参数 | 9,409,813,744 |
+| 最终 BF16 权重大小 | 18,819,635,168 bytes |
+
 再次检查 Env Server：
 
 ```bash
@@ -531,8 +566,9 @@ trajectory rollout。GRPO 的单步 loss 可能非常接近 0；判断训练链�
 ### 单卡或每卡 batch 太大导致 OOM
 
 不要把 `generation_batch_size=16` 误写成 `per_device_train_batch_size=16`。本次成功配置是
-每卡 batch 1、8 卡、梯度累积 2。单卡每卡 batch 16 的全参数 colocate 运行会在 backward
-阶段 OOM。
+每卡 batch 1、8 卡、梯度累积 2。长序列全参数 colocate 运行使用
+`deepspeed_zero2_adafactor.json` 做 ZeRO-2 梯度分片；单卡或普通 DDP 在该长度配置下可能在
+backward 阶段 OOM。
 
 ### Swift 报 vLLM 与 `device_map` 不兼容
 
@@ -547,8 +583,9 @@ trajectory rollout。GRPO 的单步 loss 可能非常接近 0；判断训练链�
 ### DeepSpeed CPUAdam 报 CUDA 版本不匹配
 
 这通常表示系统 CUDA toolkit、PyTorch CUDA wheel 和 DeepSpeed extension 不兼容。
-本文的跑通配置不传 `--deepspeed`，使用 Adafactor 且不做 CPU offload。若要使用
-ZeRO/offload，需要先修正版本组合并重新做 smoke。
+更新版不使用 CPU optimizer offload，而是使用 `deepspeed_zero2_adafactor.json`：ZeRO
+stage 2、`offload_optimizer.device=none`，并使用 Adafactor。只有需要 CPU offload 时才
+必须先修正版本组合；不要把 `deepspeed_zero2_cpu.json` 当作本文的训练配置。
 
 ### Triton 编译报 `Python.h: No such file or directory`
 

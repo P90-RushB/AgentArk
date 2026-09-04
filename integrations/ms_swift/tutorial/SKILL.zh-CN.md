@@ -74,6 +74,8 @@ Python venv 不包含 base interpreter。不能只复制 venv 目录并假设 `b
 - `scripts/generate_snake_tickets.sh`：参数化生成 Snake tickets；
 - `config/agentark_runtime_config.example.yaml`：通用 runtime 配置模板；
 - `config/agentark_runtime_config.snake.example.yaml`：Snake 8×8、16-runtime 实跑模板；
+- `config/deepspeed_zero2_adafactor.json`：Snake 长序列全参数训练使用的 ZeRO-2 配置，
+  不启用 CPU optimizer offload；
 - `config/deepspeed_zero2_cpu.json`：通用 ZeRO-2 CPU optimizer offload 示例。
 
 具体启动参数应以当前 AgentArk 和 ms-swift checkout 中的 launcher、CLI help 和配置定义

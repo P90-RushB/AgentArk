@@ -79,6 +79,8 @@ Tutorial values are examples, not mandatory settings for the current experiment.
 - `scripts/generate_snake_tickets.sh`: parameterized Snake ticket generation;
 - `config/agentark_runtime_config.example.yaml`: generic runtime template;
 - `config/agentark_runtime_config.snake.example.yaml`: 8×8 Snake, 16-runtime example;
+- `config/deepspeed_zero2_adafactor.json`: ZeRO-2 configuration used by the
+  long-sequence full-parameter Snake run, without CPU optimizer offload;
 - `config/deepspeed_zero2_cpu.json`: generic ZeRO-2 CPU optimizer-offload example.
 
 Use the launcher, CLI help, and configuration definitions in the active AgentArk and

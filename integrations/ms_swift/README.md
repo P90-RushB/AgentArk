@@ -115,6 +115,7 @@ You normally edit or invoke only these files:
 | [`tutorial/README.md`](tutorial/README.md) | Complete commands and the tested Snake workflow. |
 | [`configs/agentark_grpo.env.example`](configs/agentark_grpo.env.example) | Generic model, trainer, rollout, and output settings. Copy values into a machine-local configuration; do not commit local paths. |
 | [`tutorial/config/agentark_runtime_config.snake.example.yaml`](tutorial/config/agentark_runtime_config.snake.example.yaml) | Runtime-pool template used by the Snake example. |
+| [`tutorial/config/deepspeed_zero2_adafactor.json`](tutorial/config/deepspeed_zero2_adafactor.json) | ZeRO-2 configuration used by the verified long-sequence full-parameter Snake run, without CPU optimizer offload. |
 | [`scripts/run_agentark_server.sh`](scripts/run_agentark_server.sh) | Starts the AgentArk Env Server. |
 | [`scripts/run_agentark_grpo.sh`](scripts/run_agentark_grpo.sh) | Validates capacity and launches `swift rlhf`. |
 | [`scripts/smoke_agentark_unity.sh`](scripts/smoke_agentark_unity.sh) | Checks two concurrent Unity trajectories and lease cleanup. |
