@@ -319,7 +319,9 @@ Use an empty task_defects list when no concrete task problem was observed.
         return self._codex
 
     def _create_codex_context(self, codex_cls: Any) -> Any:
-        codex_bin = self.config.codex_bin
+        # Prefer an explicit model configuration, then allow the evaluation
+        # environment to select a newer App/CLI runtime than the SDK bundle.
+        codex_bin = self.config.codex_bin or os.environ.get("AGENTARK_CODEX_BIN")
         if not codex_bin:
             return codex_cls()
 
@@ -449,7 +451,15 @@ Use an empty task_defects list when no concrete task problem was observed.
                 for feature in self._LEAN_DISABLED_FEATURES
             },
             "mcp_servers": {
-                server_name: {"enabled": False}
+                # Newer Codex runtimes validate the transport even for a
+                # disabled server. The empty stdio command is never launched
+                # because enabled is false, but keeps the thread config valid.
+                server_name: {
+                    "enabled": False,
+                    "transport": "stdio",
+                    "command": "",
+                    "args": [],
+                }
                 for server_name in self.config.lean_disabled_mcp_servers
             },
         }

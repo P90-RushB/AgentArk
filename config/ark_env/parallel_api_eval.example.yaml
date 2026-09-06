@@ -109,9 +109,8 @@ models:
   #   model: gpt-5.5
   #   sandbox: read_only
   #   timeout_s: 600
-  #   # Optional Codex reasoning depth. Choices: none, minimal, low, medium,
-  #   # high, xhigh. Omit to use the Codex SDK/model default. Use low as the
-  #   # safer cheap setting; minimal can be rejected when Codex tools are enabled.
+  #   # GPT-6 Astra choices: low, medium, high, xhigh, max. Omit to use the
+  #   # Codex SDK/model default.
   #   reasoning_effort: low
   #   thread_mode: per_agent
   #   # AgentArk-only minimal SDK thread; normal Codex sessions are unchanged.

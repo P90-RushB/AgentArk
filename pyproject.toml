@@ -29,7 +29,7 @@ requires-python = ">=3.10,<3.10.13"
 
 [project.optional-dependencies]
 codex = [
-    "openai-codex>=0.1.0b3",
+    "openai-codex>=0.147.0",
 ]
 
 [tool.setuptools.packages.find]

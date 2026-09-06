@@ -171,9 +171,8 @@ models:
     model: gpt-5.5
     sandbox: read_only
     timeout_s: 600
-    # Choices: none, minimal, low, medium, high, xhigh.
-    # Omit to use the Codex SDK/model default. low is the safer cheap setting;
-    # minimal can be rejected when Codex tools are enabled.
+    # GPT-6 Astra choices: low, medium, high, xhigh, max.
+    # Omit to use the Codex SDK/model default.
     reasoning_effort: medium
     thread_mode: per_agent
     codex_context_mode: lean
@@ -199,8 +198,9 @@ override every personal MCP definition. Add any other configured server names
 to `codex_disabled_mcp_servers`. For a control run that retains standard Codex
 context, set `codex_context_mode: default`. Both modes remain local to this
 AgentArk SDK evaluation. Result JSONL records the effective context mode and MCP
-disable list. The currently used `openai-codex==0.1.0b3` already supports these
-thread parameters; no upgrade is required for this feature.
+disable list. Current GPT-6-compatible installations should use
+`openai-codex>=0.147.0`. Set `AGENTARK_CODEX_BIN` to the current Codex App/CLI
+executable when the SDK-bundled CLI does not yet support the selected model.
 
 `thread_mode` defaults to `per_agent`. This is recommended because Codex SDK
 turns include Codex-side runtime, system, and tool context in addition to
