@@ -14,9 +14,11 @@ if [[ -f "$AGENTARK_REPO_ROOT/.env" ]]; then
   unset AGENTARK_EXPORTED_ENV_SNAPSHOT
 fi
 PLUGIN_PATH="${AGENTARK_SWIFT_PLUGIN:-$INTEGRATION_ROOT/src/agentark_swift/plugin.py}"
+SWIFT_INTEGRATION="${AGENTARK_SWIFT_INTEGRATION:-auto}"
 SWIFT_PYTHON_BIN="${AGENTARK_SWIFT_PYTHON:-python}"
 SWIFT_BIN="${AGENTARK_SWIFT_BIN:-}"
 MODEL_DIR="${AGENTARK_MODEL:-}"
+MODEL_TYPE="${AGENTARK_MODEL_TYPE:-}"
 TUNER_TYPE="${AGENTARK_TUNER_TYPE:-lora}"
 TORCH_DTYPE="${AGENTARK_TORCH_DTYPE:-bfloat16}"
 LEARNING_RATE="${AGENTARK_LEARNING_RATE:-}"
@@ -43,7 +45,14 @@ MAX_COMPLETION_LENGTH="${AGENTARK_MAX_COMPLETION_LENGTH:-512}"
 VLLM_MAX_MODEL_LEN="${AGENTARK_VLLM_MAX_MODEL_LEN:-$((MAX_LENGTH + MAX_COMPLETION_LENGTH))}"
 VLLM_GPU_MEMORY_UTILIZATION="${AGENTARK_VLLM_GPU_MEMORY_UTILIZATION:-0.30}"
 VLLM_TENSOR_PARALLEL_SIZE="${AGENTARK_VLLM_TENSOR_PARALLEL_SIZE:-1}"
+USE_VLLM="${AGENTARK_USE_VLLM:-true}"
+# Keep the multimodal processor cache disabled by default. With the cache
+# enabled, vLLM P0/P1 cache lifetimes can diverge during image-heavy
+# multi-turn colocate rollouts.
+VLLM_MM_PROCESSOR_CACHE_GB="${AGENTARK_VLLM_MM_PROCESSOR_CACHE_GB:-0}"
 AGENTARK_ASSISTANT_LOSS_SCOPE="${AGENTARK_ASSISTANT_LOSS_SCOPE:-all_turns}"
+LR_SCHEDULER_TYPE="${AGENTARK_LR_SCHEDULER_TYPE:-cosine}"
+LOSS_TYPE="${AGENTARK_LOSS_TYPE:-grpo}"
 
 AGENTARK_SERVER_URL="${AGENTARK_SERVER_URL:-http://127.0.0.1:18080}"
 AGENTARK_PROTOCOL_VERSION="${AGENTARK_PROTOCOL_VERSION:-v2}"
@@ -69,7 +78,7 @@ for AGENTARK_EXTRA_ARG in "$@"; do
       sequence_parallel_size|dynamic_sample|max_resample_times|truncation_strategy|\
       model|external_plugins|multi_turn_scheduler|gym_env|use_gym_env|use_vllm|\
       vllm_mode|max_turns|loss_scale|output_dir|tuner_type|torch_dtype|\
-      learning_rate|optim|gradient_checkpointing|save_only_model|enable_thinking|\
+      learning_rate|lr_scheduler_type|loss_type|optim|gradient_checkpointing|save_only_model|enable_thinking|\
       freeze_vit|freeze_aligner|freeze_llm)
       echo "[ERR] Do not override --$AGENTARK_EXTRA_KEY through trailing CLI arguments." >&2
       echo "      Use the documented AGENTARK_* variable; this keeps preflight and Swift arguments identical." >&2
@@ -97,10 +106,6 @@ if [[ -z "$MODEL_DIR" ]]; then
   echo "[ERR] Set AGENTARK_MODEL to a local model directory or a Swift-supported model ID." >&2
   exit 2
 fi
-if [[ ! -f "$PLUGIN_PATH" ]]; then
-  echo "[ERR] AgentArk Swift plugin not found: $PLUGIN_PATH" >&2
-  exit 2
-fi
 if [[ ! -f "$AGENTARK_RUNTIME_CONFIG" ]]; then
   echo "[ERR] AgentArk runtime config not found: $AGENTARK_RUNTIME_CONFIG" >&2
   exit 2
@@ -115,6 +120,14 @@ if [[ "$AGENTARK_PROTOCOL_VERSION" != "v1" && "$AGENTARK_PROTOCOL_VERSION" != "v
 fi
 if [[ "$TUNER_TYPE" != "lora" && "$TUNER_TYPE" != "full" ]]; then
   echo "[ERR] AGENTARK_TUNER_TYPE must be lora or full." >&2
+  exit 2
+fi
+if [[ "$USE_VLLM" != "true" && "$USE_VLLM" != "false" ]]; then
+  echo "[ERR] AGENTARK_USE_VLLM must be true or false." >&2
+  exit 2
+fi
+if [[ "$SWIFT_INTEGRATION" != "auto" && "$SWIFT_INTEGRATION" != "builtin" && "$SWIFT_INTEGRATION" != "external" ]]; then
+  echo "[ERR] AGENTARK_SWIFT_INTEGRATION must be auto, builtin, or external." >&2
   exit 2
 fi
 for AGENTARK_BOOL_NAME in GRADIENT_CHECKPOINTING SAVE_ONLY_MODEL ENABLE_THINKING FREEZE_VIT FREEZE_ALIGNER FREEZE_LLM; do
@@ -156,6 +169,9 @@ else
 fi
 
 SWIFT_MODEL_ARGS=(--torch_dtype "$TORCH_DTYPE")
+if [[ -n "$MODEL_TYPE" ]]; then
+  SWIFT_MODEL_ARGS+=(--model_type "$MODEL_TYPE")
+fi
 if [[ -n "$ENABLE_THINKING" ]]; then
   SWIFT_MODEL_ARGS+=(--enable_thinking "$ENABLE_THINKING")
 fi
@@ -179,11 +195,43 @@ fi
 if [[ -n "$SAVE_ONLY_MODEL" ]]; then
   SWIFT_OPTIM_ARGS+=(--save_only_model "$SAVE_ONLY_MODEL")
 fi
+SWIFT_OPTIM_ARGS+=(--lr_scheduler_type "$LR_SCHEDULER_TYPE" --loss_type "$LOSS_TYPE")
 
 SWIFT_VERSION="$($SWIFT_PYTHON_BIN -c "import importlib.metadata as m; print(m.version('ms-swift'))")"
-if [[ "$SWIFT_VERSION" != "4.4.1" ]]; then
-  echo "[ERR] This integration is version-guarded for ms-swift 4.4.1; found $SWIFT_VERSION." >&2
+if "$SWIFT_PYTHON_BIN" -c \
+  "from swift.rollout.gym_env import envs; from swift.rollout.multi_turn import multi_turns; raise SystemExit(0 if 'agentark' in envs and 'agentark_scheduler' in multi_turns else 1)" \
+  >/dev/null 2>&1; then
+  SWIFT_HAS_BUILTIN_AGENTARK=true
+else
+  SWIFT_HAS_BUILTIN_AGENTARK=false
+fi
+
+if [[ "$SWIFT_INTEGRATION" == "auto" ]]; then
+  if [[ "$SWIFT_HAS_BUILTIN_AGENTARK" == "true" ]]; then
+    SWIFT_INTEGRATION=builtin
+  else
+    SWIFT_INTEGRATION=external
+  fi
+elif [[ "$SWIFT_INTEGRATION" == "builtin" && "$SWIFT_HAS_BUILTIN_AGENTARK" != "true" ]]; then
+  echo "[ERR] The selected ms-swift does not provide the built-in AgentArk environment and scheduler." >&2
+  echo "      Use an AgentArk-enabled Swift checkout, or set AGENTARK_SWIFT_INTEGRATION=external." >&2
   exit 2
+fi
+
+SWIFT_PLUGIN_ARGS=()
+SWIFT_PYTHONPATH_PREFIX="${AGENTARK_SWIFT_COMPAT_DIR:-$SCRIPT_DIR/compat}"
+if [[ "$SWIFT_INTEGRATION" == "external" ]]; then
+  if [[ "$SWIFT_VERSION" != "4.4.1" && "$SWIFT_VERSION" != "4.5.0.dev0" && "$SWIFT_VERSION" != "4.6.0.dev0" ]]; then
+    echo "[ERR] The legacy external adapter supports ms-swift 4.4.1, 4.5.0.dev0, and 4.6.0.dev0; found $SWIFT_VERSION." >&2
+    echo "      Prefer an AgentArk-enabled Swift checkout with AGENTARK_SWIFT_INTEGRATION=builtin." >&2
+    exit 2
+  fi
+  if [[ ! -f "$PLUGIN_PATH" ]]; then
+    echo "[ERR] AgentArk Swift plugin not found: $PLUGIN_PATH" >&2
+    exit 2
+  fi
+  SWIFT_PLUGIN_ARGS=(--external_plugins "$PLUGIN_PATH")
+  SWIFT_PYTHONPATH_PREFIX="$INTEGRATION_ROOT/src:$SWIFT_PYTHONPATH_PREFIX"
 fi
 
 CAPACITY_ARGS=(
@@ -248,13 +296,27 @@ export AGENTARK_SERVER_URL AGENTARK_PROTOCOL_VERSION AGENTARK_RUNTIME_CONFIG
 export AGENTARK_HTTP_TIMEOUT AGENTARK_RELEASE_TIMEOUT AGENTARK_HEARTBEAT_TIMEOUT
 export AGENTARK_ASSISTANT_LOSS_SCOPE
 export PATH="$(dirname "$SWIFT_BIN"):$PATH"
-export PYTHONPATH="$INTEGRATION_ROOT/src:${AGENTARK_SWIFT_COMPAT_DIR:-$SCRIPT_DIR/compat}${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$SWIFT_PYTHONPATH_PREFIX${PYTHONPATH:+:$PYTHONPATH}"
 export NPROC_PER_NODE="$WORLD_SIZE"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 
-echo "[INFO] ms-swift=$SWIFT_VERSION model=$MODEL_DIR tuner=$TUNER_TYPE dtype=$TORCH_DTYPE"
+if [[ "$USE_VLLM" == "true" ]]; then
+  SWIFT_ROLLOUT_ARGS=(
+    --use_vllm true
+    --vllm_mode colocate
+    --vllm_gpu_memory_utilization "$VLLM_GPU_MEMORY_UTILIZATION"
+    --vllm_tensor_parallel_size "$VLLM_TENSOR_PARALLEL_SIZE"
+    --vllm_max_model_len "$VLLM_MAX_MODEL_LEN"
+    --vllm_mm_processor_cache_gb "$VLLM_MM_PROCESSOR_CACHE_GB"
+  )
+else
+  SWIFT_ROLLOUT_ARGS=(--use_vllm false)
+fi
+
+echo "[INFO] ms-swift=$SWIFT_VERSION agentark_integration=$SWIFT_INTEGRATION model=$MODEL_DIR tuner=$TUNER_TYPE dtype=$TORCH_DTYPE"
 echo "[INFO] tickets=$TICKET_DATASET required_unique_groups=$REQUIRED_TICKETS"
-echo "[INFO] rollout_trajectories=$REQUIRED_IDLE server=$AGENTARK_SERVER_URL"
+echo "[INFO] rollout_trajectories=$REQUIRED_IDLE use_vllm=$USE_VLLM server=$AGENTARK_SERVER_URL"
+echo "[INFO] vllm_mm_processor_cache_gb=$VLLM_MM_PROCESSOR_CACHE_GB"
 echo "[INFO] output=$OUTPUT_DIR"
 
 "$SWIFT_BIN" rlhf \
@@ -264,17 +326,13 @@ echo "[INFO] output=$OUTPUT_DIR"
   --dataset "$TICKET_DATASET" \
   --split_dataset_ratio 0 \
   --load_from_cache_file false \
-  --external_plugins "$PLUGIN_PATH" \
+  "${SWIFT_PLUGIN_ARGS[@]}" \
   --multi_turn_scheduler agentark_scheduler \
   --gym_env agentark \
   --use_gym_env true \
   --max_turns "$MAX_TURNS" \
   --loss_scale default \
-  --use_vllm true \
-  --vllm_mode colocate \
-  --vllm_gpu_memory_utilization "$VLLM_GPU_MEMORY_UTILIZATION" \
-  --vllm_tensor_parallel_size "$VLLM_TENSOR_PARALLEL_SIZE" \
-  --vllm_max_model_len "$VLLM_MAX_MODEL_LEN" \
+  "${SWIFT_ROLLOUT_ARGS[@]}" \
   --sleep_level "${AGENTARK_SLEEP_LEVEL:-1}" \
   "${SWIFT_TUNER_ARGS[@]}" \
   "${SWIFT_MODEL_ARGS[@]}" \

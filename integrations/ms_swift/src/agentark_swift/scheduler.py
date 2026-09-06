@@ -1,4 +1,4 @@
-"""AgentArk-specific multi-turn scheduler for ms-swift 4.4.1."""
+"""AgentArk-specific multi-turn scheduler for supported ms-swift releases."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from swift.infer_engine.protocol import ChatCompletionResponseChoice, RolloutInferRequest
 from swift.rollout.multi_turn import GYMScheduler
 
+from .client import AgentArkStaleLeaseError
 from .env import AgentArkEnv
 from .messages import new_environment_messages
 
@@ -26,7 +27,7 @@ def _json_safe(value: Any) -> Any:
 class AgentArkScheduler(GYMScheduler):
     """Drive AgentArk while preserving rollout-produced IDs and inline media.
 
-    Version 0.1 targets ms-swift 4.4.1's colocate multi-turn driver. Every
+    Version 0.1 targets the supported ms-swift colocate multi-turn driver. Every
     nonterminal turn returns the exact IDs emitted by vLLM. The colocate driver
     adds the final turn's IDs itself.
     """
@@ -117,6 +118,8 @@ class AgentArkScheduler(GYMScheduler):
         *,
         gym_done: bool,
         termination_reason: str | None = None,
+        finish_reason: str | None = None,
+        end_turn: int | None = None,
     ) -> dict[str, Any]:
         infos: dict[str, Any] = {
             **deepcopy(self._metadata.get(uuid, {})),
@@ -125,9 +128,10 @@ class AgentArkScheduler(GYMScheduler):
             "step_rewards": list(self._step_rewards.get(uuid, [])),
             "step_infos": deepcopy(self._step_infos.get(uuid, [])),
             "gym_done": bool(gym_done),
+            "termination_reason": termination_reason or "unknown",
+            "finish_reason": finish_reason or "unknown",
+            "end_turn": end_turn if end_turn is not None else len(self._step_rewards.get(uuid, [])),
         }
-        if termination_reason:
-            infos["termination_reason"] = termination_reason
         return _json_safe(infos)
 
     async def on_turn_end(
@@ -140,7 +144,12 @@ class AgentArkScheduler(GYMScheduler):
         if not uuid or uuid not in self._envs:
             return {
                 "done": True,
-                "rollout_infos": {"gym_done": False, "termination_reason": "missing_env"},
+                "rollout_infos": {
+                    "gym_done": False,
+                    "termination_reason": "missing_env",
+                    "finish_reason": response_choice.finish_reason or "unknown",
+                    "end_turn": current_turn,
+                },
             }
 
         token_ids = response_choice.token_ids
@@ -154,7 +163,13 @@ class AgentArkScheduler(GYMScheduler):
         # A length-truncated code/tool call is not a valid action. Releasing it
         # here also avoids GYMScheduler's done override bypassing check_finished.
         if response_choice.finish_reason == "length":
-            infos = self._rollout_infos(uuid, gym_done=False, termination_reason="length")
+            infos = self._rollout_infos(
+                uuid,
+                gym_done=False,
+                termination_reason="length",
+                finish_reason=response_choice.finish_reason,
+                end_turn=current_turn,
+            )
             finalized = await self.finalize_trajectory(uuid, reason="length")
             if "release_error" in finalized:
                 infos["release_error"] = finalized["release_error"]
@@ -167,6 +182,14 @@ class AgentArkScheduler(GYMScheduler):
                 action_id=f"{uuid}:{current_turn}",
                 turn_index=current_turn,
             )
+        except AgentArkStaleLeaseError as exc:
+            infos = await self.finalize_trajectory(uuid, reason="stale_lease")
+            infos["trajectory_invalid"] = True
+            infos["lease_recovery"] = "discard_trajectory"
+            infos["stale_lease_error"] = str(exc)
+            infos["finish_reason"] = response_choice.finish_reason or "unknown"
+            infos["end_turn"] = current_turn
+            return {"done": True, "rollout_infos": _json_safe(infos)}
         except BaseException:
             await self.finalize_trajectory(uuid, reason="step_error")
             raise
@@ -193,6 +216,8 @@ class AgentArkScheduler(GYMScheduler):
             uuid,
             gym_done=bool(env_done),
             termination_reason=termination_reason,
+            finish_reason=response_choice.finish_reason,
+            end_turn=current_turn,
         )
         if should_stop:
             finalized = await self.finalize_trajectory(uuid, reason=termination_reason or "finished")
@@ -216,7 +241,7 @@ class AgentArkScheduler(GYMScheduler):
 
         token_ids = response_choice.token_ids
         if token_ids is None:
-            # on_turn_end validates this first in both Swift 4.4.1 drivers.
+            # on_turn_end validates this first in the supported Swift drivers.
             raise RuntimeError("AgentArkScheduler requires exact response_choice.token_ids")
         ids = list(token_ids)
         loss_scope = self._loss_scopes.get(uuid, "all_turns")

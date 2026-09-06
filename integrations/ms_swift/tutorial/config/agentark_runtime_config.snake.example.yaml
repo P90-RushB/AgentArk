@@ -1,0 +1,69 @@
+# Snake 8x8 / 16-runtime example for a single Linux training host.
+# Copy this file to a *.local.yaml file and replace every /absolute/path/to/...
+# value before starting the Env Server.
+server:
+  host: http://127.0.0.1
+  port: 28182
+  timeout: 1200
+
+interaction:
+  acquire_env: true
+  release_env_on_finalize: true
+  auto_create_env: false
+  close_env_on_finalize: false
+
+warmup:
+  num_envs: 16
+  step_once: false
+  close_envs_after_warmup: false
+  env_id_prefix: snake-warmup
+  port_assignment:
+    assign_worker_index: true
+    assign_env_id: false
+    assign_base_port: false
+    base_port_start: 5200
+    base_port_stride: 1
+
+env_cfg:
+  env_path: /absolute/path/to/AgentArk-env-1.0.3-linux/AgentArk.x86_64
+  mod_path: /absolute/path/to/AgentArk-env-1.0.3-linux/AgentArk_Data/Resources/Mods
+  task_type: RLTask
+  base_port: 5200
+  base_port_stride: 1
+  auto_port_scan: false
+  acquire_start_max_retries: 2
+  max_interactions_per_runtime: 64
+  reset_timeout_s: 600
+  step_timeout_s: 120
+  close_timeout_s: 60
+
+  runtime_sandbox:
+    enabled: true
+    runtime_platform: linux
+    template_root: /absolute/path/to/AgentArk-env-1.0.3-linux
+    template_env_path: /absolute/path/to/AgentArk-env-1.0.3-linux/AgentArk.x86_64
+    template_mod_path: /absolute/path/to/AgentArk-env-1.0.3-linux/AgentArk_Data/Resources/Mods
+    shared_task_store_path: /absolute/path/to/AgentArk-env-1.0.3-linux/AgentArk_Data/Resources/Mods/all_tasks
+    pool_root: /absolute/path/to/agentark-runtime-pool-snake
+    pool_size: 16
+    auto_prepare: true
+    link_mode: symlink
+
+  env_config_overrides:
+    num_parallel_envs: 1
+    virtual_display: true
+    virtual_display_render_env:
+      GALLIUM_NUM_THREADS: 1
+    env_wrapper_cfg:
+      context_manager:
+        history:
+          max_history_attempts: 0
+          max_history_steps_per_attempt: 0
+          sample_size: 0
+        messages:
+          enabled: true
+          only_return_messages: true
+          append_only: true
+          return_mode: delta
+          history_only_on_attempt_start: true
+          repeat_task_prompt_on_auto_reset: false

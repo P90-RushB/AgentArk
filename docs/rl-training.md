@@ -5,9 +5,10 @@ English | [简体中文](rl-training.zh-CN.md)
 AgentArk exposes its Unity runtime pool as an HTTP environment service. Two
 GRPO paths are maintained; use their runbooks for executable instructions:
 
-- [ms-swift runbook (Chinese)](../integrations/ms_swift/README.md): the adapter
-  lives in this repository, currently targets the validated ms-swift 4.4.1
-  stack, and defaults to AgentArk HTTP protocol v2.
+- [ms-swift runbook](../integrations/ms_swift/README.md): the preferred adapter
+  is built into the AgentArk-enabled Swift branch and defaults to AgentArk HTTP
+  protocol v2. This repository temporarily retains an external fallback for the
+  documented ms-swift 4.4–4.6 stacks.
 - [VERL integration guide](../integrations/verl/README.md): the AgentArk bridge
   lives here, while the trainer adapter lives in the public `agentark_rl` fork
   and currently uses protocol v1.
@@ -63,7 +64,7 @@ collect batch N+1
 
 For the current ms-swift path, “async” therefore means within-batch environment
 I/O concurrency. Rollout batches and optimizer updates still alternate
-synchronously; the ms-swift 4.4.1 multi-turn Gym scheduler does not use an
+synchronously; the supported multi-turn Gym path does not use an
 `async_generate` cross-batch pipeline.
 
 ## 3. GRPO groups, tasks, and seeds
@@ -108,7 +109,7 @@ The ms-swift adapter exposes two choices:
   assistant turn is retained.
 
 See the [ms-swift runbook](../integrations/ms_swift/README.md) and
-[architecture note (Chinese)](../integrations/ms_swift/ARCHITECTURE.zh-CN.md)
+[architecture and implementation semantics](../integrations/ms_swift/ARCHITECTURE.md)
 for the exact settings and driver masks. The current VERL recipe uses its own
 agent-loop response masks for assistant output and masks environment
 observations; it does not consume the Swift-specific loss-scope switch.
@@ -117,7 +118,7 @@ observations; it does not consume the Swift-specific loss-scope switch.
 
 | Dimension | ms-swift | VERL |
 | --- | --- | --- |
-| Adapter location | `integrations/ms_swift` in this repository | External fork; local bridge/preflight |
+| Adapter location | AgentArk-enabled Swift; legacy fallback here | External fork; local bridge/preflight |
 | Environment abstraction | Swift Gym Env + multi-turn scheduler | VERL async agent loop |
 | Current protocol | v2 | v1 |
 | Sibling identity | Static ticket `group_uid` + distinct request UUID | Per-occurrence `uid` |
@@ -181,4 +182,4 @@ checkpoint.
 
 For the full ms-swift data flow, script responsibilities, masks, and v2
 lifecycle, see the
-[ms-swift architecture note (Chinese)](../integrations/ms_swift/ARCHITECTURE.zh-CN.md).
+[ms-swift architecture and implementation semantics](../integrations/ms_swift/ARCHITECTURE.md).
