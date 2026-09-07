@@ -59,11 +59,11 @@ def _normalize_codex_reasoning_effort(value: Any) -> Optional[str]:
     if value in (None, ''):
         return None
     normalized = str(value).strip().lower()
-    allowed = {'none', 'minimal', 'low', 'medium', 'high', 'xhigh'}
+    allowed = {'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'}
     if normalized not in allowed:
         raise ValueError(
             'Codex reasoning_effort must be one of: '
-            'none, minimal, low, medium, high, xhigh'
+            'none, minimal, low, medium, high, xhigh, max'
         )
     return normalized
 

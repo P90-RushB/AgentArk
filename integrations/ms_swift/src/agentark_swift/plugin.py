@@ -1,4 +1,4 @@
-"""Registration side effects loaded by ms-swift's ``--external_plugins``."""
+"""Legacy registration loaded by ms-swift's ``--external_plugins`` fallback."""
 
 from swift.rollout.gym_env import envs
 from swift.rollout.multi_turn import multi_turns

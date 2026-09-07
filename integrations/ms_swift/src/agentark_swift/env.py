@@ -13,7 +13,7 @@ from swift.infer_engine.protocol import RolloutInferRequest
 from swift.rollout.gym_env import Env
 from swift.template import Messages
 
-from .client import AgentArkHttpClient, stable_operation_id
+from .client import AgentArkHttpClient, AgentArkStaleLeaseError, stable_operation_id
 from .heartbeat import HeartbeatSupervisor, LeaseExpiredError, LeaseHandle, get_heartbeat_supervisor
 from .messages import copy_messages, extract_action, latest_assistant_text
 
@@ -371,6 +371,11 @@ class AgentArkEnv(Env):
                     )
                 else:
                     await self.client.release(release_target)
+            except AgentArkStaleLeaseError:
+                logger.info(
+                    "AgentArk lease env_id=%s was already stale during release",
+                    self.env_id,
+                )
             except BaseException as exc:
                 self.close_error = f"{type(exc).__name__}: {exc}"
                 logger.warning("Failed to release AgentArk env_id=%s: %s", self.env_id, self.close_error)

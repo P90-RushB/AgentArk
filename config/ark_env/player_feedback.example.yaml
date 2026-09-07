@@ -55,6 +55,9 @@ models:
   - name: codex-black-box-player
     provider: codex
     model: gpt-5.5
+    # Use the current Codex App/CLI runtime instead of the SDK's pinned
+    # bundled runtime. Set AGENTARK_CODEX_BIN to the installed codex.exe.
+    codex_bin: "${AGENTARK_CODEX_BIN}"
     sandbox: read_only
     timeout_s: 600
     reasoning_effort: medium

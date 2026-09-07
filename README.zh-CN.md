@@ -15,6 +15,9 @@ AgentArk 的目标不是固化一套静态 benchmark，而是为持续增长的�
 动作、评分规则和终止条件。Coding Agent 可以协助把新的任务创意实现为经过验证的
 Mod，同一批任务随后可用于多模态模型评测、轨迹回放和强化学习。
 
+目前已经开发了 200+ 个任务环境。经过验证的任务正通过 AgentArk Hub 和
+Hugging Face 分批发布，并向 2026 年 1K+ 任务库的目标持续扩展。
+
 本仓库提供用于运行时控制、模型评测、回放、环境服务和强化学习集成的 Python 包。
 
 ## AgentArk 能做什么
@@ -32,6 +35,36 @@ Mod，同一批任务随后可用于多模态模型评测、轨迹回放和强�
 - **广泛的任务类型。** AgentArk 面向 2D/3D 场景、物理校准、时序控制、路径规划、
   视频级观测、小游戏、GUI 类任务，以及未来任何能够用可加载 Mod 和可验证评分表达的
   任务类型。
+
+## 精选视频
+
+<table>
+  <tr>
+    <td width="33.33%" align="center" valign="top">
+      <a href="https://www.bilibili.com/video/BV1z5b46UEF8">
+        <img src="https://i2.hdslb.com/bfs/archive/7cc82dbc43f5d7b52a3d7b28e54b8330a441c5fa.jpg" alt="GPT 6 游玩 AgentArk" width="100%">
+      </a>
+      <br>
+      <a href="https://www.bilibili.com/video/BV1z5b46UEF8"><strong>▶ 我承认了，GPT 6，你是最会开火车的，像本up一样</strong></a>
+    </td>
+    <td width="33.33%" align="center" valign="top">
+      <a href="https://www.bilibili.com/video/BV1PEu36AEe5">
+        <img src="https://i1.hdslb.com/bfs/archive/b8a594bff949741c5701597521ff9d4a42ea12e0.jpg" alt="GPT 游玩 AgentArk 贪吃蛇" width="100%">
+      </a>
+      <br>
+      <a href="https://www.bilibili.com/video/BV1PEu36AEe5"><strong>▶ GPT: 啊？你们不会玩贪吃蛇啊？</strong></a>
+    </td>
+    <td width="33.33%" align="center" valign="top">
+      <a href="https://www.bilibili.com/video/BV1D4MS6jEw4">
+        <img src="https://i1.hdslb.com/bfs/archive/9cd38624e49968a4c4f00445f881ee7ef8337bb3.jpg" alt="AI 智能体游玩 AgentArk 打弹珠" width="100%">
+      </a>
+      <br>
+      <a href="https://www.bilibili.com/video/BV1D4MS6jEw4"><strong>▶ AI电竞：打弹珠 “豆姐你倒是动啊！！！”</strong></a>
+    </td>
+  </tr>
+</table>
+
+点击封面或标题即可前往 B 站观看。
 
 ## 先体验 AgentArk
 
@@ -65,7 +98,7 @@ Kaggle 评测通过其 OpenAI 兼容的 Model Proxy 运行。排行榜评测在�
 ## 1. 安装
 
 AgentArk 的本地评测、回放和环境服务需要本仓库中的 Python 包，以及 Hugging Face
-上与之匹配的 Unity 打包运行时。当前运行时版本为 `env-1.0.1`，包含 32 个首发任务。
+上与之匹配的 Unity 打包运行时。当前运行时版本为 `env-1.0.3`，包含 51 个首发任务。
 
 安装、运行时下载、本地路径配置和冒烟测试请参阅
 [docs/setup.zh-CN.md](docs/setup.zh-CN.md)。
@@ -134,7 +167,8 @@ runtime wrapper 和 Env Server 使用 AgentArk Python 3.10.12 环境，每个 tr
 
 目前提供两种 GRPO 集成：
 
-- [ms-swift](integrations/ms_swift/README.md)：在本仓库中维护。
+- [ms-swift](integrations/ms_swift/README.zh-CN.md)：trainer 接入位于包含 AgentArk 的
+  Swift；本仓库维护 Server、运行指南和临时旧版 fallback。
 - [VERL](integrations/verl/README.zh-CN.md)：trainer 侧实现位于公开
   `agentark_rl` fork。
 
@@ -149,8 +183,8 @@ AgentArk 的长期目标是实现模型与环境共同演化：智能体识别�
 
 近期开发重点包括：
 
-- **2026 年达到 1K+ 任务规模。** 将公开任务库从当前首发套件扩展到一千个以上
-  可复现、可训练的任务 Mod。
+- **2026 年达到 1K+ 任务规模。** 在已开发的 200+ 个任务环境基础上，持续分批发布
+  经过验证、可复现、可训练的任务 Mod。
 - **动态课程。** 根据模型成功率、错误类型、任务参数和能力覆盖情况选择任务。
 - **长程记忆。** 为长交互历史的任务压缩观测、动作、分数和错误分析。
 - **更丰富的环境来源。** 将生成式资产、3D 生成和世界模型与 AgentArk 可验证的
@@ -163,11 +197,16 @@ AgentArk 的长期目标是实现模型与环境共同演化：智能体识别�
 - `agent_ark.ark_env`：Unity 运行时生命周期、任务 reset/step 协议、运行时沙箱、
   环境服务、预热和 HTTP client 工具。
 - `agent_ark.ark_eval`：API 模型评测、并行评测、回放以及轨迹保存/加载。
-- `integrations`：RL 框架 adapter 与运行指南；VERL trainer 侧 recipe 仍位于其
-  公开 fork 中。
+- `integrations`：RL 框架运行指南、Server 辅助脚本与临时兼容 adapter；ms-swift 内置
+  接入目前位于其 feature 分支，VERL trainer recipe 仍位于公开 fork。
 - `agent_ark.interaction`：本地浏览器 viewer 和人工交互 hook。
 
 ## 许可证
 
 本仓库中的 Python 包采用 Apache-2.0 许可证。Hugging Face 上的运行时构建、任务 Mod
 和记录遵循 dataset card 中声明的许可证；当前若无其他说明，为 CC BY-NC 4.0。
+
+## 联系方式
+
+- 邮箱：[agentark@qq.com](mailto:agentark@qq.com)
+- 微信：`dada_biubiubiu`

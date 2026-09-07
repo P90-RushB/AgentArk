@@ -20,7 +20,7 @@ def _positive_int(value: str) -> int:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Compute and validate unique group rows from ms-swift 4.4.1's "
+            "Compute and validate unique group rows from the supported ms-swift "
             "generation-batch reuse schedule."
         )
     )

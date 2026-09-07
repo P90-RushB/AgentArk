@@ -164,9 +164,8 @@ models:
     model: gpt-5.5
     sandbox: read_only
     timeout_s: 600
-    # 可选：none、minimal、low、medium、high、xhigh。
-    # 省略时使用 Codex SDK/模型默认值。low 是更稳妥的低成本设置；
-    # 启用 Codex tools 时 minimal 可能被拒绝。
+    # GPT-6 Astra 可选：low、medium、high、xhigh、max。
+    # 省略时使用 Codex SDK/模型默认值。
     reasoning_effort: medium
     thread_mode: per_agent
     codex_context_mode: lean
@@ -189,7 +188,8 @@ Codex 配置中的 MCP map 会按名称合并，无法用一个空 map 覆盖所
 个人配置里还有其他 MCP server，必须把其名称加到 `codex_disabled_mcp_servers`。需要做
 包含标准 Codex 上下文的对照实验时，可显式设置 `codex_context_mode: default`；这同样
 只影响该次 AgentArk SDK 评测。结果 JSONL 会记录实际的 context mode 和禁用的 MCP
-名称。当前 `openai-codex==0.1.0b3` 已支持这些 thread 参数，不需要为此升级。
+名称。当前支持 GPT-6 的安装应使用 `openai-codex>=0.147.0`。如果 SDK 自带 CLI
+尚不支持所选模型，请设置 `AGENTARK_CODEX_BIN` 指向当前 Codex App/CLI 可执行文件。
 
 `thread_mode` 默认为 `per_agent`，推荐使用该设置。除了 AgentArk 可见的
 `request_messages`，Codex SDK turn 还包含 Codex 侧运行时、系统和工具上下文；这些
@@ -230,7 +230,7 @@ python -m agent_ark.ark_eval.run_api_agent \
   --config config/ark_env/eval_seed1.example.yaml
 ```
 
-`task_name` 必须匹配 `Mods/all_tasks` 下的目录。打包运行时包含 32 个首发任务，
+`task_name` 必须匹配 `Mods/all_tasks` 下的目录。打包运行时包含 51 个首发任务，
 例如 `MarbleStop`、`Snake`、`Pushbox`、`ObjectRotationMatch` 和
 `StarterRouteJump3D`。
 

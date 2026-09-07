@@ -1,11 +1,15 @@
-# AgentArk × ms-swift 接入架构与训练流程
+# AgentArk × ms-swift 接入架构与实现语义
 
-本文解释 AgentArk 如何接入 ms-swift、一次 GRPO rollout 从 ticket 到 Unity 再回到
-策略损失的完整数据流，以及这套实现与现有 VERL recipe 的区别。当前发布依赖固定并
-验证于 ms-swift 4.4.1；下文只在行为与版本直接相关时再次标注版本。
+[English](ARCHITECTURE.md) | 简体中文
 
-如果你的目标只是安装和运行，请先看 [README.md](README.md)；如果要修改 adapter、
-排查多模态轨迹或规划扩容，再阅读本文。
+本文面向需要维护 adapter、排查轨迹或设计扩容方案的开发者，解释 AgentArk 如何接入
+ms-swift、一次 GRPO rollout 从 ticket 到 Unity 再回到策略损失的完整数据流，以及这套
+实现与现有 VERL recipe 的区别。内置接入或版本门控的旧 fallback 如何选择，以 README
+和 launcher 为准；下文只在行为与版本直接相关时再次标注版本。
+
+本文不重复安装、启动和训练命令。如果目标只是跑通训练，请看
+[README.zh-CN.md](README.zh-CN.md)；
+Snake 单任务完整示例见 [tutorial/README.zh-CN.md](tutorial/README.zh-CN.md)。
 
 ## 1. 接入方案与能力边界
 
@@ -19,13 +23,18 @@
   heartbeat 和 TTL 回收；
 - adapter 的消息和环境协议不绑定具体模型；模型需要由当前 Swift template/processor 与
   vLLM 支持，并能生成 AgentArk task 定义的代码或工具 action；
-- 通用 launcher 支持 LoRA 和 full，并提供单机多卡参数与预检；当前端到端回归基线为
-  单卡，扩大后需按实际 GPU、CPU、内存与 Unity 启动稳定性重新做 smoke。
+- 通用 launcher 支持 LoRA 和 full，并提供单机多卡参数与预检；仓库 smoke 回归基线为
+  单卡，Snake 教程另记录了完整 8 卡实跑。扩大后仍需按实际 GPU、CPU、内存与 Unity
+  启动稳定性重新做 smoke。
 
 AgentArk 已经通过独立 Server 提供 runtime sandbox、按 scene/task reset、并发池和任务
 选择器，因此 Swift adapter 直接连接这套服务，保留快速 reload 和共享 pool 语义。
 Qwen3.5-0.8B LoRA 是测试机器显存条件下使用的端到端回归配置，不代表模型大小或训练
 方式上限。
+
+推荐的 trainer 实现现在位于 AgentArk-enabled Swift checkout 的
+`swift/rollout/agentark`。本仓库保留原外置 adapter，只作为尚未包含这些模块的受支持
+Swift 版本的临时 fallback；两条路径使用完全相同的 Server 协议。
 
 并发与同步边界：同一 generation batch 内，多个 env 的 reset/step 通过协程并发等待；
 当前 rollout batch 与 optimizer update 仍同步交替，不使用 `async_generate` 流水线。
@@ -35,7 +44,7 @@ Qwen3.5-0.8B LoRA 是测试机器显存条件下使用的端到端回归配置�
 ```mermaid
 flowchart LR
     D[Ticket JSONL] --> S[ms-swift\nGRPO trainer]
-    P[agentark_swift plugin] --> S
+    P[Swift 内置 AgentArk Env + Scheduler] --> S
     S --> V[vLLM colocate\n生成 assistant token]
     S <--> A[AgentArkEnv +\nAgentArkScheduler]
     A <--> H[AgentArk HTTP protocol v2]
@@ -159,17 +168,17 @@ dataset/run ID；启动新的独立实验时生成新的 run ID。
 
 `run_agentark_grpo.sh` 在启动 Swift 前依次执行：
 
-1. 检查 Swift Python、`swift` CLI、模型目录或 Swift 模型 ID、plugin 和 runtime config；
-2. 检查已安装的 ms-swift 是否与当前兼容版本一致；
+1. 检查 Swift Python、`swift` CLI、模型目录或 Swift 模型 ID 和 runtime config；
+2. 检测内置 `agentark` Env 与 `agentark_scheduler`；若不存在，再校验旧外置 adapter
+   及其支持的 ms-swift 版本；
 3. 根据 batch、gradient accumulation、G、iterations 和 max steps 计算唯一 ticket 数；
 4. 未提供 dataset 时原子生成 JSONL ticket；
 5. 校验 ticket 唯一性、分组完整性和 task/seed 约束；
 6. 计算同时需要的 Unity trajectory 数 `required_idle=generation_batch_size`；
 7. 检查 v2 pool 是否有足够多已经启动且空闲的 Unity env；
-8. 将 adapter 与兼容 shim 加入 `PYTHONPATH`；
-9. 启动 `swift rlhf`，加载 external plugin；
-10. plugin 注册 `agentark` Env、`agentark_scheduler` Scheduler，并安装版本门控的
-    rollout-boundary cleanup。
+8. 将进程兼容 shim 加入 `PYTHONPATH`，仅在 fallback 模式下再加入旧 adapter；
+9. 启动 `swift rlhf`，仅在 fallback 模式下传入 `--external_plugins`；
+10. 使用所选实现提供的 Env、Scheduler 和 trajectory finalization。
 
 任何 ticket 或 Unity 容量不匹配都会在模型加载前失败，避免模型已经占用 GPU 后才发现
 环境不够。
@@ -329,11 +338,11 @@ thread，把同一 Server 的所有 lease 合成批量 heartbeat。
 
 下表以 AgentArk 的公开 VERL
 [`agentark_rl` recipe](https://github.com/P90-RushB/verl/tree/agentark_rl/agentark_recipe/agentark_env_agent)
-与本仓当前 ms-swift adapter 为准。
+与当前 AgentArk-enabled Swift adapter 为准。
 
 | 维度 | VERL recipe | ms-swift adapter |
 | --- | --- | --- |
-| 框架扩展点 | 自定义 `AgentLoopBase` + dataset class + Hydra config | 原生 `Env` + `GYMScheduler` subclass + external plugin |
+| 框架扩展点 | 自定义 `AgentLoopBase` + dataset class + Hydra config | Swift 内置 `Env` + `GYMScheduler` subclass；旧版可回退 external plugin |
 | Env 位置 | 独立 AgentArk Server | 独立 AgentArk Server；Swift Env 只是 proxy |
 | Server 协议 | 当前 recipe 使用 legacy v1 | 默认 v2，可显式回退 v1 |
 | rollout 输入 | agent loop 显式构造 token IDs 和 image data | scheduler 传原始 messages，Swift template/processor 编码 |
@@ -344,7 +353,7 @@ thread，把同一 Server 的所有 lease 合成批量 heartbeat。
 | dataset | Parquet + 自定义 `RLHFDataset` | placeholder JSONL ticket，真实 prompt 来自 reset |
 | reward | `reward_score=sum(turn_scores)` | `GYMScheduler.total_reward` 作为 gym reward |
 | 策略损失 | assistant mask=1，observation mask=0 | `all_turns` 或 `last_round` 可切换 |
-| 环境释放 | agent loop `finally` release | 正常 finalize + 版本门控的 rollout-boundary cleanup + TTL |
+| 环境释放 | agent loop `finally` release | Swift trajectory finalize + TTL；旧 fallback 使用版本门控 cleanup |
 | 请求重试 | v1 client 对 transport/5xx 重试，无法端到端证明 action exactly-once | v2 ID 支持 acquire/step/release 安全重放 |
 | runtime 并发 | AgentArk runtime pool | 同一个 runtime pool；v1/v2 namespace 隔离 |
 | 配置复杂度 | Ray/FSDP/vLLM/Hydra recipe，token/image 逻辑在 loop 内 | Swift launcher + ticket/preflight，adapter 主要维护消息和 lease |
@@ -370,15 +379,18 @@ thread，把同一 Server 的所有 lease 合成批量 heartbeat。
 
 ### 9.2 Swift adapter 模块
 
+主要实现位于 AgentArk-enabled Swift checkout 的 `swift/rollout/agentark`，包括
+`env.py`、`scheduler.py`、`client.py`、`heartbeat.py` 和 `messages.py`。Swift 直接注册
+Env/Scheduler，并提供通用 trajectory finalization。本仓库 `src/agentark_swift` 下的同名
+模块以及 `plugin.py`、`rollout_cleanup.py` 只是临时外置 fallback。
+
 | 文件 | 职责 |
 | --- | --- |
-| `plugin.py` | 注册 Env/Scheduler，并安装版本门控的 rollout cleanup |
 | `env.py` | 解析 runtime config，完成 reset/step/close 和 lease 生命周期 |
 | `scheduler.py` | 批量 reset、消息注入、多轮 step、reward、loss mask 和最终清理 |
 | `client.py` | v1/v2 HTTP client、稳定 operation ID 和安全重试策略 |
 | `heartbeat.py` | lease handle、本地 deadline、进程级批量 heartbeat |
 | `messages.py` | OpenAI messages 校验、action 提取、去除 assistant echo |
-| `rollout_cleanup.py` | 仅对 ms-swift 4.4.1 安装幂等 rollout-boundary finally 包装 |
 
 ### 9.3 AgentArk Server 模块
 
@@ -394,91 +406,33 @@ thread，把同一 Server 的所有 lease 合成批量 heartbeat。
 | 文件 | 职责 |
 | --- | --- |
 | `configs/agentark_grpo.env.example` | 两套 Python 路径、模型与 tuner、smoke/训练默认值模板；复制为被忽略的 `*.local` 后使用 |
-| `pyproject.toml` | 独立 `agentark-swift` 包元数据，固定 `ms-swift==4.4.1`；vLLM 因 CUDA/platform 差异由用户环境单独安装 |
+| `pyproject.toml` | 仅用于临时外置 fallback 的 `agentark-swift` 包元数据 |
 | `data/generated/.gitignore` | 保持目录存在，同时让默认生成的 tickets/runs 不进入 Git |
-| `tests/` | HTTP、Env、Scheduler、heartbeat、cleanup 和 ticket/launcher 回归测试 |
+| `tests/` | Server、旧 adapter 与 ticket/launcher 回归测试；内置 adapter 测试随 Swift 维护 |
 
-## 10. 扩大训练规模：什么时候只改配置
+## 10. 扩容时必须保持的架构不变量
 
-### 10.1 同一台机器、同一模型、更多 optimizer steps
+具体参数和命令由 [README.zh-CN.md](README.zh-CN.md) 维护；本节只说明扩容不能破坏的约束。
 
-不需要修改 adapter。至少调整：
+### 10.1 只需调整配置的情况
 
-```bash
-export AGENTARK_MAX_STEPS=1000
-export AGENTARK_OUTPUT_DIR=/persistent/path/run-001
-export AGENTARK_RUN_ID=run-001
-```
+增加 optimizer steps、改变单机 batch/G、调整轨迹长度或更换模型，通常不需要修改
+adapter，但必须同时满足：
 
-未指定 `AGENTARK_TICKET_DATASET` 时 launcher 会按新步数自动生成足够 ticket；指定自有
-dataset 时，capacity checker 会拒绝容量不足的文件。
+- `generation_batch_size` 能被 `num_generations` 和 global train batch 整除；
+- runtime pool 与 v2 warmup 数量都不小于 `generation_batch_size`；
+- ticket 容量满足第 3.2 节的 generation reuse 公式；
+- vLLM 上下文覆盖训练序列和每轮 completion，显存设置与模型及视觉 token 匹配；
+- 每次修改 runtime config 后重启 Server，并用同一份最终配置重建和预热 pool。
 
-### 10.2 增大 G、batch 或 gradient accumulation
+`G=num_generations` 单独增大不会让 Unity 并发超过 generation batch，但会改变每个
+rollout batch 的唯一 group 数，并继续要求 `D % G == 0`。当前 idle preflight 只按协议
+namespace 计数，不按 runtime config fingerprint 筛选，因此不能在同一个 Server 中混合
+不同配置的训练池。
 
-以下参数必须一起考虑：
+### 10.2 需要继续写代码的情况
 
-```text
-AGENTARK_PER_DEVICE_TRAIN_BATCH_SIZE
-AGENTARK_WORLD_SIZE
-AGENTARK_GRADIENT_ACCUMULATION_STEPS
-AGENTARK_GENERATION_BATCH_SIZE（可选）
-AGENTARK_NUM_GENERATIONS
-AGENTARK_NUM_ITERATIONS
-```
-
-同时需要：
-
-```text
-runtime_sandbox.pool_size >= generation_batch_size
-v2 warmup 数量               >= generation_batch_size
-```
-
-例如单机默认 generation batch 为 `4 × 1 × 2 = 8` 时，应把 sandbox pool 至少设为 8，
-并预热 8 个 v2 env：
-
-```bash
-PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}" \
-"$AGENTARK_PYTHON_BIN" -m agent_ark.ark_env.serving.warmup_envs \
-  --config "$AGENTARK_RUNTIME_CONFIG" \
-  --num-envs 8 \
-  --protocol-version v2
-```
-
-然后训练端设置：
-
-```bash
-export AGENTARK_PER_DEVICE_TRAIN_BATCH_SIZE=4
-export AGENTARK_GRADIENT_ACCUMULATION_STEPS=2
-export AGENTARK_NUM_GENERATIONS=4
-```
-
-launcher 会在加载模型前验证 ticket 和 idle Unity 数量。
-
-`G=num_generations` 单独增大不会让 Unity 并发超过 D；D 不变时仍然只需要 D 个 env，
-但每个 generation batch 的唯一 group 数从 `D/G_old` 变为 `D/G_new`，并要求
-`D % G == 0`。
-
-当前 idle preflight 只按 v1/v2 namespace 计数，不按 runtime config fingerprint 筛选。
-修改 runtime config 后必须重启 Server，并用最终同一份 config 重建/预热 v2 pool；不要
-在同一个 Server 中混合不同 config 的训练池。
-
-### 10.3 更长轨迹或更大模型
-
-通常仍是配置和资源调优，而不是修改 adapter：
-
-- `AGENTARK_MAX_TURNS`；
-- `AGENTARK_MAX_LENGTH`；
-- `AGENTARK_MAX_COMPLETION_LENGTH`；
-- `AGENTARK_VLLM_MAX_MODEL_LEN`；
-- `AGENTARK_VLLM_GPU_MEMORY_UTILIZATION`；
-- tensor parallel、tuner、dtype、冻结策略和 learning rate 等 Swift 参数。
-
-任务和模型之间的图片数量、视觉 token、文本长度及显存需求差异很大。smoke 示例中的
-长度与显存设置需要按所选模型和 task 重新校准。
-
-### 10.4 需要继续写代码的扩容
-
-以下目标超出当前“改配置即可”的范围：
+以下目标超出当前“改配置即可”的能力边界：
 
 - 多个 env-server 进程共享同一个 pool 或置于随机负载均衡器之后；
 - 多机 env-server 路由、集中 lease store 或跨进程幂等；

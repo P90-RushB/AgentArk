@@ -40,6 +40,10 @@ class AgentArkHttpError(RuntimeError):
         self.retry_after_s = retry_after_s
 
 
+class AgentArkStaleLeaseError(AgentArkHttpError):
+    """The server rejected a request using an obsolete lease identity."""
+
+
 _CLIENT_ID_LOCK = threading.Lock()
 _CLIENT_ID_PID: int | None = None
 _CLIENT_ID: str | None = None
@@ -89,6 +93,77 @@ def _error_detail(payload: Any) -> tuple[str | None, bool | None, str | None]:
     message_value = detail.get("message")
     message = None if message_value in (None, "") else str(message_value)
     return code, retryable, message
+
+
+def _is_stale_lease_conflict(
+    *,
+    status_code: int | None,
+    code: str | None,
+    message: str | None,
+    response_body: str | None,
+) -> bool:
+    """Recognize ownership conflicts without treating every HTTP 409 as stale.
+
+    A 409 such as ``operation_in_progress`` or a semantic turn conflict is
+    handled by the normal HTTP client policy.  The server versions used by
+    AgentArk have emitted both structured and plain-text stale-ownership
+    messages, so keep the fallback deliberately narrow.
+    """
+
+    if status_code != 409:
+        return False
+    normalized_code = (code or "").strip().lower()
+    if normalized_code in {
+        "stale_lease",
+        "lease_stale",
+        "lease_identity_conflict",
+        "lease_generation_conflict",
+        "server_epoch_conflict",
+    }:
+        return True
+    text = " ".join(
+        part.strip().lower()
+        for part in (message or "", response_body or "")
+        if part
+    )
+    return (
+        "lease identity does not own env_id" in text
+        or "belongs to an older generation" in text
+        or "older lease generation" in text
+        or "server epoch" in text and "lease" in text
+    )
+
+
+def _http_error(
+    *,
+    message: str,
+    path: str,
+    status_code: int | None,
+    response_body: str | None,
+    code: str | None = None,
+    retryable: bool | None = None,
+    retry_after_s: float | None = None,
+) -> AgentArkHttpError:
+    error_type = (
+        AgentArkStaleLeaseError
+        if _is_stale_lease_conflict(
+            status_code=status_code,
+            code=code,
+            message=message,
+            response_body=response_body,
+        )
+        else AgentArkHttpError
+    )
+    return error_type(
+        message,
+        method="POST",
+        path=path,
+        status_code=status_code,
+        response_body=response_body,
+        code=code,
+        retryable=retryable,
+        retry_after_s=retry_after_s,
+    )
 
 
 class AgentArkHttpClient:
@@ -183,9 +258,8 @@ class AgentArkHttpClient:
             result = response.json()
         except ValueError as exc:
             if response.is_error:
-                raise AgentArkHttpError(
-                    f"AgentArk POST {path} returned HTTP {response.status_code}: {body}",
-                    method="POST",
+                raise _http_error(
+                    message=f"AgentArk POST {path} returned HTTP {response.status_code}: {body}",
                     path=path,
                     status_code=response.status_code,
                     response_body=body,
@@ -202,9 +276,8 @@ class AgentArkHttpClient:
         code, retryable, detail_message = _error_detail(result)
         if response.is_error:
             suffix = detail_message or body
-            raise AgentArkHttpError(
-                f"AgentArk POST {path} returned HTTP {response.status_code}: {suffix}",
-                method="POST",
+            raise _http_error(
+                message=f"AgentArk POST {path} returned HTTP {response.status_code}: {suffix}",
                 path=path,
                 status_code=response.status_code,
                 response_body=body,
@@ -345,11 +418,15 @@ class AgentArkHttpClient:
             "action": action,
             "assistant": assistant,
         }
-        result = await self._post(
-            f"/v2/envs/{lease.env_id}/step",
-            payload,
-            allow_v2_retry=True,
-        )
+        try:
+            result = await self._post(
+                f"/v2/envs/{lease.env_id}/step",
+                payload,
+                allow_v2_retry=True,
+            )
+        except AgentArkStaleLeaseError as exc:
+            lease.mark_expired(f"server rejected stale lease identity: {exc}")
+            raise
         if bool(result.get("lease_expired_after_step")):
             lease.mark_expired("server expired the lease while this step was in progress")
         else:
@@ -379,12 +456,19 @@ class AgentArkHttpClient:
         request_id = str(release_request_id or lease.release_request_id).strip()
         if not request_id:
             raise ValueError("release_request_id is required by AgentArk protocol v2")
-        return await self._post(
-            f"/v2/envs/{lease.env_id}/release",
-            {**lease.request_identity(), "release_request_id": request_id},
-            timeout_s=self.release_timeout_s,
-            allow_v2_retry=True,
-        )
+        try:
+            return await self._post(
+                f"/v2/envs/{lease.env_id}/release",
+                {**lease.request_identity(), "release_request_id": request_id},
+                timeout_s=self.release_timeout_s,
+                allow_v2_retry=True,
+            )
+        except AgentArkStaleLeaseError:
+            # The server no longer recognizes this identity.  From the
+            # client's perspective the lease is already gone; do not turn
+            # cleanup of an obsolete lease into a second failure.
+            lease.mark_expired("server rejected stale lease during release")
+            return {"ok": True, "stale_lease": True}
 
     @staticmethod
     def _optional_number(value: Any) -> float | None:

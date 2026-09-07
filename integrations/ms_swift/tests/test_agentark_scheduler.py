@@ -181,6 +181,31 @@ class AgentArkSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.release_calls, ["env-1"])
         self.assertNotIn(request.uuid, scheduler._envs)
 
+    async def test_stale_lease_invalidates_trajectory_without_killing_rollout_driver(self):
+        from agentark_swift.client import AgentArkStaleLeaseError
+
+        assistant = "ExecutePlan stale"
+        scheduler, request, _env, client = await self._started_scheduler(
+            step_payloads=[
+                AgentArkStaleLeaseError(
+                    "lease identity does not own env_id; it may belong to an older generation",
+                    status_code=409,
+                    code="stale_lease",
+                )
+            ]
+        )
+        choice = make_choice(assistant)
+        append_generated_assistant(request, assistant)
+
+        result = await scheduler.on_turn_end(request, choice, current_turn=1)
+
+        self.assertTrue(result["done"])
+        self.assertTrue(result["rollout_infos"]["trajectory_invalid"])
+        self.assertEqual(result["rollout_infos"]["lease_recovery"], "discard_trajectory")
+        self.assertEqual(result["rollout_infos"]["termination_reason"], "stale_lease")
+        self.assertEqual(client.release_calls, ["env-1"])
+        self.assertNotIn(request.uuid, scheduler._envs)
+
     async def test_acquire_exception_leaves_no_scheduler_state(self):
         from agentark_swift.env import AgentArkEnv
         from agentark_swift.scheduler import AgentArkScheduler
@@ -263,6 +288,10 @@ class SwiftColocateDriverTests(unittest.TestCase):
         from swift.infer_engine.protocol import RequestConfig
         from swift.rollout.agent_loop import run_multi_turn
 
+        class FakeTokenizer:
+            def decode(self, token_ids, skip_special_tokens=False):
+                return f"decoded-{list(token_ids)}"
+
         first_assistant = "ExecutePlan R1"
         final_assistant = "ExecutePlan U2"
         client = FakeAgentArkClient(
@@ -273,7 +302,10 @@ class SwiftColocateDriverTests(unittest.TestCase):
         )
         request = make_request(uuid=f"driver-{loss_scope}", group_uid="driver-group", loss_scope=loss_scope)
         env = AgentArkEnv(request.data_dict["env_config"], client=client)
-        scheduler = AgentArkScheduler(max_turns=4)
+        # ms-swift 4.6 materializes ID-backed assistant history before calling
+        # scheduler hooks. Production passes the real tokenizer from the
+        # trainer; the driver fixture supplies the smallest equivalent.
+        scheduler = AgentArkScheduler(max_turns=4, tokenizer=FakeTokenizer())
         scheduler._create_env = lambda _env_config: env
         asyncio.run(scheduler.on_trajectory_start([request]))
 

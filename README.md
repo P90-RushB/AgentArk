@@ -17,6 +17,10 @@ scoring rules, and termination conditions. Coding agents can help turn new task
 ideas into verified mods; the same tasks can then be used for multimodal model
 evaluation, trace replay, and reinforcement learning.
 
+More than 200 task environments have already been developed. Verified tasks are
+being released in batches through AgentArk Hub and Hugging Face on the way to a
+1K+ task library in 2026.
+
 This repository provides the Python package for runtime control, model
 evaluation, replay, environment serving, and RL training integration.
 
@@ -38,6 +42,36 @@ evaluation, replay, environment serving, and RL training integration.
   calibration, timing control, path planning, video-level observation,
   mini-games, GUI-like tasks, and future task families that can be expressed as
   loadable mods with verifiable scoring.
+
+## Featured Videos
+
+<table>
+  <tr>
+    <td width="33.33%" align="center" valign="top">
+      <a href="https://www.bilibili.com/video/BV1z5b46UEF8">
+        <img src="https://i2.hdslb.com/bfs/archive/7cc82dbc43f5d7b52a3d7b28e54b8330a441c5fa.jpg" alt="GPT 6 playing AgentArk" width="100%">
+      </a>
+      <br>
+      <a href="https://www.bilibili.com/video/BV1z5b46UEF8"><strong>▶ 我承认了，GPT 6，你是最会开火车的，像本up一样</strong></a>
+    </td>
+    <td width="33.33%" align="center" valign="top">
+      <a href="https://www.bilibili.com/video/BV1PEu36AEe5">
+        <img src="https://i1.hdslb.com/bfs/archive/b8a594bff949741c5701597521ff9d4a42ea12e0.jpg" alt="GPT playing AgentArk Snake" width="100%">
+      </a>
+      <br>
+      <a href="https://www.bilibili.com/video/BV1PEu36AEe5"><strong>▶ GPT: 啊？你们不会玩贪吃蛇啊？</strong></a>
+    </td>
+    <td width="33.33%" align="center" valign="top">
+      <a href="https://www.bilibili.com/video/BV1D4MS6jEw4">
+        <img src="https://i1.hdslb.com/bfs/archive/9cd38624e49968a4c4f00445f881ee7ef8337bb3.jpg" alt="AI agents playing AgentArk Marble Stop" width="100%">
+      </a>
+      <br>
+      <a href="https://www.bilibili.com/video/BV1D4MS6jEw4"><strong>▶ AI电竞：打弹珠 “豆姐你倒是动啊！！！”</strong></a>
+    </td>
+  </tr>
+</table>
+
+Click a cover or title to watch on Bilibili.
 
 ## Try AgentArk First
 
@@ -73,7 +107,7 @@ and should not be compared as identical runs.
 
 AgentArk local evaluation, replay, and env serving use the Python package in
 this repository plus a matching packaged Unity runtime from Hugging Face.
-Current runtime release: `env-1.0.1`, with 32 starter tasks.
+Current runtime release: `env-1.0.3`, with 51 starter tasks.
 
 See [docs/setup.md](docs/setup.md) for installation, runtime download, local
 path configuration, and smoke-test instructions.
@@ -148,8 +182,8 @@ while each trainer keeps its own Python environment and dependency stack.
 
 Two GRPO integrations are available:
 
-- [ms-swift](integrations/ms_swift/README.md), maintained in this repository
-  with a Chinese runbook.
+- [ms-swift](integrations/ms_swift/README.md), with the trainer integration in
+  AgentArk-enabled Swift and the Server, runbook, and temporary legacy fallback here.
 - [VERL](integrations/verl/README.md), with its trainer-side implementation in
   the public `agentark_rl` fork.
 
@@ -166,8 +200,8 @@ train on those environments, and then generate harder tasks from their failures.
 
 Near-term development will focus on:
 
-- **1k+ task scale in 2026.** Grow the public task store from the current
-  starter suite to more than one thousand reproducible, trainable task mods.
+- **1K+ task scale in 2026.** Build on the 200+ task environments already
+  developed and keep releasing verified, reproducible, trainable task mods.
 - **Dynamic curriculum.** Select tasks based on model success rates, error
   types, task parameters, and capability coverage.
 - **Long-horizon memory.** Compress observations, actions, scores, and error
@@ -183,8 +217,9 @@ Near-term development will focus on:
   runtime sandboxing, env server, warmup, and HTTP client utilities.
 - `agent_ark.ark_eval`: API model evaluation, parallel evaluation, replay, and
   trajectory save/load.
-- `integrations`: framework-specific RL adapters and runbooks; the VERL
-  trainer-side recipe remains in its public fork.
+- `integrations`: framework-specific RL runbooks, Server helpers, and temporary
+  compatibility adapters; the ms-swift built-in integration is currently in its
+  feature branch, while the VERL trainer recipe remains in its public fork.
 - `agent_ark.interaction`: local browser viewer and human-interaction hooks.
 
 ## Licensing
@@ -192,3 +227,8 @@ Near-term development will focus on:
 The Python package in this repository is Apache-2.0. Runtime builds, task mods,
 and records on Hugging Face are distributed under the license stated on the
 dataset card, currently CC BY-NC 4.0 unless otherwise noted.
+
+## Contact
+
+- Email: [agentark@qq.com](mailto:agentark@qq.com)
+- WeChat: `dada_biubiubiu`
