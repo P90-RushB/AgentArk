@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>AgentArk 非 GUI Task 人工审核</title>
+  <meta name="description" content="Task 41–100 非 GUI 任务的中文玩法、高低分 replay、标准轨迹和逐步环境变化审核工作台。">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">AA</span>
+      <div><strong>AgentArk 人工审核</strong><span>Task 41–100 · 非 GUI</span></div>
+    </div>
+    <div class="top-stats" id="topStats"></div>
+  </header>
+  <main class="shell">
+    <aside class="rail">
+      <label class="search"><span>搜索</span><input id="searchInput" placeholder="编号、名称、任务族…"></label>
+      <div class="filter-row" id="familyFilters"></div>
+      <div class="task-list" id="taskList"></div>
+    </aside>
+    <section class="workspace" id="workspace">
+      <div class="empty-state">正在载入审核数据…</div>
+    </section>
+  </main>
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

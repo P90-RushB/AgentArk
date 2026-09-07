@@ -41,4 +41,5 @@ agent_ark = [
     "ark_env/info/system_prompt_func.txt",
     "ark_env/info/system_prompt_func_zh.txt",
     "ark_env/info/system_prompt_code.txt",
+    "ark_eval/human_review_assets/*",
 ]
