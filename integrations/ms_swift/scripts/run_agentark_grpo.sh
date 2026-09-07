@@ -349,6 +349,7 @@ echo "[INFO] output=$OUTPUT_DIR"
   --logging_steps "${AGENTARK_LOGGING_STEPS:-1}" \
   --warmup_ratio "${AGENTARK_WARMUP_RATIO:-0}" \
   --dataloader_num_workers 0 \
+  --dataloader_persistent_workers false \
   --dataset_num_proc 1 \
   --num_generations "$NUM_GENERATIONS" \
   "${SWIFT_GENERATION_ARGS[@]}" \

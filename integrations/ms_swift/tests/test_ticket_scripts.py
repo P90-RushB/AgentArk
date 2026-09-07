@@ -174,6 +174,11 @@ printf '%s\n' "$@" > "$CAPTURE_FILE"
         self.assertIn('if [[ "$TUNER_TYPE" == "lora" ]]', launcher)
         self.assertIn('SWIFT_TUNER_ARGS=(--tuner_type "$TUNER_TYPE")', launcher)
 
+    def test_launcher_disables_persistent_workers_with_zero_workers(self):
+        launcher = LAUNCHER.read_text(encoding="utf-8")
+        self.assertIn('--dataloader_num_workers 0', launcher)
+        self.assertIn('--dataloader_persistent_workers false', launcher)
+
     def test_launcher_rejects_invalid_tuner_before_training(self):
         env = {
             **os.environ,
