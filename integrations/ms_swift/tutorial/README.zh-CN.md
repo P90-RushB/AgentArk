@@ -2,10 +2,12 @@
 
 [English](README.md) | 简体中文
 
-本文给出一套完整的 8 卡 Qwen3.5-9B 全参数配置；该配置此前已经使用旧外置 adapter
-实际跑通。trainer 接入现已移入 AgentArk-enabled Swift 分支，新实验应使用其内置路径，
-并先完成一步 smoke，再启动长时间训练。目标是帮助你验证 AgentArk 的多模态 rollout、
-Unity 交互、reward、反向传播和 checkpoint 链路，不要求复现实验中的具体 reward 或耗时。
+本文记录当前推荐的 AgentArk 内置接入路径，以及一套完整的 8 卡 Qwen3.5-9B
+全参数训练配置。1-step smoke 和完整的 600-step AdamW 训练都已实际验证通过；
+该结果说明一次实跑能够收敛，不是对某个 reward 的 benchmark 承诺。文末保留旧外置
+adapter/Adafactor 结果，仅用于对照。本文的目标是帮助你验证 AgentArk 的多模态
+rollout、Unity 交互、reward、反向传播和 checkpoint 链路，不要求复现实验中的
+具体 reward 或耗时。
 
 [Snake](https://p90-rushb.github.io/agentark-hub/tasks/snake/) 是 AgentArk Hub 托管的一个
 2D 网格任务：agent 根据画面控制蛇寻找食物，同时避免撞墙或撞到自身。它的规则简单，
@@ -21,25 +23,45 @@ Hub 中发布的任务默认使用 `20×20` 地图。本文把逻辑地图临时
 用过 ms-swift，并能在 Linux/NVIDIA 环境运行 `swift rlhf`；路径、端口和硬件参数都必须
 按当前机器调整，不能原样照抄。
 
+## 本次新实验相对原 Snake 教程的改动
+
+本次实验尽量只改动必要条件，并保持 Snake 包、ticket identity、rollout 拓扑、
+长度限制、loss 和 scheduler 不变，以便单独观察 optimizer 和生成模式的影响：
+
+| 方面 | 原教程/历史参考 | 本次受控实验 | 改动 |
+| --- | --- | --- | --- |
+| Swift adapter | 历史完整训练使用仓库外置 adapter，内置路径只做过 smoke | 使用 Swift 内置 `agentark` Env 和 `agentark_scheduler`，不传 `--external_plugins` | 正式训练切换为原生内置接入 |
+| `enable_thinking` | 当前教程变量其实已经是 `true`，但历史结果没有把它作为受控条件记录 | 在最终 `args.json` 中明确校验为 `true` | 固定 Qwen3.5 thinking 模式；当前模板的值没有再改变 |
+| optimizer | Adafactor | `adamw_torch` | 唯一有意改变的 optimizer |
+| DeepSpeed | ZeRO-2，不启用 optimizer offload | ZeRO-2，不启用 optimizer offload | GPU 拓扑和显存策略不变 |
+| CPU optimizer offload | 未使用 | 未使用；`deepspeed_zero2_cpu.json` 仅在确认 OOM 后作为 fallback | 不同时改变两个显存变量 |
+| 其他配置 | Snake 8×8、16 runtime、600 ticket、G=16、6 轮上限、长序列、DAPO、constant LR | 相同 | 保持不变 |
+
+新增的 `deepspeed_zero2_adamw.json` 与旧的 Adafactor 命名配置使用相同的
+ZeRO-2/无 offload 拓扑；optimizer 由 `AGENTARK_OPTIM=adamw_torch` 选择。
+不要省略这个变量，因为 launcher 为兼容旧配置，full training 未指定时仍默认
+使用 Adafactor。如果 AdamW 明确触发 `CUDA out of memory`，保留失败 run 目录，
+换用新的输出目录和 `deepspeed_zero2_cpu.json` 重试；不要提前启用 CPU offload。
+
 ## 1. 跑通示例配置
 
-下面是一组已经用旧外置 adapter 跑通的参考参数。它描述的是可工作的资源组合，不是必须
-逐项复现的基准；切换到 Swift 内置接入后仍应先完成一步 smoke：
+下面是一组当前受控实验的资源参数。它描述的是可工作的资源组合，不是必须逐项
+复现的 benchmark：
 
 | 项目 | 配置 |
 | --- | --- |
 | AgentArk Unity 包 | `AgentArk-env-1.0.3-linux` |
-| ms-swift | `4.6.0.dev0`；完整训练使用旧外置 adapter，内置接入另行通过 smoke |
+| ms-swift | AgentArk-enabled `feat/agentark` checkout；正式配置使用内置接入 |
 | PyTorch / vLLM | `2.10.0+cu128` / `0.19.0` |
 | 任务 | Snake，逻辑地图 `8×8` |
 | 模型 | Qwen3.5-9B，本地 BF16 权重 |
 | GPU | 8 × NVIDIA H800 80GB |
 | 训练方式 | 全参数训练，8 卡 DeepSpeed ZeRO-2 |
-| optimizer | Adafactor |
+| optimizer | AdamW（`adamw_torch`） |
 | lr scheduler | `constant` |
 | loss | `dapo` |
-| DeepSpeed / ZeRO | ZeRO-2，见 `config/deepspeed_zero2_adafactor.json` |
-| CPU optimizer offload | 未使用，`device=none` |
+| DeepSpeed / ZeRO | ZeRO-2，见 `config/deepspeed_zero2_adamw.json` |
+| CPU optimizer offload | 未使用，`device=none`；`deepspeed_zero2_cpu.json` 仅作 fallback |
 | rollout | vLLM colocate，TP=1 |
 | vLLM 显存比例 | `0.35` |
 | vLLM 最大上下文 | `16384` |
@@ -47,6 +69,7 @@ Hub 中发布的任务默认使用 `20×20` 地图。本文把逻辑地图临时
 | 每轮 completion 上限 | `4096` |
 | `max_new_tokens` | `4096` |
 | `response_length` | `4096` |
+| thinking | 显式开启（`enable_thinking=true`） |
 | 每卡训练 batch | `1` |
 | 梯度累积 | `2` |
 | effective optimizer batch | `1 × 8 × 2 = 16` |
@@ -407,13 +430,14 @@ export AGENTARK_PROTOCOL_VERSION=v2
 # 确保 trainer 使用目标 AgentArk-enabled ms-swift checkout。
 export PYTHONPATH="$SWIFT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-# 全参数 BF16；使用 DeepSpeed ZeRO-2 分片，不启用 CPU optimizer/model offload。
+# 当前受控配置：Qwen3.5 thinking + AdamW 的全参数 BF16 训练。
+# 使用 DeepSpeed ZeRO-2 分片，不启用 CPU optimizer/model offload。
 export AGENTARK_TUNER_TYPE=full
 export AGENTARK_TORCH_DTYPE=bfloat16
 export AGENTARK_FREEZE_LLM=false
 export AGENTARK_FREEZE_VIT=false
 export AGENTARK_FREEZE_ALIGNER=false
-export AGENTARK_OPTIM=adafactor
+export AGENTARK_OPTIM=adamw_torch
 export AGENTARK_LEARNING_RATE=1e-6
 export AGENTARK_LR_SCHEDULER_TYPE=constant
 export AGENTARK_LOSS_TYPE=dapo
@@ -466,15 +490,15 @@ export AGENTARK_REPORT_TO=tensorboard
 不要直接启动 600 step。先用完全相同的拓扑验证一次 rollout、reward、backward 和保存：
 
 ```bash
-export AGENTARK_RUN_ID=snake-8x8-full-vllm-8gpu-smoke
-export AGENTARK_OUTPUT_DIR="$RUN_ROOT/smoke"
+export AGENTARK_RUN_ID=snake-8x8-full-vllm-8gpu-adamw-thinking-smoke
+export AGENTARK_OUTPUT_DIR="$RUN_ROOT/smoke-adamw-thinking"
 export AGENTARK_MAX_STEPS=1
 export AGENTARK_SAVE_ONLY_MODEL=true
 export AGENTARK_SAVE_STEPS=1
 export AGENTARK_SAVE_TOTAL_LIMIT=1
 
 bash integrations/ms_swift/scripts/run_agentark_grpo.sh \
-  --deepspeed "$AGENTARK_ROOT/integrations/ms_swift/tutorial/config/deepspeed_zero2_adafactor.json" \
+  --deepspeed "$AGENTARK_ROOT/integrations/ms_swift/tutorial/config/deepspeed_zero2_adamw.json" \
   --max_new_tokens 4096 \
   --response_length 4096 \
   --completion_length_limit_scope per_round
@@ -488,7 +512,9 @@ smoke 成功的最低标准：
 - reward 和 `completions.jsonl` 已写入；
 - 输出目录下存在 `checkpoint-1`；
 - Env Server 的 `active_v2_leases` 回到 0；
-- 16 个 runtime 再次全部 idle。
+- 16 个 runtime 再次全部 idle；
+- 生成的 `args.json` 中记录 `optim=adamw_torch`、`enable_thinking=true` 和
+  `completion_length_limit_scope=per_round`。
 
 更新版使用长序列和 ZeRO-2；这里不要求 reward、平均长度或轮数匹配某个固定值，它们会随
 模型、seed 和采样结果变化。`max_turns=6` 是上限；Snake 提前结束时，实际平均轮数可以
@@ -499,8 +525,8 @@ smoke 成功的最低标准：
 smoke 完成且 lease 全部释放后，切换正式输出目录：
 
 ```bash
-export AGENTARK_RUN_ID=snake-8x8-full-vllm-8gpu-600
-export AGENTARK_OUTPUT_DIR="$RUN_ROOT/train-600"
+export AGENTARK_RUN_ID=snake-8x8-full-vllm-8gpu-adamw-thinking-600
+export AGENTARK_OUTPUT_DIR="$RUN_ROOT/train-adamw-thinking-600"
 export AGENTARK_MAX_STEPS=600
 
 # 保存完整恢复状态，每 100 step 保存，最多保留最近两个 checkpoint。
@@ -509,17 +535,18 @@ export AGENTARK_SAVE_STEPS=100
 export AGENTARK_SAVE_TOTAL_LIMIT=2
 
 bash integrations/ms_swift/scripts/run_agentark_grpo.sh \
-  --deepspeed "$AGENTARK_ROOT/integrations/ms_swift/tutorial/config/deepspeed_zero2_adafactor.json" \
+  --deepspeed "$AGENTARK_ROOT/integrations/ms_swift/tutorial/config/deepspeed_zero2_adamw.json" \
   --max_new_tokens 4096 \
   --response_length 4096 \
   --completion_length_limit_scope per_round
 ```
 
-本文使用 8 卡 DeepSpeed ZeRO-2 + Adafactor。`deepspeed_zero2_adafactor.json` 的
-`zero_optimization.stage` 为 `2`，但 `offload_optimizer.device` 为 `none`，因此不使用
-CPU optimizer offload；Swift 层的 `offload_model` 和 `offload_optimizer` 也保持关闭。
-`--max_new_tokens`、`--response_length` 和 `--completion_length_limit_scope per_round`
-需要与本节的长序列配置一起使用。
+本文使用 8 卡 DeepSpeed ZeRO-2 + AdamW。JSON 配置的
+`zero_optimization.stage` 为 `2`，`offload_optimizer.device` 为 `none`；
+实际 optimizer 由 Swift 的 `--optim adamw_torch` 选择，Swift 层的
+`offload_model` 和 `offload_optimizer` 也保持关闭。`--max_new_tokens`、
+`--response_length` 和 `--completion_length_limit_scope per_round` 需要与本节的
+长序列配置一起使用。
 
 Swift 会在 `AGENTARK_OUTPUT_DIR` 下创建带时间戳的 `v0-*` 子目录。运行期间可以查看：
 
@@ -533,6 +560,11 @@ v0-*/checkpoint-200
 
 由于 `save_total_limit=2`，训练期间只保留最近两个 checkpoint。
 
+如果 AdamW 明确触发 `CUDA out of memory` 或 `OutOfMemory`，保留当前输出目录用于
+排查，并使用新的输出目录和 `config/deepspeed_zero2_cpu.json` 单独重试。CPU
+optimizer offload 只是恢复选项，不属于本次受控对比；启用前可能还需要先修复
+CUDA/DeepSpeed CPUAdam 版本不匹配。
+
 ## 10. 验收结果
 
 训练结束后检查 `$AGENTARK_OUTPUT_DIR/v0-*/checkpoint-600/trainer_state.json`，其中应有：
@@ -544,8 +576,17 @@ v0-*/checkpoint-200
 }
 ```
 
-此前的外置 adapter 训练结果如下。它只用于记录当时的配置，并不表示当前内置路径已经
-完成同一轮 600-step 训练，也不是其他模型或 seed 组合的验收阈值。
+当前 Swift 内置 AgentArk + AdamW 配方已经完整跑完 600 step，并呈现出清晰的 reward
+上升趋势。下图是该次训练中 `train/num_turns` 和 `train/reward` 的 TensorBoard 原始值
+及平滑曲线：
+
+![Snake 8x8 AdamW 训练的轮数与 reward 曲线](assets/snake-8x8-adamw-training-curve.png)
+
+RL 训练和环境采样具有随机性。该图只用于说明预期的整体趋势，不要求复现完全相同的
+数值或曲线形状。
+
+此前的外置 adapter/Adafactor 训练结果如下。它只用于记录当时的旧配置，不是当前内置
+AdamW/thinking 实验的结果或目标，也不是其他模型或 seed 组合的验收阈值。
 
 | 指标 | 结果 |
 | --- | --- |
@@ -581,7 +622,7 @@ trajectory rollout。GRPO 的单步 loss 可能非常接近 0；判断训练链�
 
 不要把 `generation_batch_size=16` 误写成 `per_device_train_batch_size=16`。本次成功配置是
 每卡 batch 1、8 卡、梯度累积 2。长序列全参数 colocate 运行使用
-`deepspeed_zero2_adafactor.json` 做 ZeRO-2 梯度分片；单卡或普通 DDP 在该长度配置下可能在
+`deepspeed_zero2_adamw.json` 做 ZeRO-2 梯度分片；单卡或普通 DDP 在该长度配置下可能在
 backward 阶段 OOM。
 
 ### Swift 报 vLLM 与 `device_map` 不兼容
@@ -597,9 +638,19 @@ backward 阶段 OOM。
 ### DeepSpeed CPUAdam 报 CUDA 版本不匹配
 
 这通常表示系统 CUDA toolkit、PyTorch CUDA wheel 和 DeepSpeed extension 不兼容。
-更新版不使用 CPU optimizer offload，而是使用 `deepspeed_zero2_adafactor.json`：ZeRO
-stage 2、`offload_optimizer.device=none`，并使用 Adafactor。只有需要 CPU offload 时才
-必须先修正版本组合；不要把 `deepspeed_zero2_cpu.json` 当作本文的训练配置。
+受控配置不使用 CPU optimizer offload，而是使用 `deepspeed_zero2_adamw.json`：
+ZeRO stage 2、`--optim adamw_torch` 和 `offload_optimizer.device=none`。只有
+AdamW 明确 OOM 时才使用 `deepspeed_zero2_cpu.json` 单独重试；启用前必须先修正
+CUDA/DeepSpeed CPUAdam 版本组合。
+
+### 如何理解多轮长度指标
+
+`completion_length_limit_scope=per_round` 表示 `max_completion_length=4096`
+分别限制每一轮 assistant 输出。`completions/mean_length` 是每条 trajectory
+跨所有轮次累计的 assistant completion token 数，再对样本求平均；`num_turns`
+是另一项独立的最终轮数平均值。因此不要把日志中的 completion length 再乘以
+`num_turns`，那会把轮次重复计算。`max_length=12288` 是训练序列上限，包含
+prompt、环境消息和 assistant token。
 
 ### Triton 编译报 `Python.h: No such file or directory`
 

@@ -52,6 +52,12 @@ Python venv 不包含 base interpreter。不能只复制 venv 目录并假设 `b
 
 不要擅自把教程中的示例值当成当前实验的强制值。
 
+对于仓库当前的 Snake 对照配置，应保持教程中的环境和 rollout 拓扑，并显式设置
+全参数 BF16、`enable_thinking=true`、`optim=adamw_torch`、DeepSpeed ZeRO-2
+且 `offload_optimizer.device=none`、`completion_length_limit_scope=per_round`
+以及教程中的长序列参数。optimizer 的切换是有意的，不要静默回退到 Adafactor。
+只有确认 AdamW OOM 后，才能在新的输出目录中启用 CPU optimizer offload。
+
 ## 包含 AgentArk 的 ms-swift checkout
 
 - AgentArk 内置支持正式发布到上游前，使用 `P90-RushB/ms-swift:feat/agentark`；发布后
@@ -79,8 +85,10 @@ Python venv 不包含 base interpreter。不能只复制 venv 目录并假设 `b
 - `scripts/generate_snake_tickets.sh`：参数化生成 Snake tickets；
 - `config/agentark_runtime_config.example.yaml`：通用 runtime 配置模板；
 - `config/agentark_runtime_config.snake.example.yaml`：Snake 8×8、16-runtime 实跑模板；
-- `config/deepspeed_zero2_adafactor.json`：Snake 长序列全参数训练使用的 ZeRO-2 配置，
+- `config/deepspeed_zero2_adamw.json`：当前 Snake 长序列全参数配置使用的 ZeRO-2 文件，
   不启用 CPU optimizer offload；
+- `config/deepspeed_zero2_adafactor.json`：同一 ZeRO-2/无 offload 拓扑的历史 Adafactor
+  版本；
 - `config/deepspeed_zero2_cpu.json`：通用 ZeRO-2 CPU optimizer offload 示例。
 
 具体启动参数应以当前 AgentArk 和 ms-swift checkout 中的 launcher、CLI help 和配置定义
