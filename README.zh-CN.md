@@ -40,14 +40,21 @@ Hugging Face 分批发布，并向 2026 年 1K+ 任务库的目标持续扩展�
 
 <table>
   <tr>
-    <td width="50%" align="center" valign="top">
+    <td width="33.33%" align="center" valign="top">
+      <a href="https://www.bilibili.com/video/BV1z5b46UEF8">
+        <img src="https://i2.hdslb.com/bfs/archive/7cc82dbc43f5d7b52a3d7b28e54b8330a441c5fa.jpg" alt="GPT 6 游玩 AgentArk" width="100%">
+      </a>
+      <br>
+      <a href="https://www.bilibili.com/video/BV1z5b46UEF8"><strong>▶ 我承认了，GPT 6，你是最会开火车的，像本up一样</strong></a>
+    </td>
+    <td width="33.33%" align="center" valign="top">
       <a href="https://www.bilibili.com/video/BV1PEu36AEe5">
         <img src="https://i1.hdslb.com/bfs/archive/b8a594bff949741c5701597521ff9d4a42ea12e0.jpg" alt="GPT 游玩 AgentArk 贪吃蛇" width="100%">
       </a>
       <br>
       <a href="https://www.bilibili.com/video/BV1PEu36AEe5"><strong>▶ GPT: 啊？你们不会玩贪吃蛇啊？</strong></a>
     </td>
-    <td width="50%" align="center" valign="top">
+    <td width="33.33%" align="center" valign="top">
       <a href="https://www.bilibili.com/video/BV1D4MS6jEw4">
         <img src="https://i1.hdslb.com/bfs/archive/9cd38624e49968a4c4f00445f881ee7ef8337bb3.jpg" alt="AI 智能体游玩 AgentArk 打弹珠" width="100%">
       </a>
