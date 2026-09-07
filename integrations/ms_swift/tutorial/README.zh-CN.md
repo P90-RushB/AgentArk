@@ -4,10 +4,9 @@
 
 本文记录当前推荐的 AgentArk 内置接入路径，以及一套完整的 8 卡 Qwen3.5-9B
 全参数训练配置。1-step smoke 和完整的 600-step AdamW 训练都已实际验证通过；
-该结果说明一次实跑能够收敛，不是对某个 reward 的 benchmark 承诺。文末保留旧外置
-adapter/Adafactor 结果，仅用于对照。本文的目标是帮助你验证 AgentArk 的多模态
-rollout、Unity 交互、reward、反向传播和 checkpoint 链路，不要求复现实验中的
-具体 reward 或耗时。
+该结果说明一次实跑能够收敛，不是对某个 reward 的 benchmark 承诺。本文的目标是帮助你
+验证 AgentArk 的多模态 rollout、Unity 交互、reward、反向传播和 checkpoint 链路，
+不要求复现实验中的具体 reward 或耗时。
 
 [Snake](https://p90-rushb.github.io/agentark-hub/tasks/snake/) 是 AgentArk Hub 托管的一个
 2D 网格任务：agent 根据画面控制蛇寻找食物，同时避免撞墙或撞到自身。它的规则简单，
@@ -23,29 +22,9 @@ Hub 中发布的任务默认使用 `20×20` 地图。本文把逻辑地图临时
 用过 ms-swift，并能在 Linux/NVIDIA 环境运行 `swift rlhf`；路径、端口和硬件参数都必须
 按当前机器调整，不能原样照抄。
 
-## 本次新实验相对原 Snake 教程的改动
-
-本次实验尽量只改动必要条件，并保持 Snake 包、ticket identity、rollout 拓扑、
-长度限制、loss 和 scheduler 不变，以便单独观察 optimizer 和生成模式的影响：
-
-| 方面 | 原教程/历史参考 | 本次受控实验 | 改动 |
-| --- | --- | --- | --- |
-| Swift adapter | 历史完整训练使用仓库外置 adapter，内置路径只做过 smoke | 使用 Swift 内置 `agentark` Env 和 `agentark_scheduler`，不传 `--external_plugins` | 正式训练切换为原生内置接入 |
-| `enable_thinking` | 当前教程变量其实已经是 `true`，但历史结果没有把它作为受控条件记录 | 在最终 `args.json` 中明确校验为 `true` | 固定 Qwen3.5 thinking 模式；当前模板的值没有再改变 |
-| optimizer | Adafactor | `adamw_torch` | 唯一有意改变的 optimizer |
-| DeepSpeed | ZeRO-2，不启用 optimizer offload | ZeRO-2，不启用 optimizer offload | GPU 拓扑和显存策略不变 |
-| CPU optimizer offload | 未使用 | 未使用；`deepspeed_zero2_cpu.json` 仅在确认 OOM 后作为 fallback | 不同时改变两个显存变量 |
-| 其他配置 | Snake 8×8、16 runtime、600 ticket、G=16、6 轮上限、长序列、DAPO、constant LR | 相同 | 保持不变 |
-
-新增的 `deepspeed_zero2_adamw.json` 与旧的 Adafactor 命名配置使用相同的
-ZeRO-2/无 offload 拓扑；optimizer 由 `AGENTARK_OPTIM=adamw_torch` 选择。
-不要省略这个变量，因为 launcher 为兼容旧配置，full training 未指定时仍默认
-使用 Adafactor。如果 AdamW 明确触发 `CUDA out of memory`，保留失败 run 目录，
-换用新的输出目录和 `deepspeed_zero2_cpu.json` 重试；不要提前启用 CPU offload。
-
 ## 1. 跑通示例配置
 
-下面是一组当前受控实验的资源参数。它描述的是可工作的资源组合，不是必须逐项
+下面是一组可工作的资源参数。它描述的是可工作的资源组合，不是必须逐项
 复现的 benchmark：
 
 | 项目 | 配置 |
@@ -61,7 +40,7 @@ ZeRO-2/无 offload 拓扑；optimizer 由 `AGENTARK_OPTIM=adamw_torch` 选择。
 | lr scheduler | `constant` |
 | loss | `dapo` |
 | DeepSpeed / ZeRO | ZeRO-2，见 `config/deepspeed_zero2_adamw.json` |
-| CPU optimizer offload | 未使用，`device=none`；`deepspeed_zero2_cpu.json` 仅作 fallback |
+| CPU optimizer offload | 未使用，`device=none` |
 | rollout | vLLM colocate，TP=1 |
 | vLLM 显存比例 | `0.35` |
 | vLLM 最大上下文 | `16384` |
@@ -430,7 +409,7 @@ export AGENTARK_PROTOCOL_VERSION=v2
 # 确保 trainer 使用目标 AgentArk-enabled ms-swift checkout。
 export PYTHONPATH="$SWIFT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-# 当前受控配置：Qwen3.5 thinking + AdamW 的全参数 BF16 训练。
+# 当前配置：Qwen3.5 thinking + AdamW 的全参数 BF16 训练。
 # 使用 DeepSpeed ZeRO-2 分片，不启用 CPU optimizer/model offload。
 export AGENTARK_TUNER_TYPE=full
 export AGENTARK_TORCH_DTYPE=bfloat16
@@ -541,7 +520,7 @@ bash integrations/ms_swift/scripts/run_agentark_grpo.sh \
   --completion_length_limit_scope per_round
 ```
 
-本文使用 8 卡 DeepSpeed ZeRO-2 + AdamW。JSON 配置的
+本配置使用 8 卡 DeepSpeed ZeRO-2 + AdamW。JSON 配置的
 `zero_optimization.stage` 为 `2`，`offload_optimizer.device` 为 `none`；
 实际 optimizer 由 Swift 的 `--optim adamw_torch` 选择，Swift 层的
 `offload_model` 和 `offload_optimizer` 也保持关闭。`--max_new_tokens`、
@@ -562,8 +541,8 @@ v0-*/checkpoint-200
 
 如果 AdamW 明确触发 `CUDA out of memory` 或 `OutOfMemory`，保留当前输出目录用于
 排查，并使用新的输出目录和 `config/deepspeed_zero2_cpu.json` 单独重试。CPU
-optimizer offload 只是恢复选项，不属于本次受控对比；启用前可能还需要先修复
-CUDA/DeepSpeed CPUAdam 版本不匹配。
+optimizer offload 只是恢复选项；启用前可能还需要先修复 CUDA/DeepSpeed CPUAdam
+版本不匹配。
 
 ## 10. 验收结果
 
@@ -584,21 +563,6 @@ CUDA/DeepSpeed CPUAdam 版本不匹配。
 
 RL 训练和环境采样具有随机性。该图只用于说明预期的整体趋势，不要求复现完全相同的
 数值或曲线形状。
-
-此前的外置 adapter/Adafactor 训练结果如下。它只用于记录当时的旧配置，不是当前内置
-AdamW/thinking 实验的结果或目标，也不是其他模型或 seed 组合的验收阈值。
-
-| 指标 | 结果 |
-| --- | --- |
-| 训练状态 | `600/600`，exit code 0 |
-| `train_runtime` | 13,930.41 秒（约 3 小时 52 分 10 秒） |
-| 平均速度 | 约 23.22 秒/step（`0.043` step/s） |
-| 前 20 step 平均 reward | 0.593750 |
-| 全 600 step 平均 reward | 1.471146 |
-| 最后 20 step 平均 reward | 1.859375 |
-| 最终 step reward | 2.5 |
-| 最终模型参数 | 9,409,813,744 |
-| 最终 BF16 权重大小 | 18,819,635,168 bytes |
 
 再次检查 Env Server：
 
@@ -638,7 +602,7 @@ backward 阶段 OOM。
 ### DeepSpeed CPUAdam 报 CUDA 版本不匹配
 
 这通常表示系统 CUDA toolkit、PyTorch CUDA wheel 和 DeepSpeed extension 不兼容。
-受控配置不使用 CPU optimizer offload，而是使用 `deepspeed_zero2_adamw.json`：
+当前配置不使用 CPU optimizer offload，而是使用 `deepspeed_zero2_adamw.json`：
 ZeRO stage 2、`--optim adamw_torch` 和 `offload_optimizer.device=none`。只有
 AdamW 明确 OOM 时才使用 `deepspeed_zero2_cpu.json` 单独重试；启用前必须先修正
 CUDA/DeepSpeed CPUAdam 版本组合。

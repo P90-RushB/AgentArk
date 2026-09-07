@@ -55,12 +55,11 @@ Unless the user already provided them, confirm:
 
 Tutorial values are examples, not mandatory settings for the current experiment.
 
-For the repository's current Snake comparison recipe, preserve the tutorial's
+For the repository's current Snake recipe, preserve the tutorial's
 environment and rollout topology and explicitly set full-parameter BF16,
 `enable_thinking=true`, `optim=adamw_torch`, DeepSpeed ZeRO-2 with
 `offload_optimizer.device=none`, `completion_length_limit_scope=per_round`,
-and the documented long-sequence values. The optimizer change is intentional;
-do not silently fall back to Adafactor. Use CPU optimizer offload only in a
+and the documented long-sequence values. Use CPU optimizer offload only in a
 new output directory after a confirmed AdamW OOM.
 
 ## AgentArk-enabled ms-swift checkout
@@ -94,8 +93,6 @@ new output directory after a confirmed AdamW OOM.
 - `config/agentark_runtime_config.snake.example.yaml`: 8×8 Snake, 16-runtime example;
 - `config/deepspeed_zero2_adamw.json`: ZeRO-2 configuration for the current
   long-sequence full-parameter Snake recipe, without CPU optimizer offload;
-- `config/deepspeed_zero2_adafactor.json`: historical Adafactor variant of the
-  same ZeRO-2/no-offload topology;
 - `config/deepspeed_zero2_cpu.json`: generic ZeRO-2 CPU optimizer-offload example.
 
 Use the launcher, CLI help, and configuration definitions in the active AgentArk and

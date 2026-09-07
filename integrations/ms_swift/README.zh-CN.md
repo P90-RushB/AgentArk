@@ -119,7 +119,6 @@ runtime config 中的 `warmup.num_envs` 与
 | [`configs/agentark_grpo.env.example`](configs/agentark_grpo.env.example) | 通用的模型、trainer、rollout 和输出设置。请将所需值复制到本机配置，不要提交本机路径。 |
 | [`tutorial/config/agentark_runtime_config.snake.example.yaml`](tutorial/config/agentark_runtime_config.snake.example.yaml) | Snake 示例使用的 runtime pool 模板。 |
 | [`tutorial/config/deepspeed_zero2_adamw.json`](tutorial/config/deepspeed_zero2_adamw.json) | 当前 Snake 长序列全参数配置使用的 ZeRO-2 文件（`adamw_torch`、不启用 CPU optimizer offload）。 |
-| [`tutorial/config/deepspeed_zero2_adafactor.json`](tutorial/config/deepspeed_zero2_adafactor.json) | 同一 ZeRO-2/无 offload 拓扑的历史 Adafactor 版本。 |
 | [`tutorial/config/deepspeed_zero2_cpu.json`](tutorial/config/deepspeed_zero2_cpu.json) | 确认 OOM 后单独重试时使用的 CPU optimizer offload fallback。 |
 | [`scripts/run_agentark_server.sh`](scripts/run_agentark_server.sh) | 启动 AgentArk Env Server。 |
 | [`scripts/run_agentark_grpo.sh`](scripts/run_agentark_grpo.sh) | 检查容量并启动 `swift rlhf`。 |

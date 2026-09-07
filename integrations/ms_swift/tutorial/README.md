@@ -5,10 +5,9 @@ English | [简体中文](README.zh-CN.md)
 This tutorial documents the current eight-GPU, full-parameter Qwen3.5-9B recipe for
 the built-in AgentArk path. Both the one-step smoke test and a complete 600-step AdamW
 run have been validated end to end. The result demonstrates convergence for one run;
-it is not a benchmark claim. A historical external-adapter/Adafactor result is
-retained only as a comparison record. The goal is to verify AgentArk's multimodal
-rollout, Unity interaction, reward, backward, and checkpoint path. You do not need to
-reproduce any particular reward or runtime.
+it is not a benchmark claim. The goal is to verify AgentArk's multimodal rollout,
+Unity interaction, reward, backward, and checkpoint path. You do not need to reproduce
+any particular reward or runtime.
 
 [Snake](https://p90-rushb.github.io/agentark-hub/tasks/snake/) is a 2D grid task
 hosted on AgentArk Hub. The agent controls a snake from visual observations, moves
@@ -28,31 +27,9 @@ before scaling to this example. This tutorial assumes that you have used ms-swif
 can run `swift rlhf` on Linux with NVIDIA GPUs. Replace every path, port, and
 hardware-dependent value for your machine.
 
-## Current experiment versus the original walkthrough
-
-The current controlled run changes as little as possible. It keeps the Snake package,
-ticket identity, rollout topology, sequence limits, loss, and scheduler fixed, so
-optimizer and generation-mode effects can be inspected separately:
-
-| Area | Original tutorial/reference | Current controlled run | What changed |
-| --- | --- | --- | --- |
-| Swift adapter | Historical full run used the repository's external adapter; built-in path was smoke-tested separately | Swift's built-in `agentark` Env and `agentark_scheduler`, with no `--external_plugins` | Formal run now exercises the native integration |
-| `enable_thinking` | The current tutorial variable is already `true`, but the historical result did not record it as a controlled condition | Explicitly validated as `true` in the resolved run arguments | Makes Qwen3.5 thinking mode reproducible; no net value change to the current template |
-| Optimizer | Adafactor | `adamw_torch` | The only intentional optimizer change |
-| DeepSpeed | ZeRO-2, optimizer offload disabled | ZeRO-2, optimizer offload disabled | Topology and GPU-memory policy are unchanged |
-| CPU optimizer offload | Not used | Not used; `deepspeed_zero2_cpu.json` is fallback-only after a confirmed OOM | Avoids changing two memory variables in the comparison |
-| Everything else | Snake 8×8, 16 runtimes, 600 tickets, G=16, six-turn cap, long per-round completions, DAPO, constant LR | Same | Held constant |
-
-The new `deepspeed_zero2_adamw.json` file contains the same ZeRO-2/no-offload
-topology as the older Adafactor-named file; the optimizer itself is selected by
-`AGENTARK_OPTIM=adamw_torch`. Do not omit that variable, because the launcher keeps
-Adafactor as its backward-compatible full-parameter default. If AdamW produces an
-explicit CUDA OOM, preserve the failed run and retry in a new output directory with
-`deepspeed_zero2_cpu.json`; do not enable CPU offload preemptively.
-
 ## 1. Working example configuration
 
-The following is the current controlled resource configuration, not a benchmark that
+The following is a working resource configuration, not a benchmark that
 must be reproduced exactly:
 
 | Item | Example value |
@@ -68,7 +45,7 @@ must be reproduced exactly:
 | LR scheduler | `constant` |
 | Loss | `dapo` |
 | DeepSpeed / ZeRO | ZeRO-2; see `config/deepspeed_zero2_adamw.json` |
-| CPU optimizer offload | Disabled (`device=none`); `deepspeed_zero2_cpu.json` is fallback-only |
+| CPU optimizer offload | Disabled (`device=none`) |
 | Rollout | Colocated vLLM, TP=1 |
 | vLLM memory utilization | `0.35` |
 | vLLM maximum context | `16384` |
@@ -422,7 +399,7 @@ export AGENTARK_RUNTIME_CONFIG
 export AGENTARK_PROTOCOL_VERSION=v2
 export PYTHONPATH="$SWIFT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-# Current controlled recipe: full BF16 Qwen3.5 thinking training with AdamW.
+# Current recipe: full BF16 Qwen3.5 thinking training with AdamW.
 # DeepSpeed ZeRO-2 remains enabled without CPU optimizer/model offload.
 export AGENTARK_TUNER_TYPE=full
 export AGENTARK_TORCH_DTYPE=bfloat16
@@ -536,7 +513,7 @@ bash integrations/ms_swift/scripts/run_agentark_grpo.sh \
   --completion_length_limit_scope per_round
 ```
 
-This controlled recipe uses eight-GPU DeepSpeed ZeRO-2 with AdamW. The JSON sets
+This recipe uses eight-GPU DeepSpeed ZeRO-2 with AdamW. The JSON sets
 `zero_optimization.stage` to `2` and `offload_optimizer.device` to `none`; Swift's
 `--optim adamw_torch` selects the optimizer, and Swift model/optimizer offload remain
 disabled. Keep `--max_new_tokens`, `--response_length`, and
@@ -547,9 +524,8 @@ latest two.
 
 If the AdamW run hits a confirmed `CUDA out of memory` or `OutOfMemory` error, keep
 its output directory for diagnosis and launch a separate retry with
-`config/deepspeed_zero2_cpu.json`. CPU optimizer offload is a recovery option, not
-part of the controlled comparison, and may require fixing a CUDA/DeepSpeed CPUAdam
-version mismatch first.
+`config/deepspeed_zero2_cpu.json`. CPU optimizer offload is a recovery option and may
+require fixing a CUDA/DeepSpeed CPUAdam version mismatch first.
 
 ## 10. Acceptance after training
 
@@ -571,23 +547,6 @@ smoothed curves for `train/num_turns` and `train/reward` from that run:
 RL training and environment sampling are stochastic. Use this figure to understand
 the expected overall trend, not as a requirement to reproduce the same values or
 curve shape.
-
-The earlier external-adapter/Adafactor run produced the following historical reference
-results. They document that older configuration only; they are not a result or target
-for the current built-in AdamW/thinking experiment, nor are they pass/fail thresholds
-for another model or seed set.
-
-| Metric | Result |
-| --- | --- |
-| Training status | `600/600`, exit code 0 |
-| `train_runtime` | 13,930.41 seconds (about 3 h 52 min 10 s) |
-| Mean speed | about 23.22 seconds/step (`0.043` step/s) |
-| Mean reward, first 20 steps | 0.593750 |
-| Mean reward, all 600 steps | 1.471146 |
-| Mean reward, final 20 steps | 1.859375 |
-| Final-step reward | 2.5 |
-| Final model parameters | 9,409,813,744 |
-| Final BF16 weight size | 18,819,635,168 bytes |
 
 Check the Server again:
 
@@ -628,7 +587,7 @@ version and must be established with a one-step smoke test.
 ### DeepSpeed CPUAdam reports a CUDA mismatch
 
 The system CUDA toolkit, PyTorch CUDA wheel, and DeepSpeed extension are incompatible.
-The controlled recipe avoids CPU optimizer offload and instead uses
+The current recipe avoids CPU optimizer offload and instead uses
 `deepspeed_zero2_adamw.json`: ZeRO stage 2, `--optim adamw_torch`, and
 `offload_optimizer.device=none`. Align the CUDA versions before enabling CPU offload;
 use `deepspeed_zero2_cpu.json` only for a separate retry after a confirmed AdamW OOM.
