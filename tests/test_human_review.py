@@ -12,9 +12,13 @@ from agent_ark.ark_eval.human_review import (  # noqa: E402
     REVIEW_NOTES_FILENAME,
     REVIEW_NOTES_SCHEMA,
     _read_review_notes,
+    _extract_authored_task_prompt,
+    _extract_task_prompt,
     _write_review_notes,
     build_replay_summary,
+    discover_tasks,
     select_reward_extremes,
+    select_trajectory_entries,
 )
 
 
@@ -51,6 +55,78 @@ def _record(seed, score, *, frame_count=1):
 
 
 class HumanReviewTest(unittest.TestCase):
+    def test_extract_task_prompt_accepts_records_without_section_marker(self):
+        record = _record(1, 1.0)
+        record["history_snapshot"]["0"][0][0]["obs"]["task_prompt"] = "Plain task prompt"
+
+        self.assertEqual(_extract_task_prompt(record), "Plain task prompt")
+
+    def test_extract_authored_prompt_from_prefab(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prefab = Path(tmpdir) / "Task.prefab"
+            prefab.write_text(
+                "  taskDescription: '[task prompt]\n\n    Do the visible thing.'\n"
+                "  taskCodeWrapper: \n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _extract_authored_task_prompt(Path(tmpdir)),
+                "[task prompt]\n\nDo the visible thing.",
+            )
+
+    def test_observation_only_capture_is_disclosed_and_rendered(self):
+        encoded = {
+            "__agentark_type__": "agentark.pil_image_png_base64.v1",
+            "mime_type": "image/png",
+            "size": [2, 2],
+            "data": base64.b64encode(b"captured-png").decode(),
+        }
+        record = _record(3, 1.0)
+        record["history_snapshot"] = {}
+        record["runtime_request_capture"] = {
+            "turns": [
+                {"agents": {"0": {"images": [encoded]}}},
+                {"agents": {"0": {"images": [encoded]}}},
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary = build_replay_summary(
+                record,
+                kind="high",
+                task_dir=Path(tmpdir),
+                task_relative_dir="tasks/task_003",
+                semantic_images=True,
+            )
+
+        self.assertEqual(summary["trajectory_detail"], "observation_only")
+        self.assertTrue(summary["record_limitation_zh"])
+        self.assertEqual(len(summary["steps"]), 2)
+        self.assertEqual(summary["frame_count"], 1)
+
+    def test_select_trajectory_entries_supports_legacy_registry_paths(self) -> None:
+        registry = [
+            {
+                "kind": "record",
+                "path": "artifacts/Task117_seeds1_10_results.jsonl",
+                "records": 10,
+                "task_id": 117,
+            },
+            {
+                "kind": "record",
+                "path": "artifacts/Task117_seeds1_10_trajectories.jsonl",
+                "records": 10,
+                "task_id": 117,
+            },
+        ]
+
+        selected = select_trajectory_entries(registry, [117])
+
+        self.assertEqual(
+            selected[117]["path"],
+            "artifacts/Task117_seeds1_10_trajectories.jsonl",
+        )
+
     def test_select_reward_extremes_uses_different_seeds_for_ties(self):
         records = [_record(1, 1.0), _record(2, 1.0), _record(3, 1.0)]
         high, low = select_reward_extremes(records)
@@ -103,6 +179,37 @@ class HumanReviewTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(ValueError):
                 _write_review_notes(Path(tmpdir), {"notes": {"task-41": "invalid"}})
+
+    def test_discover_tasks_can_include_gui_and_packaged_fallback(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "source"
+            packaged = root / "packaged"
+            gui = source / "Task187_GuiEvidence"
+            external = packaged / "ExternalTask"
+            gui.mkdir(parents=True)
+            (external / "cfg").mkdir(parents=True)
+            (gui / "task_config.yaml").write_text(
+                "task_name: GuiEvidence\n"
+                "task_info:\n"
+                "  name: GuiEvidence\n"
+                "  tags: [gui]\n",
+                encoding="utf-8",
+            )
+            (external / "cfg" / "task_config.yaml").write_text(
+                "task_name: ExternalTask\n"
+                "task_info:\n"
+                "  name: ExternalTask\n"
+                "  tags: [3d]\n"
+                "  legacy_names: [Task142_ExternalTask]\n",
+                encoding="utf-8",
+            )
+
+            default = discover_tasks([source, packaged], [142, 187])
+            self.assertEqual(set(default), {142})
+            included = discover_tasks([source, packaged], [142, 187], include_gui=True)
+            self.assertEqual(set(included), {142, 187})
+            self.assertEqual(included[142]["config_path"].name, "task_config.yaml")
 
 
 if __name__ == "__main__":

@@ -110,7 +110,11 @@
       : task.semantic_modality === 'text'
         ? '该任务的语义观测是文本；兼容相机不作为评估证据，因此这里展示逐步文本。'
         : '该 replay 每个决策只保留一张 agent 可见帧；播放表现为真实决策状态切换，不伪造中间运动。';
+    const replayLimitation = replay.record_limitation_zh
+      ? `<div class="record-warning">${esc(replay.record_limitation_zh)}</div>`
+      : '';
     host.innerHTML = `
+      ${replayLimitation}
       <div class="replay-meta">
         <span>seed <b>${replay.seed}</b></span><span>score <b>${fmt(replay.score_reward)}</b></span>
         <span>attempts <b>${replay.max_attempts}</b></span><span>steps <b>${replay.steps.length}</b></span>
@@ -189,11 +193,15 @@
     location.hash = `task-${id}`;
     renderTaskList();
     const task = taskById(id);
+    const recordWarnings = (task.record_limitations_zh || [])
+      .map(item => `<div>${esc(item)}</div>`)
+      .join('');
     workspace.innerHTML = `
       <div class="task-head">
         <div><div class="eyebrow">TASK ${task.id} · ${esc(task.family)}</div><h1>${esc(task.title_zh)}</h1><p class="summary">${esc(task.summary_zh)}</p></div>
         <a class="source-link" href="${esc(task.hf.dataset_url)}" target="_blank" rel="noreferrer">HF SOURCE ↗</a>
       </div>
+      ${recordWarnings ? `<div class="record-warning task-warning"><strong>Record 完整性提示</strong>${recordWarnings}</div>` : ''}
       <div class="grid two">
         <section class="card"><div class="card-head"><h2>怎么玩</h2></div><div class="card-body"><ol class="clean-list">${task.play_zh.map(item => `<li>${esc(item)}</li>`).join('')}</ol></div></section>
         <section class="card"><div class="card-head"><h2>人工审核重点</h2></div><div class="card-body"><ul class="clean-list audit-list">${task.audit_zh.map(item => `<li>${esc(item)}</li>`).join('')}</ul></div></section>
@@ -205,7 +213,7 @@
         <div id="replayBody"></div>
       </section>
       <details class="doc"><summary>标准 action 轨迹（开发时留存）</summary><div>${standardSection(task)}</div></details>
-      <details class="doc"><summary>Agent 原始英文任务说明</summary><div><pre>${esc(task.prompt_en)}</pre></div></details>
+      <details class="doc"><summary>Agent 原始英文任务说明</summary><div><pre>${esc(task.prompt_en || '原始 prompt 未包含在已发布 replay，当前打包文件也无法可靠恢复。')}</pre></div></details>
       <details class="doc"><summary>审核笔记（自动持久化）</summary><div><textarea class="review-note" id="reviewNote" placeholder="记录画面、机制、难度或价值判断…"></textarea><div class="note-status" id="noteStatus">输入会自动保存到工作台目录；浏览器 localStorage 同时作为后备。</div></div></details>`;
     document.querySelectorAll('.tab').forEach(button => button.onclick = () => {
       document.querySelectorAll('.tab').forEach(item => item.classList.toggle('active', item === button));

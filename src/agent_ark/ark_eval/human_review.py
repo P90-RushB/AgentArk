@@ -161,37 +161,66 @@ def fetch_record_registry() -> List[Dict[str, Any]]:
     return _jsonl_objects(_request_bytes(f"{HF_RESOLVE_BASE}/registry/records.jsonl"))
 
 
-def discover_tasks(task_root: Path, ids: Iterable[int]) -> Dict[int, Dict[str, Any]]:
+def _configured_task_id(directory: Path, config: Mapping[str, Any]) -> Optional[int]:
+    match = re.match(r"^Task(\d+)(?:_|$)", directory.name)
+    if match:
+        return int(match.group(1))
+    info = config.get("task_info") if isinstance(config.get("task_info"), dict) else {}
+    try:
+        return int(info.get("id"))
+    except (TypeError, ValueError):
+        pass
+    identities = [
+        str(config.get("task_name") or ""),
+        str(info.get("name") or ""),
+        *(str(value) for value in info.get("legacy_names", []) or []),
+    ]
+    for identity in identities:
+        match = re.search(r"(?:^|_)Task(\d+)(?:_|$)", identity)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def discover_tasks(
+    task_roots: Path | Iterable[Path],
+    ids: Iterable[int],
+    *,
+    include_gui: bool = False,
+) -> Dict[int, Dict[str, Any]]:
     wanted = set(int(item) for item in ids)
     found: Dict[int, Dict[str, Any]] = {}
-    for directory in task_root.iterdir():
-        if not directory.is_dir():
+    roots = [task_roots] if isinstance(task_roots, Path) else list(task_roots)
+    for task_root in roots:
+        if not task_root.exists():
             continue
-        match = re.match(r"^Task(\d+)(?:_|$)", directory.name)
-        if not match:
-            continue
-        task_id = int(match.group(1))
-        if task_id not in wanted:
-            continue
-        config_path = directory / "task_config.yaml"
-        if not config_path.exists():
-            continue
-        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        info = config.get("task_info") if isinstance(config.get("task_info"), dict) else {}
-        tags = [str(value) for value in info.get("tags", []) or []]
-        display_name = str(info.get("name") or config.get("task_name") or directory.name)
-        is_gui = display_name.lower().startswith("gui") or any(tag.lower() == "gui" for tag in tags)
-        if is_gui:
-            continue
-        found[task_id] = {
-            "id": task_id,
-            "directory": directory,
-            "folder": directory.name,
-            "config_path": config_path,
-            "config": config,
-            "name": display_name,
-            "tags": tags,
-        }
+        for directory in task_root.iterdir():
+            if not directory.is_dir():
+                continue
+            config_path = directory / "task_config.yaml"
+            if not config_path.exists():
+                config_path = directory / "cfg" / "task_config.yaml"
+            if not config_path.exists():
+                continue
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            task_id = _configured_task_id(directory, config)
+            if task_id not in wanted or task_id in found:
+                continue
+            info = config.get("task_info") if isinstance(config.get("task_info"), dict) else {}
+            tags = [str(value) for value in info.get("tags", []) or []]
+            display_name = str(info.get("name") or config.get("task_name") or directory.name)
+            is_gui = display_name.lower().startswith("gui") or any(tag.lower() == "gui" for tag in tags)
+            if is_gui and not include_gui:
+                continue
+            found[task_id] = {
+                "id": task_id,
+                "directory": directory,
+                "folder": directory.name,
+                "config_path": config_path,
+                "config": config,
+                "name": display_name,
+                "tags": tags,
+            }
     return found
 
 
@@ -205,7 +234,16 @@ def select_trajectory_entries(
             task_id = int(item.get("task_id"))
         except (TypeError, ValueError):
             continue
-        if task_id not in wanted or item.get("record_kind") != "trajectories":
+        record_kind = str(item.get("record_kind") or "").strip().lower()
+        if not record_kind:
+            # Older record-registry rows only declared ``kind=record``. Their
+            # immutable path still carries the result/trajectory distinction.
+            filename = Path(str(item.get("path") or "")).name.lower()
+            if filename.endswith("_trajectories.jsonl"):
+                record_kind = "trajectories"
+            elif filename.endswith("_results.jsonl"):
+                record_kind = "results"
+        if task_id not in wanted or record_kind != "trajectories":
             continue
         candidate = dict(item)
         current = selected.get(task_id)
@@ -261,17 +299,113 @@ def _all_steps(record: Mapping[str, Any]) -> List[Tuple[int, int, Dict[str, Any]
     return flattened
 
 
+def _runtime_capture_turns(record: Mapping[str, Any]) -> List[List[Dict[str, Any]]]:
+    """Return exact model-request images when full history was not published."""
+
+    capture = record.get("runtime_request_capture")
+    if not isinstance(capture, dict):
+        return []
+    turns = capture.get("turns")
+    if not isinstance(turns, list):
+        return []
+    captured: List[List[Dict[str, Any]]] = []
+    for turn in turns:
+        if not isinstance(turn, dict):
+            continue
+        agents = turn.get("agents")
+        if not isinstance(agents, dict) or not agents:
+            continue
+        agent_key = sorted(
+            agents.keys(),
+            key=lambda value: int(value) if str(value).isdigit() else str(value),
+        )[0]
+        agent = agents.get(agent_key)
+        images = agent.get("images") if isinstance(agent, dict) else None
+        if not isinstance(images, list):
+            continue
+        captured.append(
+            [
+                image
+                for image in images
+                if isinstance(image, dict) and isinstance(image.get("data"), str)
+            ]
+        )
+    return captured
+
+
 def _extract_task_prompt(record: Mapping[str, Any]) -> str:
     for _, _, step in _all_steps(record):
         obs = step.get("obs") if isinstance(step.get("obs"), dict) else {}
         prompt = obs.get("task_prompt")
-        if not isinstance(prompt, str) or "[task prompt]" not in prompt:
+        if not isinstance(prompt, str) or not prompt.strip():
             continue
-        prompt = prompt[prompt.index("[task prompt]") :]
+        if "[task prompt]" in prompt:
+            prompt = prompt[prompt.index("[task prompt]") :]
         marker = prompt.find("<tool_docs>")
         if marker >= 0:
             prompt = prompt[:marker]
         return prompt.strip()
+    return ""
+
+
+def _normalize_authored_prompt(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    value = value.replace("''", "'")
+    paragraphs: List[str] = []
+    current: List[str] = []
+    for line in value.splitlines():
+        stripped = line.strip()
+        if stripped:
+            current.append(stripped)
+        elif current:
+            paragraphs.append(" ".join(current))
+            current = []
+    if current:
+        paragraphs.append(" ".join(current))
+    return "\n\n".join(paragraphs).strip()
+
+
+def _extract_authored_task_prompt(task_directory: Path) -> str:
+    """Best-effort prompt recovery from editable prefabs or task DLL strings."""
+
+    property_pattern = re.compile(
+        r"^  taskDescription:\s*(.+?)(?=^  [A-Za-z_][A-Za-z0-9_]*:\s*)",
+        re.MULTILINE | re.DOTALL,
+    )
+    for prefab in sorted(task_directory.rglob("*.prefab")):
+        try:
+            text = prefab.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        match = property_pattern.search(text)
+        if match:
+            prompt = _normalize_authored_prompt(match.group(1))
+            if prompt:
+                return prompt
+
+    marker = "[task prompt]".encode("utf-16le")
+    for assembly in sorted(task_directory.rglob("*.dll")):
+        try:
+            raw = assembly.read_bytes()
+        except OSError:
+            continue
+        start = raw.find(marker)
+        if start < 0:
+            continue
+        decoded = raw[start : start + 64 * 1024].decode("utf-16le", errors="replace")
+        end = next(
+            (
+                index
+                for index, character in enumerate(decoded)
+                if ord(character) not in {9, 10, 13} and not 32 <= ord(character) <= 126
+            ),
+            len(decoded),
+        )
+        prompt = decoded[:end].strip()
+        if prompt:
+            return prompt
     return ""
 
 
@@ -437,6 +571,64 @@ def build_replay_summary(
                 "explanation_zh": _step_sentence(flat_number, tool, reward, done, after_text),
             }
         )
+    trajectory_detail = "full"
+    limitation_zh = ""
+    if not steps:
+        capture_turns = _runtime_capture_turns(record)
+        if capture_turns:
+            trajectory_detail = "observation_only"
+            limitation_zh = (
+                "该已发布 record 没有 history_snapshot，因而无法还原 agent 动作、逐步 reward "
+                "和精确环境转移；下方按轮次展示的是模型请求中实际包含的图片。"
+            )
+            for turn_index, images in enumerate(capture_turns, start=1):
+                observation = {"vis": [images]}
+                before_frames = _write_frames(
+                    observation,
+                    replay_dir,
+                    replay_relative_dir,
+                    phase="model_request",
+                    attempt_index=1,
+                    step_index=turn_index,
+                    semantic_images=semantic_images,
+                )
+                max_frames_in_one_observation = max(
+                    max_frames_in_one_observation, len(before_frames)
+                )
+                for frame in before_frames:
+                    digest = frame["sha256_16"]
+                    if digest == previous_digest:
+                        continue
+                    playback_frames.append(frame)
+                    previous_digest = digest
+                steps.append(
+                    {
+                        "number": turn_index,
+                        "attempt": 1,
+                        "attempt_step": turn_index,
+                        "tool": {
+                            "name": "动作未随 record 发布",
+                            "arguments": {},
+                            "raw": "",
+                        },
+                        "reward": None,
+                        "done": False,
+                        "before_text": "",
+                        "after_text": "",
+                        "before_frames": before_frames,
+                        "after_frames": [],
+                        "record_observation_only": True,
+                        "explanation_zh": (
+                            f"第 {turn_index} 轮模型请求：展示该轮实际发送给 agent 的 "
+                            f"{len(before_frames)} 张图片；发布记录未包含本轮 action 与逐步 reward。"
+                        ),
+                    }
+                )
+        else:
+            trajectory_detail = "summary_only"
+            limitation_zh = (
+                "该已发布 record 只有 rollout 汇总，没有可还原的动作、逐步反馈或模型可见帧。"
+            )
     source = record.get("source") if isinstance(record.get("source"), dict) else {}
     task = record.get("task") if isinstance(record.get("task"), dict) else {}
     rollout = record.get("rollout") if isinstance(record.get("rollout"), dict) else {}
@@ -455,6 +647,8 @@ def build_replay_summary(
         "case_id": source.get("case_id"),
         "model_name": source.get("model_name"),
         "task_name": task.get("task_name") or task.get("requested_task_name"),
+        "trajectory_detail": trajectory_detail,
+        "record_limitation_zh": limitation_zh,
         "steps": steps,
         "frames": playback_frames,
         "frame_count": len(playback_frames),
@@ -576,7 +770,19 @@ def build_one_task(
             ),
         ]
         standard = _parse_standard_trajectory(task["directory"] / "action_trajectories.md")
-        prompt = _extract_task_prompt(high) or _extract_task_prompt(low)
+        record_prompt = _extract_task_prompt(high) or _extract_task_prompt(low)
+        authored_prompt = "" if record_prompt else _extract_authored_task_prompt(task["directory"])
+        prompt = record_prompt or authored_prompt
+        limitations = [
+            replay["record_limitation_zh"]
+            for replay in replays
+            if replay.get("record_limitation_zh")
+        ]
+        if not prompt:
+            limitations.append(
+                "已发布 replay 未携带任务 prompt，当前可用的打包任务文件中也无法可靠恢复原文；"
+                "中文玩法说明来自任务配置、命名和可观察 replay，不能替代原始英文 prompt。"
+            )
         task_manifest = {
             "id": task_id,
             "name": task["name"],
@@ -589,6 +795,10 @@ def build_one_task(
             "config": _critical_config(config),
             "semantic_modality": "image" if semantic_images else "text",
             "prompt_en": prompt,
+            "prompt_provenance": (
+                "record" if record_prompt else "authored_source" if authored_prompt else "unavailable"
+            ),
+            "record_limitations_zh": list(dict.fromkeys(limitations)),
             "standard_trajectory": standard,
             "replays": replays,
             "hf": {
@@ -649,6 +859,7 @@ def _write_root_manifest(output_root: Path, *, title: Optional[str] = None) -> D
 def build_workbench(args: argparse.Namespace) -> Path:
     repo_root = Path(args.repo_root).resolve()
     task_root = repo_root / "llm_rl/Assets/llm_gym/rl_train/RLTaskDev/AgentTask"
+    task_roots = [task_root, *(Path(value).resolve() for value in args.fallback_task_root or [])]
     output_root = Path(args.output).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     work_root = output_root / ".work"
@@ -661,10 +872,11 @@ def build_workbench(args: argparse.Namespace) -> Path:
     curated = json.loads(curated_path.read_text(encoding="utf-8"))
 
     requested_ids = tuple(int(value) for value in (args.task_ids or DEFAULT_IDS))
-    tasks = discover_tasks(task_root, requested_ids)
+    tasks = discover_tasks(task_roots, requested_ids, include_gui=bool(args.include_gui))
     missing_local = sorted(set(requested_ids) - set(tasks))
     if missing_local:
-        raise RuntimeError(f"Missing local non-GUI tasks: {missing_local}")
+        scope = "tasks" if args.include_gui else "non-GUI tasks"
+        raise RuntimeError(f"Missing local {scope}: {missing_local}")
     registry = fetch_record_registry()
     entries = select_trajectory_entries(registry, tasks)
     missing_remote = sorted(set(tasks) - set(entries))
@@ -879,11 +1091,17 @@ def validate_workbench(args: argparse.Namespace) -> None:
             errors.append(f"Task{task_id}: high score is below low score")
         if not task.get("summary_zh") or not task.get("play_zh") or not task.get("audit_zh"):
             errors.append(f"Task{task_id}: incomplete Chinese review copy")
-        if not task.get("prompt_en"):
+        if not task.get("prompt_en") and not task.get("record_limitations_zh"):
             errors.append(f"Task{task_id}: missing player prompt")
         for replay in replays:
             if not replay.get("steps"):
                 errors.append(f"Task{task_id}/{replay.get('kind')}: no steps")
+            if replay.get("trajectory_detail", "full") != "full" and not replay.get(
+                "record_limitation_zh"
+            ):
+                errors.append(
+                    f"Task{task_id}/{replay.get('kind')}: incomplete replay is not disclosed"
+                )
             for frame in replay.get("frames", []):
                 path = output_root / frame["path"]
                 if not path.exists():
@@ -987,6 +1205,17 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--workers", type=int, default=6)
     build.add_argument("--force", action="store_true")
     build.add_argument("--task-ids", nargs="*", type=int)
+    build.add_argument(
+        "--fallback-task-root",
+        action="append",
+        default=[],
+        help="Optional additional task root, such as packaged Mods/all_tasks; earlier roots take precedence.",
+    )
+    build.add_argument(
+        "--include-gui",
+        action="store_true",
+        help="Include GUI-tagged tasks. They are excluded by default for backward compatibility.",
+    )
     build.add_argument(
         "--curated",
         help="UTF-8 JSON containing Chinese title/family/summary/play/audit copy keyed by task id",
