@@ -66,6 +66,8 @@ h1 { margin: 7px 0 8px; font-size: clamp(24px, 3vw, 40px); line-height: 1.08; le
 .record-warning { padding: 10px 14px; border-bottom: 1px solid #6d5528; background: #2b2417; color: #efd9a8; font-size: 11px; line-height: 1.55; }
 .record-warning.task-warning { max-width: 1190px; margin: 0 auto 14px; border: 1px solid #6d5528; border-radius: 6px; }
 .record-warning strong { display: block; margin-bottom: 4px; color: var(--amber); }
+.step-source-note { margin-bottom: 9px; padding: 8px 10px; border: 1px solid #6d5528; border-radius: 4px; background: #2b2417; color: #efd9a8; font-size: 11px; line-height: 1.5; }
+.step-source-note strong { display: block; color: var(--amber); }
 .replay-tabs { display: flex; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line); }
 .tab { border: 1px solid var(--line); border-radius: 5px; background: transparent; color: var(--muted); padding: 8px 11px; cursor: pointer; font-size: 12px; }
 .tab.active { border-color: var(--green-2); color: var(--text); background: #19231d; }

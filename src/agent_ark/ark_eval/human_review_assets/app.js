@@ -93,9 +93,12 @@
   function stepCards(replay) {
     return replay.steps.map(step => {
       const rewardClass = Number(step.reward) < 0 ? 'reward neg' : 'reward';
+      const recoveredNote = step.record_result_only
+        ? `<div class="step-source-note"><strong>Results 补回步骤</strong>${esc(step.frame_limitation_zh || '该步骤没有随 trajectory 发布动作后原始图像。')}</div>`
+        : '';
       return `<details class="step-card" data-step="${step.number}">
-        <summary><span class="step-name">A${step.attempt} · S${step.attempt_step} · ${esc(step.tool.name)}</span><span class="${rewardClass}">${fmt(step.reward)}</span></summary>
-        <div class="step-content"><p>${esc(step.explanation_zh)}</p><pre>${esc(step.tool.raw)}</pre>${step.after_text ? `<pre style="margin-top:8px">${esc(step.after_text)}</pre>` : ''}</div>
+        <summary><span class="step-name">A${step.attempt} · S${step.attempt_step} · ${esc(step.tool.name)}${step.record_result_only ? ' · 已补回' : ''}</span><span class="${rewardClass}">${fmt(step.reward)}</span></summary>
+        <div class="step-content">${recoveredNote}<p>${esc(step.explanation_zh)}</p><pre>${esc(step.tool.raw)}</pre>${step.after_text ? `<pre style="margin-top:8px">${esc(step.after_text)}</pre>` : ''}</div>
       </details>`;
     }).join('');
   }

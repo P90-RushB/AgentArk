@@ -224,6 +224,20 @@ def discover_tasks(
     return found
 
 
+def _registry_record_kind(item: Mapping[str, Any]) -> str:
+    record_kind = str(item.get("record_kind") or "").strip().lower()
+    if record_kind:
+        return record_kind
+    # Older record-registry rows only declared ``kind=record``. Their
+    # immutable path still carries the result/trajectory distinction.
+    filename = Path(str(item.get("path") or "")).name.lower()
+    if filename.endswith("_trajectories.jsonl"):
+        return "trajectories"
+    if filename.endswith("_results.jsonl"):
+        return "results"
+    return ""
+
+
 def select_trajectory_entries(
     registry: Sequence[Mapping[str, Any]], task_ids: Iterable[int]
 ) -> Dict[int, Dict[str, Any]]:
@@ -234,21 +248,36 @@ def select_trajectory_entries(
             task_id = int(item.get("task_id"))
         except (TypeError, ValueError):
             continue
-        record_kind = str(item.get("record_kind") or "").strip().lower()
-        if not record_kind:
-            # Older record-registry rows only declared ``kind=record``. Their
-            # immutable path still carries the result/trajectory distinction.
-            filename = Path(str(item.get("path") or "")).name.lower()
-            if filename.endswith("_trajectories.jsonl"):
-                record_kind = "trajectories"
-            elif filename.endswith("_results.jsonl"):
-                record_kind = "results"
+        record_kind = _registry_record_kind(item)
         if task_id not in wanted or record_kind != "trajectories":
             continue
         candidate = dict(item)
         current = selected.get(task_id)
         if current is None or int(candidate.get("records", 0)) > int(current.get("records", 0)):
             selected[task_id] = candidate
+    return selected
+
+
+def select_result_entries(
+    registry: Sequence[Mapping[str, Any]],
+    trajectory_entries: Mapping[int, Mapping[str, Any]],
+) -> Dict[int, Dict[str, Any]]:
+    """Find the results JSONL published beside each selected trajectory JSONL."""
+
+    result_by_path = {
+        str(item.get("path") or ""): dict(item)
+        for item in registry
+        if _registry_record_kind(item) == "results"
+    }
+    selected: Dict[int, Dict[str, Any]] = {}
+    for task_id, trajectory in trajectory_entries.items():
+        trajectory_path = str(trajectory.get("path") or "")
+        if not trajectory_path.endswith("_trajectories.jsonl"):
+            continue
+        expected_path = trajectory_path[: -len("_trajectories.jsonl")] + "_results.jsonl"
+        companion = result_by_path.get(expected_path)
+        if companion is not None:
+            selected[int(task_id)] = companion
     return selected
 
 
@@ -496,6 +525,172 @@ def _visible_text(observation: Any) -> str:
     return "\n\n".join(parts)
 
 
+def _result_seed(record: Mapping[str, Any]) -> int:
+    for key in (
+        "actual_rollout_group_seed",
+        "actual_group_seed",
+        "requested_group_seed",
+    ):
+        try:
+            return int(record.get(key))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _find_result_record(
+    trajectory_record: Mapping[str, Any],
+    result_records: Sequence[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Match a trajectory to its exact companion result from the same eval run."""
+
+    source = (
+        trajectory_record.get("source")
+        if isinstance(trajectory_record.get("source"), dict)
+        else {}
+    )
+    identity = (
+        str(source.get("case_id") or ""),
+        str(source.get("model_name") or ""),
+        _seed(trajectory_record),
+    )
+    exact = [
+        record
+        for record in result_records
+        if (
+            str(record.get("case_id") or ""),
+            str(record.get("model_name") or ""),
+            _result_seed(record),
+        )
+        == identity
+    ]
+    if len(exact) == 1:
+        return exact[0]
+
+    # Some older trajectory records omitted model_name. A case id plus seed is
+    # still safe when it identifies exactly one row in the selected sibling file.
+    compatible = [
+        record
+        for record in result_records
+        if str(record.get("case_id") or "") == identity[0]
+        and _result_seed(record) == identity[2]
+    ]
+    return compatible[0] if len(compatible) == 1 else None
+
+
+def _done_all(value: Any) -> bool:
+    if isinstance(value, dict):
+        if "__all__" in value:
+            return bool(value.get("__all__"))
+        return any(bool(item) for item in value.values())
+    return bool(value)
+
+
+def _result_step_visible_text(step: Mapping[str, Any]) -> str:
+    messages = step.get("step_messages")
+    if isinstance(messages, dict):
+        messages = [messages]
+    if not isinstance(messages, list):
+        return ""
+    fallback: List[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        text = message.get("step_msg")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        normalized = (
+            text.replace("\\r\\n", "\n")
+            .replace("\\n", "\n")
+            .replace("\\r", "\n")
+        )
+        contexts = re.findall(
+            r"<step_context>\s*(.*?)\s*</step_context>",
+            normalized,
+            flags=re.DOTALL,
+        )
+        if contexts:
+            return "\n\n".join(context.strip() for context in contexts if context.strip())
+        fallback.append(normalized.strip())
+    return "\n\n".join(fallback)
+
+
+def _result_steps(record: Optional[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    if not isinstance(record, Mapping):
+        return []
+    raw_steps = record.get("steps")
+    if not isinstance(raw_steps, list):
+        return []
+    normalized: List[Dict[str, Any]] = []
+    attempt_step_counts: Dict[int, int] = {}
+    try:
+        current_attempt = int(record.get("start_attempt_index") or 1)
+    except (TypeError, ValueError):
+        current_attempt = 1
+    for raw_step in raw_steps:
+        if not isinstance(raw_step, dict):
+            continue
+        info = raw_step.get("info") if isinstance(raw_step.get("info"), dict) else {}
+        attempt = info.get("attempt") if isinstance(info.get("attempt"), dict) else {}
+        rollout = info.get("rollout") if isinstance(info.get("rollout"), dict) else {}
+        try:
+            attempt_index = int(
+                attempt.get("index", rollout.get("current_attempt_index", current_attempt))
+            )
+        except (TypeError, ValueError):
+            attempt_index = current_attempt
+        current_attempt = attempt_index
+        attempt_step_counts[attempt_index] = attempt_step_counts.get(attempt_index, 0) + 1
+        normalized.append(
+            {
+                "attempt": attempt_index,
+                "attempt_step": attempt_step_counts[attempt_index],
+                "action": raw_step.get("action_preview") or "",
+                "reward": raw_step.get("reward_total"),
+                "done": _done_all(raw_step.get("done")),
+                "after_text": _result_step_visible_text(raw_step),
+            }
+        )
+        if bool(attempt.get("auto_reset")):
+            current_attempt = attempt_index + 1
+    return normalized
+
+
+def _canonical_action(action: Any) -> Tuple[str, str]:
+    tool = _tool_call(action)
+    if tool["name"] in {"未解析动作", "格式错误动作"}:
+        return tool["name"], re.sub(r"\s+", " ", str(action or "")).strip()
+    return tool["name"], json.dumps(
+        tool.get("arguments") or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
+def _align_history_to_results(
+    history_rows: Sequence[Tuple[int, int, Dict[str, Any]]],
+    result_rows: Sequence[Mapping[str, Any]],
+) -> Optional[Dict[int, Tuple[int, int, Dict[str, Any]]]]:
+    """Align published history as a subsequence of the authoritative result steps."""
+
+    matched: Dict[int, Tuple[int, int, Dict[str, Any]]] = {}
+    result_cursor = 0
+    for history_row in history_rows:
+        attempt_index, _, step = history_row
+        action = _canonical_action(step.get("action"))
+        found = None
+        for result_index in range(result_cursor, len(result_rows)):
+            result_row = result_rows[result_index]
+            if int(result_row["attempt"]) != attempt_index:
+                continue
+            if _canonical_action(result_row.get("action")) == action:
+                found = result_index
+                break
+        if found is None:
+            return None
+        matched[found] = history_row
+        result_cursor = found + 1
+    return matched
+
+
 def _encoded_frames(observation: Any) -> List[Tuple[int, int, Dict[str, Any]]]:
     if not isinstance(observation, dict):
         return []
@@ -572,17 +767,25 @@ def build_replay_summary(
     task_dir: Path,
     task_relative_dir: str,
     semantic_images: bool,
+    result_record: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     replay_dir = task_dir / kind
     replay_dir.mkdir(parents=True, exist_ok=True)
     replay_relative_dir = f"{task_relative_dir}/{kind}"
     steps: List[Dict[str, Any]] = []
-    playback_frames: List[Dict[str, Any]] = []
-    previous_digest: Optional[str] = None
-    flat_number = 0
-    max_frames_in_one_observation = 0
-    for attempt_index, attempt_step_index, step in _all_steps(record):
-        flat_number += 1
+    history_rows = _all_steps(record)
+    result_rows = _result_steps(result_record)
+    aligned_history = (
+        _align_history_to_results(history_rows, result_rows) if result_rows else None
+    )
+    capture_turns = _runtime_capture_turns(record)
+
+    def append_history_step(
+        flat_number: int,
+        attempt_index: int,
+        attempt_step_index: int,
+        step: Mapping[str, Any],
+    ) -> None:
         before = step.get("obs") if isinstance(step.get("obs"), dict) else {}
         after_obs = step.get("next_obs") if isinstance(step.get("next_obs"), dict) else {}
         before_frames = _write_frames(
@@ -603,15 +806,6 @@ def build_replay_summary(
             step_index=attempt_step_index,
             semantic_images=semantic_images,
         )
-        max_frames_in_one_observation = max(
-            max_frames_in_one_observation, len(before_frames), len(after_frames)
-        )
-        for frame in [*before_frames, *after_frames]:
-            digest = frame["sha256_16"]
-            if digest == previous_digest:
-                continue
-            playback_frames.append(frame)
-            previous_digest = digest
         tool = _tool_call(step.get("action"))
         reward = step.get("reward", 0)
         done = bool(step.get("done", False))
@@ -631,10 +825,99 @@ def build_replay_summary(
                 "explanation_zh": _step_sentence(flat_number, tool, reward, done, after_text),
             }
         )
+
     trajectory_detail = "full"
     limitation_zh = ""
+
+    if result_rows and aligned_history is not None:
+        for result_index, result_row in enumerate(result_rows):
+            flat_number = result_index + 1
+            history_row = aligned_history.get(result_index)
+            if history_row is not None:
+                append_history_step(flat_number, *history_row)
+                continue
+
+            attempt_index = int(result_row["attempt"])
+            attempt_step_index = int(result_row["attempt_step"])
+            images = capture_turns[result_index] if result_index < len(capture_turns) else []
+            before_frames = _write_frames(
+                {"vis": [images]} if images else {},
+                replay_dir,
+                replay_relative_dir,
+                phase="model_request",
+                attempt_index=attempt_index,
+                step_index=attempt_step_index,
+                semantic_images=semantic_images,
+            )
+            tool = _tool_call(result_row.get("action"))
+            reward = result_row.get("reward")
+            done = bool(result_row.get("done"))
+            after_text = str(result_row.get("after_text") or "")
+            frame_limitation = (
+                "此步骤由同批 results JSONL 补回。动作、reward、done 与文字反馈可还原；"
+                "trajectory 未发布该动作后的原始图像，因此网页不会伪造终局画面。"
+            )
+            steps.append(
+                {
+                    "number": flat_number,
+                    "attempt": attempt_index,
+                    "attempt_step": attempt_step_index,
+                    "tool": tool,
+                    "reward": reward,
+                    "done": done,
+                    "before_text": "",
+                    "after_text": after_text,
+                    "before_frames": before_frames,
+                    "after_frames": [],
+                    "record_result_only": True,
+                    "frame_limitation_zh": frame_limitation,
+                    "explanation_zh": _step_sentence(
+                        flat_number, tool, reward, done, after_text
+                    ),
+                }
+            )
+
+        recovered_count = len(result_rows) - len(aligned_history)
+        if recovered_count:
+            trajectory_detail = "result_supplemented"
+            limitation_zh = (
+                f"该 trajectory 的 history_snapshot 省略了 {recovered_count} 个终局/过渡步骤；"
+                "网页已从同批、同模型、同 seed 的 results JSONL 补回 action、reward、done "
+                "和文字反馈。results 不含这些步骤的动作后原始图像，网页不会伪造；"
+                "若模型请求捕获中仍有动作前图像，则继续原样展示。"
+            )
+    else:
+        for flat_number, history_row in enumerate(history_rows, start=1):
+            append_history_step(flat_number, *history_row)
+
+        expected_turns = 0
+        rollout = record.get("rollout") if isinstance(record.get("rollout"), dict) else {}
+        attempt_rewards = rollout.get("attempt_rewards")
+        if isinstance(attempt_rewards, list):
+            for attempt in attempt_rewards:
+                if not isinstance(attempt, dict):
+                    continue
+                try:
+                    expected_turns += int(attempt.get("turns") or 0)
+                except (TypeError, ValueError):
+                    continue
+        omitted_count = max(0, expected_turns - len(history_rows))
+        if steps and omitted_count:
+            trajectory_detail = "history_incomplete"
+            if result_rows:
+                limitation_zh = (
+                    f"rollout 汇总显示共有 {expected_turns} 步，但 trajectory 只发布了 "
+                    f"{len(history_rows)} 步；虽然存在 companion results，动作序列未能安全对齐，"
+                    "因此网页没有自动拼接可能错误的步骤。"
+                )
+            else:
+                limitation_zh = (
+                    f"rollout 汇总显示共有 {expected_turns} 步，但 trajectory 只发布了 "
+                    f"{len(history_rows)} 步；当前没有可配对的 results JSONL，"
+                    f"至少 {omitted_count} 个终局/过渡步骤无法还原。"
+                )
+
     if not steps:
-        capture_turns = _runtime_capture_turns(record)
         if capture_turns:
             trajectory_detail = "observation_only"
             limitation_zh = (
@@ -652,15 +935,6 @@ def build_replay_summary(
                     step_index=turn_index,
                     semantic_images=semantic_images,
                 )
-                max_frames_in_one_observation = max(
-                    max_frames_in_one_observation, len(before_frames)
-                )
-                for frame in before_frames:
-                    digest = frame["sha256_16"]
-                    if digest == previous_digest:
-                        continue
-                    playback_frames.append(frame)
-                    previous_digest = digest
                 steps.append(
                     {
                         "number": turn_index,
@@ -689,6 +963,23 @@ def build_replay_summary(
             limitation_zh = (
                 "该已发布 record 只有 rollout 汇总，没有可还原的动作、逐步反馈或模型可见帧。"
             )
+
+    playback_frames: List[Dict[str, Any]] = []
+    previous_digest: Optional[str] = None
+    max_frames_in_one_observation = 0
+    for step in steps:
+        before_frames = step.get("before_frames") or []
+        after_frames = step.get("after_frames") or []
+        max_frames_in_one_observation = max(
+            max_frames_in_one_observation, len(before_frames), len(after_frames)
+        )
+        for frame in [*before_frames, *after_frames]:
+            digest = frame["sha256_16"]
+            if digest == previous_digest:
+                continue
+            playback_frames.append(frame)
+            previous_digest = digest
+
     source = record.get("source") if isinstance(record.get("source"), dict) else {}
     task = record.get("task") if isinstance(record.get("task"), dict) else {}
     rollout = record.get("rollout") if isinstance(record.get("rollout"), dict) else {}
@@ -778,6 +1069,7 @@ def _semantic_images(config: Mapping[str, Any]) -> bool:
 def build_one_task(
     task: Mapping[str, Any],
     entry: Mapping[str, Any],
+    result_entry: Optional[Mapping[str, Any]],
     curated: Mapping[str, Any],
     output_root: Path,
     work_root: Path,
@@ -797,20 +1089,40 @@ def build_one_task(
     relative_task_dir = f"tasks/task_{task_id:03d}"
     remote_path = str(entry["path"])
     temp_path = work_root / f"task_{task_id:03d}.jsonl"
+    result_remote_path = str(result_entry["path"]) if result_entry is not None else ""
+    result_temp_path = work_root / f"task_{task_id:03d}_results.jsonl"
     _log(f"[{task_id:03d}] downloading {int(entry.get('size_bytes', 0)) / (1024 * 1024):.1f} MiB")
     _download_verified(
         f"{HF_RESOLVE_BASE}/{remote_path}",
         temp_path,
         str(entry.get("sha256") or "") or None,
     )
+    if result_entry is not None:
+        _log(
+            f"[{task_id:03d}] downloading companion results "
+            f"{int(result_entry.get('size_bytes', 0)) / (1024 * 1024):.1f} MiB"
+        )
+        _download_verified(
+            f"{HF_RESOLVE_BASE}/{result_remote_path}",
+            result_temp_path,
+            str(result_entry.get("sha256") or "") or None,
+        )
     records: List[Dict[str, Any]] = []
+    result_records: List[Dict[str, Any]] = []
     completed = False
     try:
         with temp_path.open("r", encoding="utf-8") as handle:
             for line in handle:
                 if line.strip():
                     records.append(json.loads(line))
+        if result_entry is not None:
+            with result_temp_path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip():
+                        result_records.append(json.loads(line))
         high, low = select_reward_extremes(records)
+        high_result = _find_result_record(high, result_records)
+        low_result = _find_result_record(low, result_records)
         config = task["config"]
         semantic_images = _semantic_images(config)
         replays = [
@@ -820,6 +1132,7 @@ def build_one_task(
                 task_dir=task_output,
                 task_relative_dir=relative_task_dir,
                 semantic_images=semantic_images,
+                result_record=high_result,
             ),
             build_replay_summary(
                 low,
@@ -827,6 +1140,7 @@ def build_one_task(
                 task_dir=task_output,
                 task_relative_dir=relative_task_dir,
                 semantic_images=semantic_images,
+                result_record=low_result,
             ),
         ]
         standard = _parse_standard_trajectory(task["directory"] / "action_trajectories.md")
@@ -866,7 +1180,12 @@ def build_one_task(
                 "dataset_url": HF_DATASET_URL,
                 "record_path": remote_path,
                 "record_url": f"{HF_RESOLVE_BASE}/{remote_path}",
+                "result_path": result_remote_path or None,
+                "result_url": (
+                    f"{HF_RESOLVE_BASE}/{result_remote_path}" if result_remote_path else None
+                ),
                 "sha256": entry.get("sha256"),
+                "result_sha256": result_entry.get("sha256") if result_entry else None,
                 "record_set": entry.get("record_set"),
                 "model": entry.get("model"),
                 "reasoning_effort": entry.get("reasoning_effort"),
@@ -884,6 +1203,7 @@ def build_one_task(
     finally:
         if completed:
             temp_path.unlink(missing_ok=True)
+            result_temp_path.unlink(missing_ok=True)
 
 
 def _copy_site_assets(output_root: Path) -> None:
@@ -939,6 +1259,7 @@ def build_workbench(args: argparse.Namespace) -> Path:
         raise RuntimeError(f"Missing local {scope}: {missing_local}")
     registry = fetch_record_registry()
     entries = select_trajectory_entries(registry, tasks)
+    result_entries = select_result_entries(registry, entries)
     missing_remote = sorted(set(tasks) - set(entries))
     if missing_remote:
         raise RuntimeError(f"Missing HF image-inclusive trajectories: {missing_remote}")
@@ -951,6 +1272,7 @@ def build_workbench(args: argparse.Namespace) -> Path:
                 build_one_task,
                 tasks[task_id],
                 entries[task_id],
+                result_entries.get(task_id),
                 curated.get(str(task_id), {}),
                 output_root,
                 work_root,

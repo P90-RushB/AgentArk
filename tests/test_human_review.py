@@ -18,6 +18,7 @@ from agent_ark.ark_eval.human_review import (  # noqa: E402
     build_replay_summary,
     discover_tasks,
     select_reward_extremes,
+    select_result_entries,
     select_trajectory_entries,
 )
 
@@ -137,6 +138,50 @@ class HumanReviewTest(unittest.TestCase):
         self.assertEqual(len(summary["steps"]), 2)
         self.assertEqual(summary["frame_count"], 1)
 
+    def test_results_restore_actions_when_history_snapshot_is_absent(self):
+        encoded = {
+            "__agentark_type__": "agentark.pil_image_png_base64.v1",
+            "mime_type": "image/png",
+            "size": [2, 2],
+            "data": base64.b64encode(b"captured-png").decode(),
+        }
+        trajectory = _record(5, -1.0)
+        trajectory["history_snapshot"] = {}
+        trajectory["runtime_request_capture"] = {
+            "turns": [{"agents": {"0": {"images": [encoded]}}}]
+        }
+        result = {
+            "steps": [
+                {
+                    "action_preview": (
+                        '<tool_call>{"name":"Submit","arguments":{"answer":2}}</tool_call>'
+                    ),
+                    "reward_total": -1.0,
+                    "done": {"__all__": True},
+                    "info": {"attempt": {"index": 1}},
+                    "step_messages": [
+                        {"step_msg": "['<step_context>\\nWRONG\\n</step_context>']"}
+                    ],
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary = build_replay_summary(
+                trajectory,
+                kind="low",
+                task_dir=Path(tmpdir),
+                task_relative_dir="tasks/task_005",
+                semantic_images=True,
+                result_record=result,
+            )
+
+        self.assertEqual(summary["trajectory_detail"], "result_supplemented")
+        self.assertEqual(summary["steps"][0]["tool"]["name"], "Submit")
+        self.assertEqual(summary["steps"][0]["reward"], -1.0)
+        self.assertIn("WRONG", summary["steps"][0]["after_text"])
+        self.assertEqual(summary["frame_count"], 1)
+
     def test_select_trajectory_entries_supports_legacy_registry_paths(self) -> None:
         registry = [
             {
@@ -158,6 +203,33 @@ class HumanReviewTest(unittest.TestCase):
         self.assertEqual(
             selected[117]["path"],
             "artifacts/Task117_seeds1_10_trajectories.jsonl",
+        )
+
+    def test_select_result_entries_uses_exact_trajectory_sibling(self) -> None:
+        registry = [
+            {
+                "path": "artifacts/run-a/Task153_seeds1_10_trajectories.jsonl",
+                "record_kind": "trajectories",
+                "task_id": 153,
+            },
+            {
+                "path": "artifacts/run-a/Task153_seeds1_10_results.jsonl",
+                "record_kind": "results",
+                "task_id": 153,
+            },
+            {
+                "path": "artifacts/run-b/Task153_seeds1_10_results.jsonl",
+                "record_kind": "results",
+                "task_id": 153,
+            },
+        ]
+        trajectories = select_trajectory_entries(registry, [153])
+
+        selected = select_result_entries(registry, trajectories)
+
+        self.assertEqual(
+            selected[153]["path"],
+            "artifacts/run-a/Task153_seeds1_10_results.jsonl",
         )
 
     def test_select_reward_extremes_uses_different_seeds_for_ties(self):
@@ -186,6 +258,90 @@ class HumanReviewTest(unittest.TestCase):
             self.assertTrue(summary["has_agent_transition_video"])
             self.assertEqual(summary["frame_count"], 1)  # identical consecutive frames are deduplicated
             self.assertTrue(list(Path(tmpdir).glob("high/*.png")))
+
+    def test_build_replay_summary_recovers_omitted_terminal_result_step(self):
+        trajectory = _record(3, -1.0)
+        history_step = trajectory["history_snapshot"]["0"][0][0]
+        history_step["reward"] = 0.0
+        history_step["done"] = False
+        trajectory["rollout"]["attempt_rewards"] = [
+            {"index": 1, "reward_total": -1.0, "turns": 2, "done": True}
+        ]
+        terminal_action = '<tool_call>{"name":"ExecuteBypass","arguments":{}}</tool_call>'
+        result = {
+            "start_attempt_index": 1,
+            "steps": [
+                {
+                    "action_preview": history_step["action"],
+                    "reward_total": 0.0,
+                    "done": {"0": False, "__all__": False},
+                    "info": {"attempt": {"index": 1, "auto_reset": False}},
+                    "step_messages": [
+                        {"step_msg": "['<step_context>\\nchanged\\n</step_context>']"}
+                    ],
+                },
+                {
+                    "action_preview": terminal_action,
+                    "reward_total": -1.0,
+                    "done": {"0": True, "__all__": True},
+                    "info": {"attempt": {"index": 1, "auto_reset": False}},
+                    "step_messages": [
+                        {
+                            "step_msg": (
+                                "['<step_context>\\nUNSAFE | BYPASS FAILED AT 0>2"
+                                "\\n</step_context>']"
+                            )
+                        }
+                    ],
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary = build_replay_summary(
+                trajectory,
+                kind="low",
+                task_dir=Path(tmpdir),
+                task_relative_dir="tasks/task_153",
+                semantic_images=True,
+                result_record=result,
+            )
+
+        self.assertEqual(summary["trajectory_detail"], "result_supplemented")
+        self.assertEqual(len(summary["steps"]), 2)
+        self.assertEqual(summary["steps"][-1]["tool"]["name"], "ExecuteBypass")
+        self.assertEqual(summary["steps"][-1]["reward"], -1.0)
+        self.assertTrue(summary["steps"][-1]["done"])
+        self.assertTrue(summary["steps"][-1]["record_result_only"])
+        self.assertIn("UNSAFE", summary["steps"][-1]["after_text"])
+        self.assertIn("不会伪造", summary["record_limitation_zh"])
+
+    def test_build_replay_summary_does_not_duplicate_complete_history(self):
+        trajectory = _record(4, 1.0)
+        history_step = trajectory["history_snapshot"]["0"][0][0]
+        result = {
+            "steps": [
+                {
+                    "action_preview": history_step["action"],
+                    "reward_total": 1.0,
+                    "done": {"__all__": True},
+                    "info": {"attempt": {"index": 1}},
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary = build_replay_summary(
+                trajectory,
+                kind="high",
+                task_dir=Path(tmpdir),
+                task_relative_dir="tasks/task_004",
+                semantic_images=True,
+                result_record=result,
+            )
+
+        self.assertEqual(summary["trajectory_detail"], "full")
+        self.assertEqual(len(summary["steps"]), 1)
+        self.assertNotIn("record_result_only", summary["steps"][0])
 
     def test_text_modality_does_not_emit_compatibility_frames(self):
         with tempfile.TemporaryDirectory() as tmpdir:
