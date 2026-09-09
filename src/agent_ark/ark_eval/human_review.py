@@ -371,7 +371,7 @@ def _extract_authored_task_prompt(task_directory: Path) -> str:
     """Best-effort prompt recovery from editable prefabs or task DLL strings."""
 
     property_pattern = re.compile(
-        r"^  taskDescription:\s*(.+?)(?=^  [A-Za-z_][A-Za-z0-9_]*:\s*)",
+        r"^  taskDescription:[ \t]*(\S.*?)(?=^  [A-Za-z_][A-Za-z0-9_]*:[ \t]*)",
         re.MULTILINE | re.DOTALL,
     )
     for prefab in sorted(task_directory.rglob("*.prefab")):
@@ -384,6 +384,66 @@ def _extract_authored_task_prompt(task_directory: Path) -> str:
             prompt = _normalize_authored_prompt(match.group(1))
             if prompt:
                 return prompt
+
+    declaration_pattern = re.compile(
+        r"\b(?:const|static\s+readonly)\s+string\s+Default(?:Task)?Description\s*=\s*"
+    )
+    string_literal_pattern = re.compile(r'@?"(?:""|\\.|[^"\\])*"', re.DOTALL)
+    for source in sorted(task_directory.rglob("*.cs")):
+        try:
+            text = source.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        declaration = declaration_pattern.search(text)
+        if not declaration:
+            continue
+        start = declaration.end()
+        in_string = False
+        verbatim = False
+        escaped = False
+        end = None
+        index = start
+        while index < len(text):
+            character = text[index]
+            if in_string:
+                if verbatim:
+                    if character == '"' and index + 1 < len(text) and text[index + 1] == '"':
+                        index += 2
+                        continue
+                    if character == '"':
+                        in_string = False
+                elif escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    in_string = False
+            elif character == '@' and index + 1 < len(text) and text[index + 1] == '"':
+                in_string = True
+                verbatim = True
+                index += 2
+                continue
+            elif character == '"':
+                in_string = True
+                verbatim = False
+            elif character == ';':
+                end = index
+                break
+            index += 1
+        if end is None:
+            continue
+        try:
+            parts: List[str] = []
+            for literal in string_literal_pattern.findall(text[start:end]):
+                if literal.startswith('@"'):
+                    parts.append(literal[2:-1].replace('""', '"'))
+                else:
+                    parts.append(json.loads(literal))
+            prompt = "".join(parts).strip()
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if prompt:
+            return prompt
 
     marker = "[task prompt]".encode("utf-16le")
     for assembly in sorted(task_directory.rglob("*.dll")):

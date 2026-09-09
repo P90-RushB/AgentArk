@@ -75,6 +75,39 @@ class HumanReviewTest(unittest.TestCase):
                 "[task prompt]\n\nDo the visible thing.",
             )
 
+    def test_empty_prefab_prompt_falls_back_to_csharp_default(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "Task.prefab").write_text(
+                "  taskDescription: \n  taskCodeWrapper: \n",
+                encoding="utf-8",
+            )
+            (root / "Task.cs").write_text(
+                'private const string DefaultDescription =\n'
+                '    "First sentence; still the prompt. " +\n'
+                '    "Second sentence.\\n\\nFinal paragraph.";\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _extract_authored_task_prompt(root),
+                "First sentence; still the prompt. Second sentence.\n\nFinal paragraph.",
+            )
+
+    def test_csharp_verbatim_default_prompt_is_supported(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "Task.cs").write_text(
+                'private const string DefaultDescription = @"First line; yes.\n\n'
+                'Second ""quoted"" line.";\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _extract_authored_task_prompt(root),
+                'First line; yes.\n\nSecond "quoted" line.',
+            )
+
     def test_observation_only_capture_is_disclosed_and_rendered(self):
         encoded = {
             "__agentark_type__": "agentark.pil_image_png_base64.v1",
