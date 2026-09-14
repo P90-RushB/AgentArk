@@ -1,3 +1,5 @@
+import copy
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -186,6 +188,45 @@ Task body
                 '<tool_call>{"name":"ExecutePlan","arguments":{"plan":"L1,U2,R3,D4"}}</tool_call>',
                 MANIFEST,
             )
+
+    def test_safe_binding_requires_the_exact_host_capability(self):
+        action = '<tool_call>{"name":"SetSpeed","arguments":{"enabled":true,"speed":0.5}}</tool_call>'
+        for capability in (None, 'unknown', 'log_error_v1'):
+            manifest = copy.deepcopy(MANIFEST)
+            manifest['func_binding_errors'] = capability
+            code = render_tool_call_to_csharp(action, manifest)
+            if capability == 'log_error_v1':
+                self.assertIn('router.TryCallFunc("SetSpeed", new object[] { true, 0.5 }, out var result, out var inputError)', code)
+                self.assertIn('Debug.LogError(inputError, this);', code)
+                self.assertNotIn('catch', code)
+            else:
+                self.assertIn('router.Call("SetSpeed", true, 0.5);', code)
+                self.assertNotIn('TryCallFunc', code)
+
+    def test_safe_property_binding_reports_errors_with_action_context(self):
+        manifest = copy.deepcopy(MANIFEST)
+        manifest['func_binding_errors'] = 'log_error_v1'
+        code = render_tool_call_to_csharp(
+            '<tool_call>{"name":"manualStepMode","arguments":{"value":"bad"}}</tool_call>', manifest)
+        self.assertIn('router.TrySetFunc("manualStepMode", "bad", out var inputError)', code)
+        self.assertIn('Debug.LogError(inputError, this);', code)
+
+    def test_safe_binding_preserves_values_and_null_argument_count(self):
+        manifest = {'func_binding_errors': 'log_error_v1', 'tools': [{
+            'name': 'SelectTarget', 'arguments': [{'name': 'itemId', 'type': 'int', 'required': True}]}]}
+        for value, literal in [(0, '0'), ('2', '"2"'), (1.5, '1.5'), (True, 'true'), (None, 'null'), ('bad', '"bad"')]:
+            with self.subTest(value=value):
+                code = render_tool_call_to_csharp(json.dumps({'name': 'SelectTarget', 'arguments': {'itemId': value}}), manifest)
+                self.assertIn('new object[] { ' + literal + ' }', code)
+
+    def test_safe_no_arguments_and_defaults(self):
+        manifest = copy.deepcopy(MANIFEST)
+        manifest['func_binding_errors'] = 'log_error_v1'
+        manifest['tools'].append({'name': 'Commit', 'arguments': []})
+        code = render_tool_call_to_csharp('{"name":"Commit"}', manifest)
+        self.assertIn('new object[] {  }', code)
+        code = render_tool_call_to_csharp('{"name":"PushForward"}', manifest)
+        self.assertIn('new object[] { 1.0 }', code)
 
 
 if __name__ == '__main__':

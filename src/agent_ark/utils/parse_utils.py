@@ -350,10 +350,20 @@ def render_tool_call_to_csharp(action_text, tool_manifest, class_name='ArkAct_St
         if arg_name in arguments:
             _validate_argument_value(arg_name, arguments[arg_name], spec)
 
+    # Negotiate with the loaded host, not a task/config version. Old Players keep
+    # their existing generated source; the safe entry points require a new ArkDef.
+    safe_func_binding = tool_manifest.get('func_binding_errors') == 'log_error_v1'
     statement = None
     if kind == 'property':
         if 'set' in access and 'value' in arguments:
-            statement = f'router.Set({to_csharp_literal(name)}, {to_csharp_literal(arguments["value"])});'
+            if safe_func_binding:
+                statement = (
+                    f'if (!router.TrySetFunc({to_csharp_literal(name)}, '
+                    f'{to_csharp_literal(arguments["value"])}, out var inputError))\n'
+                    '            Debug.LogError(inputError, this);'
+                )
+            else:
+                statement = f'router.Set({to_csharp_literal(name)}, {to_csharp_literal(arguments["value"])});'
         else:
             raise ValueError(f'Property tool {name} requires a settable value argument')
     else:
@@ -366,7 +376,16 @@ def render_tool_call_to_csharp(action_text, tool_manifest, class_name='ArkAct_St
                 ordered_values.append(to_csharp_literal(arguments[arg_name]))
             elif not spec.get('required'):
                 ordered_values.append(to_csharp_literal(_manifest_default_value(spec)))
-        if ordered_values:
+        if safe_func_binding:
+            # An explicit array preserves a single null argument instead of C#
+            # interpreting Call(name, null) as a null params array.
+            statement = (
+                f'if (!router.TryCallFunc({to_csharp_literal(name)}, '
+                'new object[] { ' + ', '.join(ordered_values) + ' }, '
+                'out var result, out var inputError))\n'
+                '            Debug.LogError(inputError, this);'
+            )
+        elif ordered_values:
             statement = f'router.Call({to_csharp_literal(name)}, ' + ', '.join(ordered_values) + ');'
         else:
             statement = f'router.Call({to_csharp_literal(name)});'
