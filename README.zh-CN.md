@@ -89,6 +89,7 @@ Kaggle 评测通过其 OpenAI 兼容的 Model Proxy 运行。排行榜评测在�
 ## 文档导航
 
 - 环境安装：[docs/setup.zh-CN.md](docs/setup.zh-CN.md)
+- 博客文章：[AgentArk](https://qingkeai.online/blog/AgentArk)
 - 系统论文：[docs/paper/AgentArk.pdf](docs/paper/AgentArk.pdf)
 - Colab 教程：[docs/tutorials/README.zh-CN.md](docs/tutorials/README.zh-CN.md)
 - 模型评测与回放：[docs/evaluation-guide.zh-CN.md](docs/evaluation-guide.zh-CN.md)

@@ -97,6 +97,7 @@ and should not be compared as identical runs.
 ## Documentation Map
 
 - Environment setup: [docs/setup.md](docs/setup.md)
+- Blog post (Chinese): [AgentArk](https://qingkeai.online/blog/AgentArk)
 - System paper: [docs/paper/AgentArk.pdf](docs/paper/AgentArk.pdf)
 - Colab tutorials: [docs/tutorials](docs/tutorials)
 - Model evaluation and replay: [docs/evaluation-guide.md](docs/evaluation-guide.md)
