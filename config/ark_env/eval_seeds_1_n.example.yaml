@@ -49,6 +49,22 @@ models:
   #   max_completion_tokens: 30000
   #   temperature: 1.0
 
+  # Volcengine Ark's OpenAI-compatible endpoint. Set ARK_API_KEY in the
+  # environment; never put the real key in this file. Start with high effort
+  # and lower it to medium/low only if an individual seed times out.
+  # - name: doubao-seed-2-1-pro-260915
+  #   provider: volcengine
+  #   model: doubao-seed-2-1-pro-260915
+  #   base_url: https://ark.cn-beijing.volces.com/api/v3
+  #   api_key_env: ARK_API_KEY
+  #   thinking:
+  #     type: enabled
+  #   reasoning_effort: high
+  #   max_completion_tokens: 30000
+  #   temperature: 1.0
+  #   timeout_s: 600
+  #   max_retries: 1
+
   - name: openrouter-qwen37-plus
     provider: openrouter
     model: qwen/qwen3.7-plus
