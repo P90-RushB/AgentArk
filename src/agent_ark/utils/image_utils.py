@@ -24,6 +24,9 @@ def _deal_frame_array(arr: np.ndarray) -> np.ndarray:
     # 将 channel-first (c,h,w) -> (h,w,c)
     if a.ndim == 3 and a.shape[0] in (1, 3, 4):
         a = np.transpose(a, (1, 2, 0))
+    # 单通道 (h,w,1) -> (h,w)：Pillow 无法从 (h,w,1) 构造图像，需压掉尾部通道维
+    if a.ndim == 3 and a.shape[2] == 1:
+        a = a[:, :, 0]
     return a
 
 

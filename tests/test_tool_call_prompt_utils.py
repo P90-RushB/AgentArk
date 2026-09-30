@@ -228,6 +228,47 @@ Task body
         code = render_tool_call_to_csharp('{"name":"PushForward"}', manifest)
         self.assertIn('new object[] { 1.0 }', code)
 
+    def _bounded_manifest(self, minimum=None, maximum=None):
+        spec = {'name': 'value', 'type': 'float', 'required': True}
+        if minimum is not None:
+            spec['minimum'] = minimum
+        if maximum is not None:
+            spec['maximum'] = maximum
+        return {'tools': [{'name': 'SetSpeed', 'kind': 'method', 'access': 'call', 'arguments': [spec]}]}
+
+    def _render_value(self, manifest, value):
+        return render_tool_call_to_csharp(
+            json.dumps({'name': 'SetSpeed', 'arguments': {'value': value}}),
+            manifest,
+        )
+
+    def test_rejects_value_below_minimum(self):
+        with self.assertRaisesRegex(ValueError, r'must be >= 0'):
+            self._render_value(self._bounded_manifest(minimum=0), -1)
+
+    def test_rejects_value_above_maximum(self):
+        with self.assertRaisesRegex(ValueError, r'must be <= 10'):
+            self._render_value(self._bounded_manifest(maximum=10), 11)
+
+    def test_accepts_value_within_numeric_bounds(self):
+        code = self._render_value(self._bounded_manifest(minimum=0, maximum=10), 5)
+        self.assertIn('router.Call("SetSpeed", 5);', code)
+
+    def test_accepts_numeric_bounds_expressed_as_strings(self):
+        with self.assertRaisesRegex(ValueError, r'must be >= 1'):
+            self._render_value(self._bounded_manifest(minimum='1'), 0)
+        code = self._render_value(self._bounded_manifest(minimum='1'), 2)
+        self.assertIn('router.Call("SetSpeed", 2);', code)
+
+    def test_malformed_bound_is_tolerated_not_a_crash(self):
+        # A non-numeric bound in the manifest must be skipped, not surface as a
+        # cryptic "could not convert string to float" ValueError for a perfectly
+        # valid argument value.
+        code = self._render_value(self._bounded_manifest(minimum='fast'), 0.5)
+        self.assertIn('router.Call("SetSpeed", 0.5);', code)
+        code = self._render_value(self._bounded_manifest(maximum='slow'), 999)
+        self.assertIn('router.Call("SetSpeed", 999);', code)
+
 
 if __name__ == '__main__':
     unittest.main()
