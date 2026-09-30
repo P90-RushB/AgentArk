@@ -309,15 +309,27 @@ def _validate_argument_value(arg_name, value, spec):
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         minimum = spec.get('minimum')
         maximum = spec.get('maximum')
-        try:
-            if minimum is not None and value < float(minimum):
+        # Coerce the bounds separately from the comparison. A malformed bound
+        # (e.g. a non-numeric string in the manifest) is tolerated by skipping
+        # that check, while a genuine range violation still raises. Coercing
+        # inside the comparison would make float(bound)'s ValueError
+        # indistinguishable from the range-violation ValueError below, so a bad
+        # bound would surface as a cryptic "could not convert string to float"
+        # instead of being ignored.
+        if minimum is not None:
+            try:
+                minimum_value = float(minimum)
+            except Exception:
+                minimum_value = None
+            if minimum_value is not None and value < minimum_value:
                 raise ValueError(f'Argument {arg_name} must be >= {minimum}')
-            if maximum is not None and value > float(maximum):
+        if maximum is not None:
+            try:
+                maximum_value = float(maximum)
+            except Exception:
+                maximum_value = None
+            if maximum_value is not None and value > maximum_value:
                 raise ValueError(f'Argument {arg_name} must be <= {maximum}')
-        except ValueError:
-            raise
-        except Exception:
-            pass
 
 
 def render_tool_call_to_csharp(action_text, tool_manifest, class_name='ArkAct_Step0'):
