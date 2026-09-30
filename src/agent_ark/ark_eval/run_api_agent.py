@@ -673,7 +673,7 @@ def build_model_runtimes(
                 timeout_s = float(timeout_s)
             sandbox = str(model_cfg.get('sandbox', model_cfg.get('codex_sandbox', 'read_only')) or 'read_only')
             reasoning_effort = _normalize_codex_reasoning_effort(
-                model_cfg.get('reasoning_effort', model_cfg.get('effort', None))
+                model_cfg.get('reasoning_effort', model_cfg.get('effort', 'medium'))
             )
             thread_mode = _normalize_codex_thread_mode(model_cfg.get('thread_mode', None))
             context_mode = _normalize_codex_context_mode(

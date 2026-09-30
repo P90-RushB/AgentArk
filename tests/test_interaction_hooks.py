@@ -508,18 +508,24 @@ class InteractionHookTest(unittest.TestCase):
 
     def test_codex_agent_forward_trace_includes_usage(self):
         class FakeThread:
-            def run(self, _input):
+            def __init__(self):
+                self.kwargs = None
+
+            def run(self, _input, **kwargs):
+                self.kwargs = kwargs
                 return SimpleNamespace(
                     final_response='<tool_call>{"name":"PushForward","arguments":{"forceScale":1}}</tool_call>',
                     usage=SimpleNamespace(input_tokens=10, output_tokens=5, total_tokens=15),
                 )
 
+        fake_thread = FakeThread()
         agent = CodexAgent(name='codex-test', timeout_s=None)
-        agent._get_thread = lambda _agent_idx: FakeThread()
+        agent._get_thread = lambda _agent_idx: fake_thread
         agent._text_input_cls = None
 
         _, trace = agent.forward_with_trace({0: {'messages': [{'role': 'user', 'content': 'hi'}]}})
 
+        self.assertEqual(fake_thread.kwargs, {'effort': 'medium'})
         self.assertEqual(trace[0]['usage']['input_tokens'], 10)
         self.assertEqual(trace[0]['usage']['output_tokens'], 5)
         self.assertEqual(trace[0]['usage']['total_tokens'], 15)
@@ -976,6 +982,8 @@ class InteractionHookTest(unittest.TestCase):
 
         self.assertEqual(runtimes[0]['model'], 'gpt-6.1-sol')
         self.assertEqual(runtimes[0]['agent'].kwargs['model'], 'gpt-6.1-sol')
+        self.assertEqual(runtimes[0]['reasoning_effort'], 'medium')
+        self.assertEqual(runtimes[0]['agent'].kwargs['reasoning_effort'], 'medium')
         self.assertEqual(runtimes[0]['thread_mode'], 'per_agent')
         self.assertEqual(runtimes[0]['agent'].kwargs['thread_mode'], 'per_agent')
         self.assertEqual(runtimes[0]['codex_context_mode'], 'lean')

@@ -28,7 +28,7 @@ class CodexAgentConfig:
     model: str = "gpt-6.1-sol"
     sandbox: str = "read_only"
     timeout_s: Optional[float] = 600.0
-    reasoning_effort: Optional[str] = None
+    reasoning_effort: Optional[str] = "medium"
     codex_bin: Optional[str] = None
     cwd: Optional[str] = None
     thread_mode: str = "per_agent"
@@ -139,7 +139,7 @@ Use an empty task_defects list when no concrete task problem was observed.
         model: str = "gpt-6.1-sol",
         sandbox: str = "read_only",
         timeout_s: Optional[float] = 600.0,
-        reasoning_effort: Optional[str] = None,
+        reasoning_effort: Optional[str] = "medium",
         codex_bin: Optional[str] = None,
         cwd: Optional[str] = None,
         thread_mode: str = "per_agent",
@@ -451,15 +451,9 @@ Use an empty task_defects list when no concrete task problem was observed.
                 for feature in self._LEAN_DISABLED_FEATURES
             },
             "mcp_servers": {
-                # Newer Codex runtimes validate the transport even for a
-                # disabled server. The empty stdio command is never launched
-                # because enabled is false, but keeps the thread config valid.
-                server_name: {
-                    "enabled": False,
-                    "transport": "stdio",
-                    "command": "",
-                    "args": [],
-                }
+                # Preserve inherited transport settings (including HTTP URLs)
+                # while disabling the server for this source-isolated thread.
+                server_name: {"enabled": False}
                 for server_name in self.config.lean_disabled_mcp_servers
             },
         }
