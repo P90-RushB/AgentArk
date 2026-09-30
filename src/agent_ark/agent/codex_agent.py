@@ -25,7 +25,7 @@ from .base_agent import BaseAgent
 
 @dataclass
 class CodexAgentConfig:
-    model: str = "gpt-5.5"
+    model: str = "gpt-6.1-sol"
     sandbox: str = "read_only"
     timeout_s: Optional[float] = 600.0
     reasoning_effort: Optional[str] = None
@@ -136,7 +136,7 @@ Use an empty task_defects list when no concrete task problem was observed.
     def __init__(
         self,
         name: str = "CodexAgent",
-        model: str = "gpt-5.5",
+        model: str = "gpt-6.1-sol",
         sandbox: str = "read_only",
         timeout_s: Optional[float] = 600.0,
         reasoning_effort: Optional[str] = None,

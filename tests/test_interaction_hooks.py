@@ -966,7 +966,7 @@ class InteractionHookTest(unittest.TestCase):
                 {},
             )
 
-    def test_codex_provider_defaults_to_gpt55(self):
+    def test_codex_provider_defaults_to_gpt61sol(self):
         class FakeCodexAgent:
             def __init__(self, **kwargs):
                 self.kwargs = kwargs
@@ -974,8 +974,8 @@ class InteractionHookTest(unittest.TestCase):
         with patch('agent_ark.ark_eval.run_api_agent.CodexAgent', FakeCodexAgent):
             runtimes = build_model_runtimes([{'name': 'codex-local', 'provider': 'codex'}])
 
-        self.assertEqual(runtimes[0]['model'], 'gpt-5.5')
-        self.assertEqual(runtimes[0]['agent'].kwargs['model'], 'gpt-5.5')
+        self.assertEqual(runtimes[0]['model'], 'gpt-6.1-sol')
+        self.assertEqual(runtimes[0]['agent'].kwargs['model'], 'gpt-6.1-sol')
         self.assertEqual(runtimes[0]['thread_mode'], 'per_agent')
         self.assertEqual(runtimes[0]['agent'].kwargs['thread_mode'], 'per_agent')
         self.assertEqual(runtimes[0]['codex_context_mode'], 'lean')

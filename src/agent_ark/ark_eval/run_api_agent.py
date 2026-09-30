@@ -659,7 +659,7 @@ def build_model_runtimes(
         model_name = str(model_cfg.get('name', f'model-{idx:02d}')).strip()
         model_id = str(model_cfg.get('model', '')).strip()
         if not model_id and provider == 'codex':
-            model_id = 'gpt-5.5'
+            model_id = 'gpt-6.1-sol'
         if not model_id:
             raise ValueError(f'models[{idx}] is missing model')
 
