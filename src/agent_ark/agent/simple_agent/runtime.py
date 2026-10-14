@@ -77,7 +77,7 @@ class SimpleRuntimeConfig:
     output_reserve_tokens: int = 20_480
     recent_turns: int = 2
     max_summary_calls: int = 4
-    max_images: int = 32
+    max_images: int = 128
     max_image_bytes: int = 16 * 1024 * 1024
     image_token_estimate: int = 1_024
     max_archive_entries: int = 4_096

@@ -169,7 +169,7 @@ Token counting uses a configurable image/text estimate alongside encoded-byte,
 image-count, and raw-image-byte limits.
 
 The shared defaults allow 128,000 estimated context tokens, including a 20,480
-action-output reserve, up to 32 working images, and two protected recent inputs
+action-output reserve, up to 128 working images, and two protected recent inputs
 (including the current input). Summary requests accept up to 48,000 estimated
 input tokens and have a separate 10,000-token generation cap. Only their final
 `content` becomes memory; separate readable reasoning remains in the raw trace

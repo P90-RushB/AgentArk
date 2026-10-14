@@ -191,6 +191,33 @@ def test_results_appended_during_summary_are_not_lost():
     asyncio.run(run())
 
 
+def test_default_image_limit_compacts_only_after_128_images():
+    async def run():
+        calls = []
+        image = image_from_pixels(bytes([1, 2, 3]), 1, 1)
+
+        async def model(value):
+            calls.append(value)
+            return ModelCompletion("Earlier camera facts retained." if value.purpose == "summary" else "{}")
+
+        # Isolate the image-count policy from the independent token limit.
+        runtime = SimpleRuntime(CallableModel(model), token_counter=lambda messages: 1)
+        for number in range(1, 129):
+            source = replace(request(number), messages=(*request(number).messages, Message("user", (image,))))
+            await runtime.complete(source)
+        assert runtime.usage.summary_calls == 0
+        assert sum(isinstance(part, ImagePart) for message in calls[-1].messages for part in message.parts) == 128
+
+        source = replace(request(129), messages=(*request(129).messages, Message("user", (image,))))
+        await runtime.complete(source)
+        assert runtime.usage.summary_calls == 1
+        assert sum(isinstance(part, ImagePart) for message in calls[-1].messages for part in message.parts) == 2
+        assert sum(isinstance(part, ImagePart) for entry in runtime.history_snapshot
+                   for message in entry.messages for part in message.parts) == 129
+
+    asyncio.run(run())
+
+
 def test_compaction_with_large_prior_image_keeps_original_and_sends_real_image_to_summary():
     async def run():
         image = image_from_pixels(random.Random(19).randbytes(1024 * 768 * 3), 1024, 768)
