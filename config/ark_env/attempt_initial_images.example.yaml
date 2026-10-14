@@ -1,0 +1,27 @@
+# Task-config fragment: merge into one task's task_config.yaml.
+# This is Python wrapper configuration, outside Unity task_params.
+# Relative files must exist inside the effective Mods root, including its
+# sandbox copy; these are not relative to the task folder or process cwd.
+env_wrapper_cfg:
+  attempt_initial_images:
+    - all_tasks/YourTask/images/additional.png
+    - all_tasks/YourTask/images/another.webp
+  # Omit attempt_initial_images or use [] to disable image-file access.
+  # A valid immutable config.yaml.bak does not need this new key predeclared.
+
+  context_manager:
+    history:
+      # Keep complete transitions when saving a self-contained prefix replay.
+      max_history_attempts: 1
+      max_history_steps_per_attempt: 0
+    messages:
+      enabled: true
+      include_images: true
+      image_caption_language: en
+      # For a stateful agent, each attempt-start attachment is in its delta.
+      append_only: true
+      return_mode: delta
+
+# In an evaluator config, the equivalent wrapper block lives under
+# env_cfg.env_config_overrides.env_wrapper_cfg. Retain typed image payloads with
+# eval.trajectory_save.include_images: true when image-inclusive replay matters.

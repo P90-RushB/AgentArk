@@ -16,6 +16,7 @@ from agent_ark.ark_env.coordination import (
     get_history_cfg,
     get_history_retention_cfg,
 )
+from agent_ark.ark_env.attempt_initial_images import load_attempt_initial_images
 from . import derive_rollout_step_budget, resolve_max_steps_per_attempt
 from agent_ark.ark_env.direct_env import EnvInfoManager
 from agent_ark.ark_env.context_manager import HistoryContext, MessageContext
@@ -448,6 +449,53 @@ class ArkEnv(object):
         self._last_reset_plan: Dict[str, Any] = {}
         self._active_history_bucket_key: Optional[str] = None
         self._rollout_finalized_attempts: Dict[int, list] = {}
+        self._clear_attempt_initial_images()
+
+    def _clear_attempt_initial_images(self):
+        self._attempt_initial_image_records = []
+        self._attempt_initial_image_delivered_uids = set()
+
+    def _start_attempt_initial_images(self, obs: Dict[int, dict]):
+        """Initialize only the attempt reset whose observations will be returned.
+
+        ArkSubEnv has already completed any hidden initial-observation warmup.
+        Images are decoded once per attempt and copied for each agent. Normally
+        reset provides a decision for every UID; a skipped UID receives its copy
+        with its first non-skipped, nonterminal decision instead.
+        """
+        self._clear_attempt_initial_images()
+        info_mgr = self.sub_env.env_info_mgr
+        try:
+            self._attempt_initial_image_records = load_attempt_initial_images(
+                info_mgr.env_config or {},
+                getattr(info_mgr, 'mod_path', None),
+            )
+        except ValueError:
+            # A failed initial image contract must not leave a usable attempt
+            # whose required pre-action reference was never delivered.
+            self.rollout_started = False
+            raise
+        if self._attempt_initial_image_records:
+            self._attach_attempt_initial_images(obs)
+
+    def _attach_attempt_initial_images(self, obs: Dict[int, dict], done: Optional[dict] = None):
+        records = getattr(self, '_attempt_initial_image_records', [])
+        if not records:
+            return
+        delivered_uids = self._attempt_initial_image_delivered_uids
+        for unity_id, obs_dict in obs.items():
+            if (
+                unity_id in delivered_uids
+                or not isinstance(obs_dict, dict)
+                or obs_dict.get('skip_infer')
+                or bool((done or {}).get(unity_id, False))
+            ):
+                continue
+            obs_dict['attempt_initial_images'] = [
+                {'index': item['index'], 'image': item['image'].copy(), 'sha256': item['sha256']}
+                for item in records
+            ]
+            delivered_uids.add(unity_id)
 
     def _emit_env_event(self, event: str, payload: Dict[str, Any], *, phase: Optional[str] = None):
         if not getattr(self.hooks, 'enabled', False):
@@ -836,6 +884,7 @@ class ArkEnv(object):
         max_attempts: Optional[int] = None,
         start_attempt_index: Optional[int] = None,
     ):
+        self._clear_attempt_initial_images()
         sub_obs, sub_info = self.sub_env.reset(
             task_name=task_name,
             group_seed=group_seed,
@@ -873,6 +922,7 @@ class ArkEnv(object):
             self._selected_env_cfg = self._build_selected_env_cfg(env_cfg, attempt_index=self.current_attempt_index)
 
         unity_obs = self._obs_to_unity_id(sub_obs)
+        self._start_attempt_initial_images(unity_obs)
         reset_plan = self._prepare_reset_plan(
             env_cfg=env_cfg,
             unity_agent_ids=sorted(unity_obs.keys()),
@@ -923,6 +973,7 @@ class ArkEnv(object):
             (sub_info or {}).get('func_render_errors', {}),
             ml_to_unity_id_map,
         )
+        self._attach_attempt_initial_images(next_obs_by_unity_id, done=attempt_done_by_unity_id)
         transition_info = {}
         if func_render_errors_by_unity_id:
             transition_info['func_render_errors'] = func_render_errors_by_unity_id
@@ -953,8 +1004,10 @@ class ArkEnv(object):
             previous_attempt_group_seed = self._coerce_group_seed(self._current_attempt_group_seed)
             next_attempt_index = previous_attempt_index + 1
 
+            self._clear_attempt_initial_images()
             reset_sub_obs, reset_sub_info = self._reset_sub_env(attempt_index=next_attempt_index)
             reset_obs_by_unity_id = self._obs_to_unity_id(reset_sub_obs)
+            self._start_attempt_initial_images(reset_obs_by_unity_id)
 
             self.current_attempt_index = next_attempt_index
             next_attempt_group_seed = self._coerce_group_seed(self._current_attempt_group_seed)
@@ -1125,6 +1178,7 @@ class ArkEnv(object):
     def close(self):
         self.sub_env.close()
         self.rollout_started = False
+        self._clear_attempt_initial_images()
 
 
 def _preview_text(value, limit: int = 240) -> str:

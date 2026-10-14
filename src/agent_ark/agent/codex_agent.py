@@ -675,13 +675,19 @@ Use an empty task_defects list when no concrete task problem was observed.
             if part_type == "text":
                 parts.append(str(part.get("text", "") or ""))
                 continue
-            if part_type == "image_url":
+            if part_type == "image_url" or (
+                part_type == "image" and isinstance(part.get("image_base64"), str)
+            ):
                 url = ""
-                image_url = part.get("image_url")
-                if isinstance(image_url, dict):
-                    url = str(image_url.get("url", "") or "")
-                elif image_url is not None:
-                    url = str(image_url)
+                if part_type == "image":
+                    mime_type = str(part.get("mime_type") or "image/png")
+                    url = f"data:{mime_type};base64,{part['image_base64']}"
+                else:
+                    image_url = part.get("image_url")
+                    if isinstance(image_url, dict):
+                        url = str(image_url.get("url", "") or "")
+                    elif image_url is not None:
+                        url = str(image_url)
                 image_ref, image_url_out = self._render_image_url(
                     url,
                     agent_idx=agent_idx,

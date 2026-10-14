@@ -48,6 +48,10 @@ def _base64_png_to_pil(data: str):
 
 def encode_obs(obs: Dict[str, Any]) -> Dict[str, Any]:
     encoded = dict(obs)
+    if "attempt_initial_images" in encoded:
+        from agent_ark.ark_eval.trajectory_io import encode_trajectory_value
+
+        encoded["attempt_initial_images"] = encode_trajectory_value(encoded["attempt_initial_images"])
     vis = encoded.get("vis", None)
     if not isinstance(vis, list):
         return encoded
@@ -72,6 +76,10 @@ def encode_obs(obs: Dict[str, Any]) -> Dict[str, Any]:
 
 def decode_obs(obs: Dict[str, Any]) -> Dict[str, Any]:
     decoded = dict(obs)
+    if "attempt_initial_images" in decoded:
+        from agent_ark.ark_eval.trajectory_io import decode_trajectory_value
+
+        decoded["attempt_initial_images"] = decode_trajectory_value(decoded["attempt_initial_images"])
     if decoded.get("vis_format") != "png_base64":
         return decoded
 

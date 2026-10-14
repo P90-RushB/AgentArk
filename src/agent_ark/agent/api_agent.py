@@ -114,7 +114,8 @@ class APIAgent(BaseAgent):
 
     Notes:
       - Does NOT store message history.
-      - If obs contains `messages`, those are sent as-is.
+      - If obs contains `messages`, their content is preserved, converting
+        raw-base64 image parts to the HTTP API's image_url transport format.
       - Otherwise, a minimal user message is built from step_msg + latest camera frames.
     """
 
@@ -217,7 +218,7 @@ class APIAgent(BaseAgent):
         # Preferred path: env already built messages with context/history.
         msgs = obs_dict.get("messages") if isinstance(obs_dict, dict) else None
         if isinstance(msgs, list) and msgs:
-            return msgs
+            return APIAgent._request_image_parts(msgs)
 
         step_msg = ""
         if isinstance(obs_dict, dict):
@@ -245,7 +246,37 @@ class APIAgent(BaseAgent):
                     "image_url": {"url": f"data:image/png;base64,{img_b64}"},
                 })
 
+        if isinstance(obs_dict, dict) and obs_dict.get("attempt_initial_images"):
+            # Import only for this optional feature, preserving the lightweight
+            # legacy raw-observation path when no additional images exist.
+            from agent_ark.ark_env.context_manager import MessageContext
+
+            parts.extend(MessageContext().attempt_initial_images_to_parts(obs_dict))
+
         return [{"role": "user", "content": parts}]
+
+    @staticmethod
+    def _request_image_parts(messages: List[dict]) -> List[dict]:
+        """Adapt explicitly selected raw image parts without mutating env messages."""
+        converted = None
+        for message_index, message in enumerate(messages):
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                continue
+            for part_index, part in enumerate(content):
+                if not isinstance(part, dict) or part.get("type") != "image":
+                    continue
+                image_base64 = part.get("image_base64")
+                if not isinstance(image_base64, str):
+                    continue
+                if converted is None:
+                    converted = deepcopy(messages)
+                mime_type = str(part.get("mime_type") or "image/png")
+                converted[message_index]["content"][part_index] = {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime_type};base64,{image_base64}"},
+                }
+        return messages if converted is None else converted
 
     def _call_api(self, messages: List[dict]) -> str:
         response_text, _ = self._call_api_with_usage(messages)

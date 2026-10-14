@@ -81,6 +81,21 @@ def serialize_images(vis: Any, *, max_images: int = 4) -> List[Dict[str, Any]]:
     return out
 
 
+def serialize_attempt_initial_images(images: Any) -> List[Dict[str, Any]]:
+    """Serialize additional image events separately from camera frame limits."""
+    if not isinstance(images, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for entry in images:
+        if not isinstance(entry, dict):
+            continue
+        url = image_to_data_url(entry.get('image'))
+        if not url:
+            continue
+        out.append({'index': entry.get('index'), 'sha256': entry.get('sha256'), 'url': url})
+    return out
+
+
 def serialize_message_part(part: Any, *, text_max_chars: int = 6000) -> Dict[str, Any]:
     if not isinstance(part, dict):
         return {'type': 'text', 'text': truncate_text(part, text_max_chars)}
@@ -147,6 +162,9 @@ def serialize_obs(
         'skip_infer': bool(obs.get('skip_infer', False)),
         'images': serialize_images(obs.get('vis'), max_images=max_images),
     }
+
+    if 'attempt_initial_images' in obs:
+        out['attempt_initial_images'] = serialize_attempt_initial_images(obs['attempt_initial_images'])
 
     if include_messages:
         out['messages'] = serialize_messages(obs.get('messages', []), text_max_chars=text_max_chars)

@@ -514,6 +514,8 @@ class MessageContext:
                 limit=cap,
             ))
 
+        parts.extend(self.attempt_initial_images_to_parts(post_obs))
+
         return self.merge_adjacent_text_parts(parts)
 
     def _try_parse_system_task(self, step_msg: Any) -> tuple[Optional[str], Optional[str]]:
@@ -549,6 +551,43 @@ class MessageContext:
                 'url': f'data:image/png;base64,{img_b64}',
             },
         }
+
+    def attempt_initial_images_to_parts(self, obs: Any) -> List[dict]:
+        """Render task-independent images attached to this observation event.
+
+        These are separate from camera frames: camera limits and same-seed
+        workspace omission must not remove them. The wrapper owns when the
+        field is attached; rendering deliberately has no emission state so
+        tracing and inference can serialize the same event repeatedly.
+        """
+        if not self.include_images or pil_image_to_base64 is None or not isinstance(obs, dict):
+            return []
+        images = obs.get('attempt_initial_images')
+        if not isinstance(images, list):
+            return []
+        parts: List[dict] = []
+        for entry in images:
+            if not isinstance(entry, dict):
+                continue
+            index = entry.get('index')
+            image = entry.get('image')
+            if (
+                isinstance(index, bool)
+                or not isinstance(index, int)
+                or index < 1
+                or not self._is_pil_image(image)
+            ):
+                continue
+            try:
+                image_part = self._make_image_part(pil_image_to_base64(image))
+            except Exception:
+                continue
+            if self.image_caption_language in ('zh', 'cn', 'chinese'):
+                label = f'附加图像{index}'
+            else:
+                label = f'Additional image {index}'
+            parts.extend([{'type': 'text', 'text': label}, image_part])
+        return parts
 
     def _make_caption_part(
         self,
@@ -704,13 +743,12 @@ class MessageContext:
         episode_idx: Optional[int] = None,
         step_idx: Optional[int] = None,
         skip_pre: bool = False,
+        include_pre_attempt_initial_images: bool = True,
     ) -> List[dict]:
-        """Return image parts for a single transition, capped by max_images_per_section total."""
+        """Render transition images with a shared camera cap and separate extras."""
         if not self.include_images:
             return []
         cap = max(0, int(self.max_images_per_section))
-        if cap <= 0:
-            return []
         pre_cap = (cap + 1) // 2
         post_cap = cap // 2
 
@@ -733,6 +771,9 @@ class MessageContext:
                 which_obs='post',
                 limit=post_cap,
             ))
+        if include_pre_attempt_initial_images:
+            out.extend(self.attempt_initial_images_to_parts(pre_obs))
+        out.extend(self.attempt_initial_images_to_parts(post_obs))
         return out
 
     @staticmethod
@@ -967,6 +1008,10 @@ class MessageContext:
                 limit=image_limit,
             ))
 
+        # include_images above controls workspace omission for this event;
+        # the global include_images setting still gates these separate images.
+        parts.extend(self.attempt_initial_images_to_parts(obs))
+
         parts = self.merge_adjacent_text_parts(parts)
         if not parts:
             parts = [{'type': 'text', 'text': ''}]
@@ -1076,6 +1121,8 @@ class MessageContext:
                     self._append_budgeted_text_part(parts, 'Terminal observation image(s):', remaining_text)
                     parts.extend(terminal_images)
 
+            parts.extend(self.attempt_initial_images_to_parts(terminal_obs))
+
         reset_msg = ''
         if isinstance(reset_obs, dict):
             reset_msg = self._observation_text_from_obs(reset_obs)
@@ -1098,6 +1145,8 @@ class MessageContext:
             if reset_images:
                 self._append_budgeted_text_part(parts, 'New attempt observation image(s):', remaining_text)
                 parts.extend(reset_images)
+
+        parts.extend(self.attempt_initial_images_to_parts(reset_obs))
 
         parts = self.merge_adjacent_text_parts(parts)
         if not parts:
@@ -1384,11 +1433,16 @@ class MessageContext:
                         episode_idx=ep_i,
                         step_idx=si,
                         skip_pre=skip_pre,
+                        include_pre_attempt_initial_images=si == 1,
                     ))
 
         if at_attempt_start:
             # Only show the baseline image(s) at attempt start.
             parts.extend(self._obs_images_to_parts(current_obs, section='current'))
+        if at_attempt_start or not self.include_current_attempt_history:
+            # Without the current transcript, this observation event has no
+            # other rendering location (including a delayed initial event).
+            parts.extend(self.attempt_initial_images_to_parts(current_obs))
 
         # Current attempt history text + per-step images.
         if self.include_current_attempt_history and current_episode_steps:
@@ -1422,6 +1476,7 @@ class MessageContext:
                     section='current_attempt',
                     step_idx=i,
                     skip_pre=False,
+                    include_pre_attempt_initial_images=i == 1,
                 ))
 
         # Emit system role if requested and we have (or want) one.
