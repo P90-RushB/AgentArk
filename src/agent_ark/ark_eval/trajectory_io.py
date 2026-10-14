@@ -208,6 +208,8 @@ def build_eval_trajectory_record(
             'model_name': model_name,
             'model': result.get('model', model_runtime.get('model')),
             'provider': result.get('provider', model_runtime.get('provider')),
+            **({'agent_type': result.get('agent_type', model_runtime.get('agent_type'))}
+               if result.get('agent_type', model_runtime.get('agent_type')) is not None else {}),
         },
         'task': {
             'task_name': result.get('actual_task_name', result.get('requested_task_name', case.get('task_name'))),

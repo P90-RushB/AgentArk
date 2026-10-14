@@ -127,6 +127,13 @@ For other OpenAI-compatible HTTP providers, change `models[*].provider`,
 `models[*].base_url`, and `models[*].api_key_env` or set `models[*].api_key`
 directly in your local config.
 
+For bounded conversation memory, semantic compaction and optional private file
+tools, select `agent_type: simple` and use
+[simple_agent.example.yaml](config/ark_env/simple_agent.example.yaml). This
+independent `SimpleAgent` consumes incremental environment messages; existing
+API/Codex configurations keep their behavior. Setup and limits are documented in
+[the evaluation guide](docs/evaluation-guide.md#optional-simpleagent-context-compaction-and-host-tools).
+
 Codex SDK evaluation is also supported through `provider: codex`. See
 [docs/evaluation-guide.md](docs/evaluation-guide.md) for the Codex install,
 AgentArk-only lean context profile, and delta message-context settings. The

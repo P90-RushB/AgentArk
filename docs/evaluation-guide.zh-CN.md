@@ -134,6 +134,75 @@ env_cfg:
           return_mode: full
 ```
 
+### 可选 SimpleAgent：上下文压缩与宿主工具
+
+`APIAgent`、`SimpleAgent`、`CodexAgent` 是独立的 agent。新增的 `agent_type`
+选择 agent，`provider` 继续选择模型后端。不填写 `agent_type` 时沿用原来的行为：
+`provider: codex` 使用 CodexAgent，其他 provider 使用基础 APIAgent。
+已有配置、基础 agent 和 Codex 的上下文管理保持原样。
+
+使用 `config/ark_env/simple_agent.example.yaml`：
+
+```bash
+python -m agent_ark.ark_eval.run_api_agent --config config/ark_env/simple_agent.example.yaml
+```
+
+模型项显式填写 `agent_type: simple`，并在 `simple_agent.context` 中设置预算。
+评测入口只为该 agent 的独立环境配置启用 `append_only: true`、`return_mode: delta`。
+SimpleAgent 接收新增图文/动作反馈，自行保留近期完整轮次，超预算时让模型摘要旧轮次。
+普通无状态 HTTP 请求仍发送整理后的完整工作上下文。摘要是模型记忆，不是环境事实；
+原始有界归档与工作上下文分开。当前观察、任务指令、完整代码和必要反馈不会被静默截断。
+图像 token 数量使用可配置估算，并同时检查编码字节、图像数量和原始图像字节上限。
+
+`simple_agent.tools.enabled: true` 启用四个宿主工具：`list_files`、按行 `read_file`、
+实际图像 `view_image`、`write_note`。同时设置 `workspace_parent` 为已有运行可写目录。
+每条 case/agent 有独立私有目录；只读记录来自已经提供给模型的观察及它自己的完成输出，
+私有笔记可写。同 case 的自动 attempt reset 保留记忆，新的 case 清空；close 清理私有工作目录。
+工具不提供任意主机目录、任务源码、隐藏 seed/config、shell 或 Unity 控制接口。
+工具循环完成后才提交一个原有格式的环境 action，工具/摘要调用不消耗环境步。
+存在宿主工具注册表时，SimpleAgent 还声明保留的 `submit_action` 控制函数，参数为
+`format`（`tool_call`、`params`、`code` 或 `raw`）和字符串 `content`。
+模型提交不带 XML 包装的动作正文，适配器将单独的一次提交转换为环境原有 action；
+代码源码保留原样，`params` 沿用原有提取器的首尾空白处理。正文不得包含动作包装标签
+（代码中的这类字符串可使用 C# Unicode 转义）。提交本身不执行宿主工具，也不推进游戏。
+这将任务 XML 输出约定与模型原生工具调用分开。后续上下文保留原生提交调用和明确
+标注的“已选定、尚未执行”确认，真实模型文本也可能包含普通文本动作；环境单独回显的
+动作会去重；出现原生提交时，动作选择以该提交为准。实际结果由下一条环境观察提供。
+摘要请求将旧工具链转为带来源标注的文本并保留原图，不提供可执行工具。
+Trace 分别记录模型响应和动作转换。
+混合宿主/动作提交、格式错误会明确报错；原生工具参数含 JSON 转义的 UTF-8 大小最多
+128 KiB，解码后的动作还受配置的输出预算约束。原生动作轮默认设置
+`simple_agent.tool_choice: required`，模型自行选择宿主工具或最终动作提交，缺少原生调用
+会明确报错。端点不支持该选项时可显式设置 `auto`，此时普通 assistant 文本保留为兼容
+路径；没有隐式降级或重试。摘要和不带原生工具的请求不发送该参数，关闭工具的 agent
+继续使用普通文本路径。较严格工具选择的端点支持差异参见
+[OpenRouter 文档](https://openrouter.ai/blog/tutorials/tool-calling/)。
+Python 调用者也可传入 `SimpleAgent(..., tool_setup=callback)`，在每个 case 的新
+`ToolRegistry` 上用 `register(ToolSpec(...), function)` 注册可信通用工具。
+该回调不从 YAML 加载，注册表不会在 case 间共享。ToolRegistry 在调用前验证有界的
+JSON schema 子集（对象、数组、字符串、整数、布尔值）；默认文件记录上限为 128 条，
+更长任务应显式调整 `tools.limits`，容量耗尽时停止并保留失败证据。
+
+上下文、原始归档、模型调用、工具轮次、结果文本/图片、记录和笔记都有明确上限。
+预算不足或摘要失败会报错，模型后端失败不会自动换接口参数重试；显式 `max_retries`
+控制 HTTP 客户端重试，新 agent 默认 0。动作输出上限取 `max_completion_tokens`
+和 `output_reserve_tokens` 的较小值；摘要另用 `summary_output_tokens`。
+这不是无限历史或磁盘会话恢复系统，也不是对恶意本地进程的操作系统沙箱。
+思考 token 同样消耗 completion 上限；`length` 结束的响应会报错，不提交残缺动作。
+提高思考强度时应相应调整两个动作输出上限和独立的摘要预算。Qwen 示例使用已在有限
+Player 联测中验证的低思考配置。
+
+结果步骤的 `raw_response_by_agent` 包含 `model_requests`、`agent_events`、
+`agent_usage` 与 `simple_agent` 配置元数据，区分真实动作模型请求、摘要和宿主工具续轮。
+图像请求在文本 trace 中省略原件；完整模型可见环境图像由开启图片的 trajectory 记录保存。
+实际请求同时记录图像 SHA-256 和字节数，失败结果保留已完成调用与已知用量。
+环境回放继续使用最终动作；它不会重新调用模型或恢复工具/笔记状态。
+RL rollout 接入保持独立，新增评测 agent 不自动修改 Swift 或 VERL 的训练轨迹。
+
+实现位于 `src/agent_ark/agent/simple_agent/`；基础 API 与 Codex 保留各自原模块。
+未来 agent 可以通过 `agent/agent_registry.py` 的 `AgentType` 和 `register_agent_type`
+注册自己的模块、配置关键字和消息模式，YAML 不接受任意 Python 模块导入。
+
 Kaggle 上的 [AgentArk Bench](https://www.kaggle.com/benchmarks/xunyiljg/agentark-bench)
 通过 Kaggle Model Proxy 运行。其排行榜任务在端点允许时使用 `temperature: 1.0`，
 不允许指定该参数时使用 `null`。这与 AgentArk Hub 最初使用 `temperature: 0.0` 的

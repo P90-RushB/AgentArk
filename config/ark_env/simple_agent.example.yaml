@@ -1,0 +1,61 @@
+# Optional stateful agent. Existing API/Codex configurations keep their behavior.
+env_cfg:
+  env_path: "${AGENTARK_ENV_PATH}"
+  mod_path: "${AGENTARK_MOD_PATH}"
+  task_type: RLTask
+  env_config_overrides:
+    override_by_task: true
+    num_parallel_envs: 1
+  # The evaluator sets append_only + return_mode: delta only for SimpleAgent.
+
+eval:
+  output_path: tmp/simple_agent_results.jsonl
+  stop_on_error: true
+  fixed_env_id: 0
+  cases:
+    - case_id: connection-seed-1
+      task_name: ConnectionCounterplay2D
+      group_seed: 1
+  trajectory_save:
+    enabled: true
+    condition: all
+    include_images: true
+    output_path: tmp/simple_agent_trajectories.jsonl
+
+models:
+  - name: simple-qwen37-plus
+    agent_type: simple
+    provider: openrouter
+    model: qwen/qwen3.7-plus
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    temperature: 0.2
+    # Reasoning shares the completion budget. Raise the output caps below
+    # before selecting a more expensive reasoning profile.
+    reasoning_effort: low
+    max_completion_tokens: 4096
+    max_retries: 0
+    timeout_s: 180
+    simple_agent:
+      # Native rounds can choose a host tool or the terminal submit_action.
+      # Use auto for endpoints that do not support required tool selection.
+      tool_choice: required
+      # OpenRouter accepts max_tokens; other compatible endpoints may prefer
+      # max_completion_tokens (the default).
+      output_token_parameter: max_tokens
+      context:
+        max_context_tokens: 32768
+        output_reserve_tokens: 4096
+        recent_turns: 2
+        max_images: 16
+        max_summary_calls: 4
+        summary_output_tokens: 2048
+        timeout_seconds: 180
+      tools:
+        enabled: true
+        # Run this example from the Python repository so tmp/ is Git-ignored.
+        workspace_parent: tmp/simple_agent_workspaces
+        limits:
+          max_records: 128
+          max_calls: 32
+          max_model_rounds: 16

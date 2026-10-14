@@ -18,6 +18,9 @@ except Exception:
 
 from agent_ark.agent.api_agent import APIAgent
 from agent_ark.agent.codex_agent import CodexAgent
+from agent_ark.agent.agent_registry import (
+    agent_constructor_options, configure_agent_environment, resolve_agent_type,
+)
 from agent_ark.ark_env import ArkEnv, ensure_runtime_pool_range, require_rollout_step_budget, resolve_runtime_sandbox_cfg
 from agent_ark.ark_env.ark_sub_env import _normalize_optional_path, _resolve_cli_mod_path
 from agent_ark.ark_env.direct_env import EnvInfoManager
@@ -656,6 +659,9 @@ def build_model_runtimes(
             raise ValueError(f'models[{idx}] must be an object')
 
         provider = str(model_cfg.get('provider', 'auto')).strip().lower() or 'auto'
+        agent_spec = resolve_agent_type(model_cfg)
+        if agent_spec.backend == 'codex':
+            provider = 'codex'
         model_name = str(model_cfg.get('name', f'model-{idx:02d}')).strip()
         model_id = str(model_cfg.get('model', '')).strip()
         if not model_id and provider == 'codex':
@@ -694,7 +700,8 @@ def build_model_runtimes(
                     "Codex lean/player_feedback mode uses an isolated cwd; "
                     "remove the explicit model cwd"
                 )
-            agent = CodexAgent(
+            agent_class = CodexAgent if agent_spec.name == 'codex' else agent_spec.load_class()
+            agent = agent_class(
                 name=model_name,
                 model=model_id,
                 sandbox=sandbox,
@@ -707,6 +714,7 @@ def build_model_runtimes(
                 lean_disabled_mcp_servers=disabled_mcp_servers,
                 black_box_playtest=player_feedback_enabled,
                 isolated_cwd=(player_feedback_enabled or context_mode == 'lean'),
+                **agent_constructor_options(agent_spec, model_cfg),
             )
             runtimes.append({
                 'name': model_name,
@@ -725,6 +733,7 @@ def build_model_runtimes(
                 ),
                 'player_feedback': player_feedback_cfg,
                 'agent': agent,
+                **({'agent_type': agent_spec.name} if 'agent_type' in model_cfg else {}),
             })
             continue
 
@@ -740,11 +749,12 @@ def build_model_runtimes(
         timeout_s = model_cfg.get('timeout_s', model_cfg.get('request_timeout_s', 180.0))
         if timeout_s is not None:
             timeout_s = float(timeout_s)
-        max_retries = int(model_cfg.get('max_retries', 2))
+        max_retries = int(model_cfg.get('max_retries', 0 if agent_spec.name == 'simple' else 2))
         max_completion_tokens = APIAgent._normalize_max_completion_tokens(
             model_cfg.get('max_completion_tokens', 30000)
         )
-        agent = APIAgent(
+        agent_class = APIAgent if agent_spec.name == 'api' else agent_spec.load_class()
+        agent = agent_class(
             name=model_name,
             api_key=api_key,
             base_url=base_url,
@@ -756,6 +766,7 @@ def build_model_runtimes(
             thinking=model_cfg.get('thinking', None),
             reasoning_effort=model_cfg.get('reasoning_effort', None),
             max_completion_tokens=max_completion_tokens,
+            **agent_constructor_options(agent_spec, model_cfg),
         )
         thinking = (
             {'type': agent.thinking_type}
@@ -775,6 +786,7 @@ def build_model_runtimes(
             'thinking': thinking,
             'reasoning_effort': agent.reasoning_effort,
             'agent': agent,
+            **({'agent_type': agent_spec.name} if agent_spec.name != 'api' or 'agent_type' in model_cfg else {}),
         })
     if not runtimes:
         raise ValueError('No models configured. Add at least one item under models.')
@@ -898,6 +910,11 @@ def normalize_response_trace(trace_by_agent: Any) -> Dict[str, Dict[str, Any]]:
             item['usage'] = _to_jsonable(trace.get('usage'))
         if 'skipped' in trace:
             item['skipped'] = bool(trace.get('skipped', False))
+        # New agents can make multiple actual model requests inside one
+        # environment decision. Preserve those events alongside legacy fields.
+        for key in ('agent_events', 'model_requests', 'agent_usage', 'context_summary', 'simple_agent', 'error_type'):
+            if key in trace:
+                item[key] = _to_jsonable(sanitize_raw_request_messages(deepcopy(trace[key])))
         if item:
             out[str(agent_id)] = item
     return out
@@ -1221,6 +1238,7 @@ def evaluate_case(
         'model_name': model_runtime['name'],
         'model': model_runtime['model'],
         'provider': model_runtime.get('provider'),
+        **({'agent_type': model_runtime['agent_type']} if 'agent_type' in model_runtime else {}),
         'base_url': model_runtime['base_url'],
         'api_key_env': model_runtime['api_key_env'],
         'thinking': _to_jsonable(model_runtime.get('thinking')),
@@ -1274,12 +1292,16 @@ def evaluate_case(
 
 
 def build_error_result(model_runtime: Dict[str, Any], case: Dict[str, Any], error: Exception) -> Dict[str, Any]:
+    failure_trace = {}
+    if model_runtime.get('agent_type') == 'simple':
+        failure_trace = normalize_response_trace(getattr(model_runtime.get('agent'), 'last_trace_by_agent', {}))
     return {
         'status': 'error',
         'case_id': case['case_id'],
         'model_name': model_runtime['name'],
         'model': model_runtime['model'],
         'provider': model_runtime.get('provider'),
+        **({'agent_type': model_runtime['agent_type']} if 'agent_type' in model_runtime else {}),
         'base_url': model_runtime['base_url'],
         'api_key_env': model_runtime['api_key_env'],
         'thinking': _to_jsonable(model_runtime.get('thinking')),
@@ -1293,6 +1315,7 @@ def build_error_result(model_runtime: Dict[str, Any], case: Dict[str, Any], erro
         'error_type': type(error).__name__,
         'error': str(error),
         'traceback': traceback.format_exc(limit=8),
+        **({'agent_failure_trace': failure_trace} if failure_trace else {}),
     }
 
 
@@ -1790,7 +1813,7 @@ def main(args):
                     },
                     source='run_api_agent',
                 )
-                runtime_env_cfg = deepcopy(env_cfg)
+                runtime_env_cfg = configure_agent_environment(deepcopy(env_cfg), model_runtime)
                 runtime_env_cfg['hook_manager'] = hook_manager
                 runtime_env_cfg['hooks'] = hooks_cfg
                 env = ArkEnv(runtime_env_cfg)

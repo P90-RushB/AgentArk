@@ -1,0 +1,11 @@
+AgentArk SimpleAgent
+
+The independent SimpleAgent context runtime, message types/encoding, model
+adapters and controlled file-tool registry are adapted from the Apache-2.0
+ArkArena Python SDK (P90-RushB/ArkArena, ark_arena.harness), with the project
+owner's authorization. They are maintained as AgentArk-owned Python 3.10
+modules and do not depend on ArkArena or its runtime protocol.
+
+XiaomiMiMo/mimoagent and SWE-agent/mini-swe-agent were consulted for the
+separation of agents, model backends and tool definitions. This implementation
+does not import those projects or include their shell tools.

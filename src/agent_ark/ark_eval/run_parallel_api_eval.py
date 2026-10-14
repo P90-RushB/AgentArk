@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Tuple
 
 from agent_ark.ark_env import ArkEnv, ensure_runtime_pool_range, resolve_runtime_sandbox_cfg
 from agent_ark.interaction import HookManager
+from agent_ark.agent.agent_registry import configure_agent_environment
 from agent_ark.ark_eval.run_api_agent import (
     JsonlWriter,
     _coerce_bool,
@@ -72,6 +73,7 @@ def _model_stub(model_cfg: Dict[str, Any], model_index: int) -> Dict[str, Any]:
         'thinking': _to_jsonable(model_cfg.get('thinking', None)),
         'reasoning_effort': model_cfg.get('reasoning_effort', None),
         'max_completion_tokens': model_cfg.get('max_completion_tokens', 30000),
+        **({'agent_type': model_cfg['agent_type']} if 'agent_type' in model_cfg else {}),
     }
 
 
@@ -297,7 +299,7 @@ def make_parallel_job_runner(
                 action_broker=None,
             )[0]
 
-            runtime_env_cfg = deepcopy(base_env_cfg)
+            runtime_env_cfg = configure_agent_environment(deepcopy(base_env_cfg), model_runtime)
             runtime_env_cfg['worker_index'] = int(worker_index)
             runtime_env_cfg['hook_manager'] = hook_manager
             runtime_env_cfg['hooks'] = hooks_cfg

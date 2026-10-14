@@ -144,6 +144,103 @@ env_cfg:
           return_mode: full
 ```
 
+### Optional SimpleAgent: Context Compaction and Host Tools
+
+`APIAgent`, `SimpleAgent`, and `CodexAgent` are separate agents. The optional
+`models[*].agent_type` selects `api`, `simple`, or `codex`; `provider` continues
+to select the model backend. Without `agent_type`, the existing behavior is
+unchanged: `provider: codex` selects CodexAgent, other providers select APIAgent.
+The existing agents retain their implementation and configuration defaults.
+
+Run [simple_agent.example.yaml](../config/ark_env/simple_agent.example.yaml):
+
+```bash
+python -m agent_ark.ark_eval.run_api_agent --config config/ark_env/simple_agent.example.yaml
+```
+
+Selecting `agent_type: simple` makes the evaluator enable append-only delta
+messages in that agent's private environment configuration. SimpleAgent owns
+history, recent complete turns, image selection, and model-generated summaries
+under `simple_agent.context` budgets. Stateless HTTP requests still receive the
+complete assembled working context. Original bounded history is kept separately;
+summaries are labelled model memory, not environment facts. Instructions, current
+observations, necessary feedback, and complete code are not silently shortened.
+Token counting uses a configurable image/text estimate alongside encoded-byte,
+image-count, and raw-image-byte limits.
+
+Set `simple_agent.tools.enabled: true` and a writable `workspace_parent` to
+enable `list_files`, ranged UTF-8 `read_file`, actual-image `view_image`, and
+`write_note`. Each case/agent has private notes and immutable records of its own
+permitted observations and outputs. Auto-reset attempts retain case memory;
+new cases clear it, and close removes the private working directories. Host tools
+do not receive project directories, hidden state, source, credentials, a shell,
+or a game client. Their bounded inner loop returns one final action in the task's
+existing format. Tool and summary calls do not allocate environment steps.
+When a host tool registry is present, SimpleAgent also declares the reserved
+`submit_action` control function. It accepts `format` (`tool_call`, `params`,
+`code`, or `raw`) and a string `content`. Supply the inner action body without
+XML wrappers; the adapter translates a single standalone submission into the
+existing environment action. Code source is preserved; `params` keeps the
+existing extractor's whitespace normalization. Payloads must omit action-envelope
+tags (use C# Unicode escapes for such string literals in code).
+Submission never executes a host tool or advances the game. This separates
+task XML output recipes from model-native tool calls.
+Future context keeps the native call and a labelled selection acknowledgement;
+authentic provider text may also contain a plaintext action. The separate
+environment action echo is deduplicated; a native submission takes precedence
+over accompanying provider prose. The following environment observation supplies
+the actual outcome. Summary
+requests receive source-labelled historical tool transcripts and original images,
+without executable tools. Traces distinguish provider output from action
+translation. Mixed host/submission calls and malformed arguments fail explicitly.
+Native tool arguments have a 128 KiB UTF-8 limit, including JSON escaping;
+decoded actions also obey the configured output bounds. Plain assistant output
+remains a compatibility path with `simple_agent.tool_choice: auto`, and
+tools-disabled agents keep that path. Native action rounds default to
+`simple_agent.tool_choice: required`: the model chooses a host tool or terminal
+submission. A missing native call then fails explicitly. Set `auto` for endpoints
+that do not support required tool selection; there is no implicit parameter
+downgrade or retry. Summary requests and requests without native tools omit this
+parameter. See [OpenRouter's tool choice documentation](https://openrouter.ai/blog/tutorials/tool-calling/)
+for the endpoint-dependent support of stricter choices.
+Python callers can also supply `SimpleAgent(..., tool_setup=callback)` to
+register trusted `ToolSpec`/function pairs on each fresh case's `ToolRegistry`.
+This hook is not loaded from YAML and registries are not shared between cases.
+ToolRegistry validates a bounded JSON schema subset (objects, arrays, strings,
+integers, and booleans) before invoking a registered function.
+The agent defaults to 128 published records; explicitly size `tools.limits` for
+longer tasks. Record overflow stops the decision and retains failure evidence.
+
+Working context, original archive, model calls, tool rounds/results, records and
+notes have finite bounds. Failed compaction or exhausted budgets fail explicitly.
+New agent HTTP retries default to zero; an explicit `max_retries` controls client
+retries. Action output is capped by the smaller of `max_completion_tokens` and
+`output_reserve_tokens`; summaries use `summary_output_tokens`. This is not
+unbounded history, disk-backed conversation resume, or an operating-system
+sandbox against hostile local processes.
+Reasoning tokens share the completion cap. A response ending with `length`
+fails without submitting a partial action; when increasing reasoning effort,
+size both action caps and the separate summary output budget accordingly. The
+Qwen example uses the low-effort profile validated in a bounded Player run.
+
+Each step's `raw_response_by_agent` retains `model_requests`, `agent_events`,
+`agent_usage`, and safe `simple_agent` configuration metadata. These distinguish
+actual action/summary requests and tool continuations. Text traces omit image
+payloads; image-enabled trajectories retain the original environment observations.
+Actual request image hashes/byte sizes and known usage from failed calls are
+retained, including preceding successful summary and tool work.
+Environment replay still replays final actions without re-running models or
+restoring tools/notes. RL rollout integration is separate: selecting this agent
+does not change Swift/VERL training trajectories.
+
+Implementation lives in `src/agent_ark/agent/simple_agent/`; API and Codex retain
+their own modules. Trusted Python extensions can register an `AgentType` through
+`agent/agent_registry.py`, with a separate module, options keyword, and message
+contract. Eval YAML cannot import arbitrary modules.
+
+See [SimpleAgent validation](simple-agent-validation.md) for the pre-commit
+regression and legacy-agent compatibility checks.
+
 ### Codex SDK Provider
 
 Use this path for local Codex SDK evaluation. It is not an OpenAI-compatible
