@@ -260,7 +260,7 @@ class SimpleAgentTests(unittest.TestCase):
     def test_default_snapshot_budget_supports_more_than_twenty_visible_steps(self):
         with tempfile.TemporaryDirectory() as directory:
             agent = self.agent(simple_agent_config={"tools": {"enabled": True, "workspace_parent": directory}})
-            self.assertEqual(agent.tool_limits.max_records, 128)
+            self.assertEqual(agent.tool_limits.max_records, 512)
             for turn in range(21):
                 response, trace = agent.forward_with_trace(obs("visible result " + str(turn)))
                 self.assertEqual(response[0]["action"], ACTION)

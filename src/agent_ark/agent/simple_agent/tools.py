@@ -43,8 +43,8 @@ class ToolLimits:
     max_record_file_bytes: int = 32 * 1024 * 1024
     max_record_bytes: int = 64 * 1024 * 1024
     max_records: int = 16
-    max_published_bytes: int = 256 * 1024 * 1024
-    timeout_seconds: float = 120.0
+    max_published_bytes: int = 512 * 1024 * 1024
+    timeout_seconds: float = 1800.0
 
     def __post_init__(self) -> None:
         for name in self.__dataclass_fields__:

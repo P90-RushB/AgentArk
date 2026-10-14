@@ -168,6 +168,22 @@ observations, necessary feedback, and complete code are not silently shortened.
 Token counting uses a configurable image/text estimate alongside encoded-byte,
 image-count, and raw-image-byte limits.
 
+The shared defaults allow 128,000 estimated context tokens, including a 20,480
+action-output reserve, up to 32 working images, and two protected recent inputs
+(including the current input). Summary requests accept up to 48,000 estimated
+input tokens and have a separate 10,000-token generation cap. Only their final
+`content` becomes memory; separate readable reasoning remains in the raw trace
+and still counts toward provider output usage. Empty final content, output-limit
+truncation, overlong summaries and summaries that do not reduce the source are
+recoverable generation failures. The next summary request receives a short
+failure explanation and asks for a corrected final summary. These retries share
+the existing per-decision `max_summary_calls` limit (default 4), lifetime call
+budget and decision deadline; successful compactions count toward the same
+limit. Invalid summaries never replace working history. There is no separate
+summary-length target.
+These are configurable upper bounds, not a fixed compression ratio or a guarantee
+that a model's native context window is large enough.
+
 Set `simple_agent.tools.enabled: true` and a writable `workspace_parent` to
 enable `list_files`, ranged UTF-8 `read_file`, actual-image `view_image`, and
 `write_note`. Each case/agent has private notes and immutable records of its own
@@ -208,8 +224,11 @@ register trusted `ToolSpec`/function pairs on each fresh case's `ToolRegistry`.
 This hook is not loaded from YAML and registries are not shared between cases.
 ToolRegistry validates a bounded JSON schema subset (objects, arrays, strings,
 integers, and booleans) before invoking a registered function.
-The agent defaults to 128 published records; explicitly size `tools.limits` for
-longer tasks. Record overflow stops the decision and retains failure evidence.
+The agent defaults to 512 published records and a 512 MiB published-byte cap;
+explicitly size `tools.limits` for longer tasks. Original archive total/image
+byte caps are each 512 MiB, with 32 Mi characters of archived text. These limits
+are cumulative and are not reclaimed by summarizing working context. Record
+overflow stops the decision and retains failure evidence.
 
 Working context, original archive, model calls, tool rounds/results, records and
 notes have finite bounds. Failed compaction or exhausted budgets fail explicitly.
@@ -218,10 +237,19 @@ retries. Action output is capped by the smaller of `max_completion_tokens` and
 `output_reserve_tokens`; summaries use `summary_output_tokens`. This is not
 unbounded history, disk-backed conversation resume, or an operating-system
 sandbox against hostile local processes.
+If summary recovery is exhausted, the evaluator records the case error and its
+request/usage trace. The general example uses `eval.stop_on_error: false` to
+continue other cases; it does not replay the failed case. Authentication,
+parameter, refusal, cancellation, timeout and archive-capacity failures do not
+receive automatic summary-generation retries. An unsuccessful summary does not
+allocate an environment step or submit a placeholder action.
 Reasoning tokens share the completion cap. A response ending with `length`
 fails without submitting a partial action; when increasing reasoning effort,
 size both action caps and the separate summary output budget accordingly. The
-Qwen example uses the low-effort profile validated in a bounded Player run.
+Qwen example selects low reasoning effort. The current budgets require validation
+with the chosen model; earlier bounded Player checks do not validate these new
+defaults. Direct construction keeps file tools opt-in and requires a writable
+`workspace_parent` when enabled; the example enables them explicitly.
 
 Each step's `raw_response_by_agent` retains `model_requests`, `agent_events`,
 `agent_usage`, and safe `simple_agent` configuration metadata. These distinguish

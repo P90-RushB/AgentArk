@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 from ..api_agent import APIAgent
 from ..base_agent import BaseAgent
 from .encoding import chat_messages, tool_declarations
-from .models import ModelResponseError
+from .models import ModelResponseError, SummaryResponseError
 from .runtime import SimpleRuntime, SimpleRuntimeConfig
 from .tools import FileWorkspace, RecordSnapshot, ToolLimits, ToolRegistry
 from .types import (
@@ -143,7 +143,8 @@ class _OpenAIModel:
         text = APIAgent._combine_reasoning_and_content(reasoning=reasoning, content=content)
         self.last_response_metadata["assistant_raw"] = text
         self.last_response_metadata["refusal"] = _field(message, "refusal")
-        if finish_reason not in (None, "stop", "tool_calls"):
+        summary_incomplete = request.purpose == "summary" and finish_reason == "length"
+        if finish_reason not in (None, "stop", "tool_calls") and not summary_incomplete:
             raise ModelResponseError("chat completion was not complete")
         if _field(message, "refusal"):
             raise ModelResponseError("chat client refused completion")
@@ -154,6 +155,9 @@ class _OpenAIModel:
             raise ModelResponseError("chat client requested unavailable tools")
         if not calls and finish_reason == "tool_calls":
             raise ModelResponseError("chat client returned no tool calls")
+        if request.purpose == "summary":
+            # Keep provider reasoning in the audit metadata, not model notes.
+            text = content
         try:
             parsed = []
             for call in calls:
@@ -162,9 +166,14 @@ class _OpenAIModel:
                 function = _field(call, "function")
                 parsed.append(ToolCall(_field(call, "id"), _field(function, "name"), _field(function, "arguments")))
             counts = ModelUsage(_field(usage, "prompt_tokens"), _field(usage, "completion_tokens"), _field(usage, "total_tokens"))
-            return ModelCompletion(text, counts, tuple(parsed))
+            completion = ModelCompletion(text, counts, tuple(parsed))
         except (ValueError, TypeError):
             raise ModelResponseError("chat client returned invalid tools or usage") from None
+        if summary_incomplete:
+            raise SummaryResponseError("incomplete", counts)
+        if request.purpose == "summary" and not content:
+            raise SummaryResponseError("empty_content", counts)
+        return completion
 
     async def close(self) -> None:
         if self.client is not None:
@@ -182,16 +191,19 @@ class _TracedModel:
         self.usages: list[tuple[str, ModelUsage]] = []
         self.events: list[dict] = []
 
-    def _failure_metadata(self, record: dict, request: ModelRequest) -> None:
+    def _failure_metadata(self, record: dict, request: ModelRequest, error: Exception | None = None) -> None:
         metadata = getattr(self.backend, "last_response_metadata", None)
         raw_record_usage = record.get("usage") or {}
         usage = ModelUsage(raw_record_usage.get("input_tokens"), raw_record_usage.get("output_tokens"), raw_record_usage.get("total_tokens"))
+        if isinstance(error, SummaryResponseError):
+            usage = error.usage
         if metadata:
             record["response_metadata"] = dict(metadata)
             raw = metadata.get("usage") or {}
             try:
-                usage = ModelUsage(raw.get("prompt_tokens", raw.get("input_tokens")),
-                                   raw.get("completion_tokens", raw.get("output_tokens")), raw.get("total_tokens"))
+                if raw:
+                    usage = ModelUsage(raw.get("prompt_tokens", raw.get("input_tokens")),
+                                       raw.get("completion_tokens", raw.get("output_tokens")), raw.get("total_tokens"))
             except (ValueError, TypeError, AttributeError):
                 pass
         record["usage"] = _usage_dict(usage)
@@ -240,7 +252,7 @@ class _TracedModel:
             raise
         except Exception as exc:
             record.update({"status": "failed", "error_type": type(exc).__name__})
-            self._failure_metadata(record, request)
+            self._failure_metadata(record, request, exc)
             raise
 
 
@@ -272,7 +284,7 @@ class SimpleAgent(BaseAgent):
         self, name: str = "SimpleAgent", api_key: Optional[str] = None,
         base_url: Optional[str] = None, model: str = "qwen3-vl-plus",
         temperature: Optional[float] = 0.2, provider: str = "auto",
-        timeout_s: Optional[float] = 180.0, max_retries: int = 0,
+        timeout_s: Optional[float] = 1800.0, max_retries: int = 0,
         thinking: Any = None, reasoning_effort: Optional[str] = None,
         max_completion_tokens: Optional[int] = 30000, *,
         simple_agent_config: Optional[Mapping] = None, env_message_mode: str = "delta",
@@ -296,7 +308,7 @@ class SimpleAgent(BaseAgent):
             raise ValueError("simple_agent.tools.enabled must be boolean")
         if self.tools_enabled and not self.tools_config.get("workspace_parent"):
             raise ValueError("enabled simple_agent tools require workspace_parent")
-        self.tool_limits = ToolLimits(**{"max_records": 128,
+        self.tool_limits = ToolLimits(**{"max_records": 512,
             **_mapping(self.tools_config.get("limits"), "simple_agent.tools.limits")})
         self.output_token_parameter = config.get("output_token_parameter", "max_completion_tokens")
         if self.output_token_parameter not in ("max_completion_tokens", "max_tokens"):

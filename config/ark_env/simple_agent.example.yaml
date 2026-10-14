@@ -10,7 +10,8 @@ env_cfg:
 
 eval:
   output_path: tmp/simple_agent_results.jsonl
-  stop_on_error: true
+  # Record a failed case and continue the batch after recovery is exhausted.
+  stop_on_error: false
   fixed_env_id: 0
   cases:
     - case_id: connection-seed-1
@@ -33,9 +34,9 @@ models:
     # Reasoning shares the completion budget. Raise the output caps below
     # before selecting a more expensive reasoning profile.
     reasoning_effort: low
-    max_completion_tokens: 4096
+    max_completion_tokens: 20480
     max_retries: 0
-    timeout_s: 180
+    timeout_s: 1800
     simple_agent:
       # Native rounds can choose a host tool or the terminal submit_action.
       # Use auto for endpoints that do not support required tool selection.
@@ -44,18 +45,30 @@ models:
       # max_completion_tokens (the default).
       output_token_parameter: max_tokens
       context:
-        max_context_tokens: 32768
-        output_reserve_tokens: 4096
+        # Total local estimate, including the output reserve; not a model limit.
+        max_context_tokens: 128000
+        output_reserve_tokens: 20480
         recent_turns: 2
-        max_images: 16
+        max_images: 32
+        max_context_characters: 524288
         max_summary_calls: 4
-        summary_output_tokens: 2048
-        timeout_seconds: 180
+        summary_input_tokens: 48000
+        summary_input_characters: 196608
+        # API generation cap includes reasoning; memory keeps final content only.
+        summary_output_tokens: 10000
+        summary_output_characters: 32000
+        summary_output_bytes: 128000
+        max_archive_bytes: 536870912
+        max_archive_image_bytes: 536870912
+        max_archive_characters: 33554432
+        timeout_seconds: 1800
       tools:
         enabled: true
         # Run this example from the Python repository so tmp/ is Git-ignored.
         workspace_parent: tmp/simple_agent_workspaces
         limits:
-          max_records: 128
+          max_records: 512
+          max_published_bytes: 536870912
           max_calls: 32
           max_model_rounds: 16
+          timeout_seconds: 1800

@@ -15,6 +15,29 @@ class ModelResponseError(AgentError):
     pass
 
 
+class SummaryResponseError(ModelResponseError):
+    """A bounded summary-generation failure that another attempt can correct."""
+
+    _REASONS = {
+        "empty_content": ("chat client returned empty summary content",
+                          "The previous response had no summary content. Return a nonempty concise summary in content; do not return only reasoning."),
+        "incomplete": ("chat completion was not complete",
+                       "The previous summary hit its output token limit. Return a substantially shorter complete summary in content, with minimal reasoning."),
+        "output_bounds": ("summary output exceeds its hard bounds",
+                          "The previous summary exceeded its output bounds. Return a substantially shorter concise summary."),
+        "not_reduced": ("summary did not reduce the source span",
+                        "The previous summary did not reduce the source records. Compress them substantially; retain only useful facts, decisions, feedback, and code details."),
+    }
+
+    def __init__(self, reason: str, usage: ModelUsage = ModelUsage()) -> None:
+        if not isinstance(usage, ModelUsage):
+            raise TypeError("summary failure usage must be ModelUsage")
+        message, self.retry_instruction = self._REASONS[reason]
+        self.reason = reason
+        self.usage = usage
+        super().__init__(message)
+
+
 class CallableModel:
     def __init__(self, function: Callable[[ModelRequest], Awaitable[ModelCompletion]]) -> None:
         if not callable(function):
@@ -63,14 +86,15 @@ class ChatCompletionsModel:
         if not isinstance(choices, (list, tuple)) or len(choices) != 1:
             raise ModelResponseError("chat client must return exactly one completion")
         choice = choices[0]
-        if _field(choice, "finish_reason") not in (None, "stop", "tool_calls"):
+        summary_incomplete = request.purpose == "summary" and _field(choice, "finish_reason") == "length"
+        if _field(choice, "finish_reason") not in (None, "stop", "tool_calls") and not summary_incomplete:
             raise ModelResponseError("chat completion was not complete")
         message = _field(choice, "message")
         text = _field(message, "content")
         calls = _field(message, "tool_calls") or ()
         if (calls and (not request.tools or _field(choice, "finish_reason") not in (None, "tool_calls"))) or _field(message, "refusal"):
             raise ModelResponseError("chat client returned unsupported completion content")
-        if calls and text is None:
+        if text is None and (calls or request.purpose == "summary"):
             text = ""
         if not isinstance(text, str) or not isinstance(calls, (list, tuple)) or len(calls) > 32:
             raise ModelResponseError("chat client returned unsupported completion content")
@@ -90,6 +114,11 @@ class ChatCompletionsModel:
                     raise ValueError("unsupported tool")
                 function = _field(call, "function")
                 parsed.append(ToolCall(_field(call, "id"), _field(function, "name"), _field(function, "arguments")))
-            return ModelCompletion(text, counts, tuple(parsed))
+            completion = ModelCompletion(text, counts, tuple(parsed))
         except (ValueError, TypeError):
             raise ModelResponseError("chat client returned invalid tool calls") from None
+        if summary_incomplete:
+            raise SummaryResponseError("incomplete", counts)
+        if request.purpose == "summary" and not text.strip():
+            raise SummaryResponseError("empty_content", counts)
+        return completion

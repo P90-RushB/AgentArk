@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .encoding import encoded_messages, tool_declarations
+from .models import SummaryResponseError
 from .tools import FileWorkspace, ToolRegistry
 from .types import (
     ArchiveEntry, AsyncModel, AgentError, AgentEvent, AgentInputIdentity,
@@ -70,29 +71,29 @@ class _DecisionDeadline:
 
 @dataclass(frozen=True, slots=True)
 class SimpleRuntimeConfig:
-    max_context_characters: int = 120_000
+    max_context_characters: int = 524_288
     max_context_bytes: int = 32 * 1024 * 1024
-    max_context_tokens: int = 32_768
-    output_reserve_tokens: int = 4_096
+    max_context_tokens: int = 128_000
+    output_reserve_tokens: int = 20_480
     recent_turns: int = 2
     max_summary_calls: int = 4
-    max_images: int = 16
+    max_images: int = 32
     max_image_bytes: int = 16 * 1024 * 1024
     image_token_estimate: int = 1_024
     max_archive_entries: int = 4_096
-    max_archive_characters: int = 4 * 1024 * 1024
-    max_archive_bytes: int = 32 * 1024 * 1024
-    max_archive_image_bytes: int = 32 * 1024 * 1024
-    summary_input_characters: int = 50_000
+    max_archive_characters: int = 32 * 1024 * 1024
+    max_archive_bytes: int = 512 * 1024 * 1024
+    max_archive_image_bytes: int = 512 * 1024 * 1024
+    summary_input_characters: int = 196_608
     summary_input_bytes: int = 32 * 1024 * 1024
-    summary_input_tokens: int = 16_384
-    summary_output_characters: int = 16_000
-    summary_output_bytes: int = 64_000
-    summary_output_tokens: int = 1_024
+    summary_input_tokens: int = 48_000
+    summary_output_characters: int = 32_000
+    summary_output_bytes: int = 128_000
+    summary_output_tokens: int = 10_000
     max_action_output_characters: int = 120_000
     max_action_output_bytes: int = 512_000
     max_model_calls: int = 4_096
-    timeout_seconds: float = 120.0
+    timeout_seconds: float = 1800.0
 
     def __post_init__(self) -> None:
         for name in self.__dataclass_fields__:
@@ -414,7 +415,8 @@ class SimpleRuntime:
             self._deadline.check()
         return result
 
-    def _summary_span(self, working: list[_WorkingEntry], required_events: frozenset[int]) -> tuple[_WorkingEntry, ...]:
+    def _summary_span(self, working: list[_WorkingEntry], required_events: frozenset[int],
+                      retry_instruction: str | None = None) -> tuple[_WorkingEntry, ...]:
         inputs = [entry for entry in working if entry.kind == "input"]
         protected = {entry.sequence for entry in inputs[-max(1, self.config.recent_turns):]}
         span: list[_WorkingEntry] = []
@@ -427,7 +429,7 @@ class SimpleRuntime:
             if entry.sequence in protected or entry.sequence in required_events:
                 break
             candidate = (*span, entry)
-            messages = self._summary_messages(candidate)
+            messages = self._summary_messages(candidate, retry_instruction=retry_instruction)
             if not self._fits(messages, summary=True):
                 break
             span.append(entry)
@@ -447,9 +449,12 @@ class SimpleRuntime:
         return tuple(candidate)
 
     @staticmethod
-    def _summary_messages(span: tuple[_WorkingEntry, ...]) -> tuple[Message, ...]:
+    def _summary_messages(span: tuple[_WorkingEntry, ...], *, retry_instruction: str | None = None) -> tuple[Message, ...]:
         sources = [number for entry in span for number in entry.source_sequences]
-        instruction = Message.text("system", "Summarize this agent's earlier complete conversation turns. Preserve concrete facts, decisions, feedback, and useful code details. Do not invent facts. Return concise plain text model notes. Source archive entries: " + ",".join(map(str, sources)))
+        instruction_text = "Summarize this agent's earlier complete conversation turns. Preserve concrete facts, decisions, feedback, and useful code details. Do not invent facts. Return concise plain text model notes. Source archive entries: " + ",".join(map(str, sources))
+        if retry_instruction:
+            instruction_text += "\nSummary retry instructions: " + retry_instruction
+        instruction = Message.text("system", instruction_text)
         messages = [instruction]
         for entry in span:
             source = json.dumps(list(entry.source_sequences), separators=(",", ":"))
@@ -498,25 +503,49 @@ class SimpleRuntime:
             return snapshot(), tuple(staged)
 
         remaining = self.config.max_summary_calls - self._summary_attempts.get(identity, 0)
+        retry_instruction = None
+        last_failure = None
+
+        def retry(reason: str) -> None:
+            nonlocal retry_instruction, last_failure
+            failure = SummaryResponseError(reason)
+            last_failure = str(failure)
+            retry_instruction = (failure.retry_instruction +
+                f" Keep the complete response within the existing {self.config.summary_output_tokens}-token output budget; "
+                f"summary content must fit {self.config.summary_output_characters} characters and {self.config.summary_output_bytes} UTF-8 bytes.")
+
         for _ in range(remaining):
             if self._fits(snapshot()):
                 return commit()
-            span = self._summary_span(staged, required_events)
+            span = self._summary_span(staged, required_events, retry_instruction)
             if not span:
+                if retry_instruction:
+                    raise AgentLimitError("summary retry instructions and a complete source turn cannot fit summary input bounds")
                 raise AgentLimitError("current input, required feedback, or retained turns cannot fit context bounds")
-            messages = self._summary_messages(span)
+            messages = self._summary_messages(span, retry_instruction=retry_instruction)
             self._summary_attempts[identity] = self._summary_attempts.get(identity, 0) + 1
-            completion = await self._call_model(self._summarizer, self._model_request(messages, "summary"))
+            try:
+                completion = await self._call_model(self._summarizer, self._model_request(messages, "summary"))
+            except SummaryResponseError as failure:
+                self._summary_usage.append(failure.usage)
+                if self._deadline is not None:
+                    self._deadline.check()
+                retry(failure.reason)
+                continue
             if not isinstance(completion, ModelCompletion) or completion.tool_calls or completion.context_messages:
                 raise AgentError("summary model returned an invalid completion")
             self._append_archive(ArchiveEntry(len(self._archive) + 1, "summary_completion", identity, text=completion.text, usage=completion.usage))
             self._summary_usage.append(completion.usage)
             output_message = (Message.text("assistant", completion.text),)
             output_tokens = self._tokens(output_message, len(encoded_messages(output_message)))
-            if (not completion.text or len(completion.text) > self.config.summary_output_characters
+            if not completion.text.strip():
+                retry("empty_content")
+                continue
+            if (len(completion.text) > self.config.summary_output_characters
                 or len(completion.text.encode("utf-8")) > self.config.summary_output_bytes
                 or output_tokens > self.config.summary_output_tokens):
-                raise AgentLimitError("summary output exceeds its hard bounds")
+                retry("output_bounds")
+                continue
             sources = tuple(number for entry in span for number in entry.source_sequences)
             note = Message.text("user", f"Model notes; not environment facts. Source archive entries {','.join(map(str, sources))}:\n{completion.text}")
             replacement = _WorkingEntry(span[0].sequence, "summary", span[0].identity, (note,), sources)
@@ -525,9 +554,13 @@ class SimpleRuntime:
             candidate = [replacement, *staged[len(span):]]
             old_messages = tuple(message for entry in span for message in entry.messages)
             if len(encoded_messages((note,))) >= len(encoded_messages(old_messages)):
-                raise AgentLimitError("summary did not reduce the source span")
+                retry("not_reduced")
+                continue
             staged = candidate
+            retry_instruction = last_failure = None
         if not self._fits(snapshot()):
+            if last_failure:
+                raise AgentLimitError("summary call bound exhausted: " + last_failure) from None
             raise AgentLimitError("summary call bound exhausted")
         return commit()
 
