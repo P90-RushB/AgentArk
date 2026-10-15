@@ -49,6 +49,80 @@ class AttemptInitialImageLoaderTest(unittest.TestCase):
             ):
                 self.assertEqual(initial_images.load_attempt_initial_images(cfg, None), [])
 
+    def test_public_path_resolver_is_pure_and_does_no_path_or_image_operations(self):
+        cfg = image_cfg(['references/${task_params.filename}', '${LITERAL_NAME}', 'references/${task_params.filename}'])
+        cfg['task_params'] = {'filename': 'not-required-to-exist.png'}
+        original = deepcopy(cfg)
+        with patch.object(initial_images, 'Path', side_effect=AssertionError('unexpected path lookup')), patch.object(
+            Image, 'open', side_effect=AssertionError('unexpected image IO')
+        ):
+            for disabled in (None, {}, {'env_wrapper_cfg': {}}, image_cfg([])):
+                self.assertEqual(initial_images.resolve_attempt_initial_image_paths(disabled), [])
+            paths = initial_images.resolve_attempt_initial_image_paths(cfg)
+        self.assertEqual(paths, ['references/not-required-to-exist.png', '${LITERAL_NAME}', 'references/not-required-to-exist.png'])
+        self.assertEqual(cfg, original)
+        paths.append('caller-owned.png')
+        self.assertEqual(cfg, original)
+
+    def test_dotted_config_references_use_current_string_values_without_mutation(self):
+        red = self.make_image('references/red.png')
+        blue = self.make_image('references/blue.png', color='blue')
+        cfg = image_cfg(['${task_params.assets.directory}/${task_params.reference_filename}'])
+        cfg['task_params'] = {'assets': {'directory': 'references'}, 'reference_filename': 'red.png'}
+        original = deepcopy(cfg)
+        first = initial_images.load_attempt_initial_images(cfg, self.mods)[0]
+        self.assertEqual(first['sha256'], hashlib.sha256(red.read_bytes()).hexdigest())
+        self.assertEqual(cfg, original)
+        cfg['task_params']['reference_filename'] = 'blue.png'
+        second = initial_images.load_attempt_initial_images(cfg, self.mods)[0]
+        self.assertEqual(second['sha256'], hashlib.sha256(blue.read_bytes()).hexdigest())
+        self.assertEqual(second['image'].getpixel((0, 0)), (0, 0, 255))
+        self.assertEqual(set(second), {'index', 'image', 'sha256'})
+        self.assertNotIn('blue.png', str({key: value for key, value in second.items() if key != 'image'}))
+
+    def test_environment_style_and_tilde_paths_keep_literal_bytes(self):
+        for name in ('${ATTEMPT_IMAGE_NAME}', '$ATTEMPT_IMAGE_NAME', '%ATTEMPT_IMAGE_NAME%', '~/reference.png'):
+            with self.subTest(name=name):
+                path = self.make_image(name, fmt='PNG')
+                with patch.dict(os.environ, {'ATTEMPT_IMAGE_NAME': 'not-the-literal-file.png'}):
+                    record = initial_images.load_attempt_initial_images(image_cfg([name]), self.mods)[0]
+                    cfg = image_cfg(['${task_params.filename}'])
+                    cfg['task_params'] = {'filename': name}
+                    referenced = initial_images.load_attempt_initial_images(cfg, self.mods)[0]
+                self.assertEqual(record['sha256'], hashlib.sha256(path.read_bytes()).hexdigest())
+                self.assertEqual(referenced['sha256'], record['sha256'])
+
+    def test_invalid_config_references_fail_before_path_lookup_without_values(self):
+        invalid = (
+            ('${task_params.reference_filename}', {}, 'unknown configuration reference'),
+            ('${task_params.reference_filename}', {'task_params': []}, 'unknown configuration reference'),
+            ('${task_params.reference_filename}', {'task_params': SimpleNamespace(reference_filename='SECRET')}, 'unknown configuration reference'),
+            ('${task_params.reference_filename}', {'task_params': {'reference_filename': 1}}, 'string values'),
+            ('${task_params.reference_filename}', {'task_params': {'reference_filename': None}}, 'string values'),
+            ('${task_params.reference_filename}', {'task_params': {'reference_filename': {'secret': 'SECRET'}}}, 'string values'),
+            ('${task_params.reference_filename}', {'task_params': {'reference_filename': ''}}, 'nonempty path'),
+            ('${task_params..reference_filename}', {}, 'invalid configuration reference'),
+            ('${task_params.reference_filename[0]}', {}, 'invalid configuration reference'),
+            ('${task_params.reference_filename}', {'task_params': {'reference_filename': '${task_params.reference_filename}'}}, 'recursive or cyclic'),
+            ('${task_params.reference_filename}', {'task_params': {'reference_filename': '${other.filename}'}, 'other': {'filename': '${task_params.reference_filename}'}}, 'recursive or cyclic'),
+            ('${task_params.reference_filename}', {'task_params': {'reference_filename': '${other.filename}'}, 'other': {'filename': 'SECRET.png'}}, 'recursive or cyclic'),
+        )
+        for template, extra_cfg, message in invalid:
+            cfg = dict(image_cfg([template]), **extra_cfg)
+            with self.subTest(template=template, message=message), patch.object(
+                initial_images, 'Path', side_effect=AssertionError('unexpected path lookup')
+            ):
+                with self.assertRaisesRegex(ValueError, message) as raised:
+                    initial_images.load_attempt_initial_images(cfg, self.mods)
+            self.assertIn('attempt_initial_images[0]', str(raised.exception))
+            self.assertNotIn('SECRET', str(raised.exception))
+
+    def test_invalid_reference_in_later_entry_prevents_all_file_reads(self):
+        cfg = image_cfg(['valid.png', '${task_params.missing}'])
+        with patch.object(Path, 'open', side_effect=AssertionError('unexpected image IO')):
+            with self.assertRaisesRegex(ValueError, 'unknown configuration reference'):
+                initial_images.load_attempt_initial_images(cfg, self.mods)
+
     def test_order_hash_copies_and_native_dimensions(self):
         red = self.make_image('red.png')
         blue = self.make_image('blue.webp', size=(5, 19), color='blue')
@@ -314,6 +388,35 @@ class ArkEnvAttemptInitialImagesTest(unittest.TestCase):
         self.assertEqual(info['attempt']['index'], 3)
         self.assertEqual(len(obs[3]['attempt_initial_images']), 1)
 
+    def test_config_reference_follows_each_effective_attempt_and_clears_on_task_switch(self):
+        blue = self.mods / 'blue.png'
+        Image.new('RGB', (7, 11), 'blue').save(blue)
+        self.tasks['enabled']['task_params'] = {'reference_filename': 'reference.png'}
+        self.tasks['enabled']['env_wrapper_cfg']['attempt_initial_images'] = ['${task_params.reference_filename}']
+        env = self.make_env()
+        with patch('agent_ark.ark_env.ark_env.load_attempt_initial_images', wraps=initial_images.load_attempt_initial_images) as load:
+            first, _ = env.reset(task_name='enabled', group_seed=123, env_id=0)
+            self.assertEqual(first[3]['attempt_initial_images'][0]['image'].getpixel((0, 0)), (255, 0, 0))
+            self.append_step(env)
+            later, _, _, _ = env.step({3: 'a', 9: 'a'})
+            self.assertTrue(all('attempt_initial_images' not in item for item in later.values()))
+            self.assertEqual(load.call_count, 1)
+            # FakeSubEnv materializes these newest task values on auto-reset,
+            # just as evaluation overrides enter the real effective config.
+            self.tasks['enabled']['task_params']['reference_filename'] = 'blue.png'
+            self.append_step(env, terminal=True)
+            second, _, _, _ = env.step({3: 'a', 9: 'a'})
+            self.assertEqual(load.call_count, 2)
+            self.assertEqual(second[3]['attempt_initial_images'][0]['image'].getpixel((0, 0)), (0, 0, 255))
+            self.assertNotEqual(first[3]['attempt_initial_images'][0]['sha256'], second[3]['attempt_initial_images'][0]['sha256'])
+        with patch.object(initial_images, 'Path', side_effect=AssertionError('unexpected path lookup')):
+            omitted, _ = env.reset(task_name='omitted', group_seed=123, env_id=0)
+            self.append_step(env)
+            after_omitted, _, _, _ = env.step({3: 'a', 9: 'a'})
+        self.assertFalse(env._attempt_initial_image_records)
+        self.assertTrue(all('attempt_initial_images' not in item for item in omitted.values()))
+        self.assertTrue(all('attempt_initial_images' not in item for item in after_omitted.values()))
+
     def test_switch_from_enabled_to_omitted_or_empty_clears_pending_images(self):
         reset_obs = {
             101: {'step_msg': 'ready', 'vis': [], 'skip_infer': False},
@@ -375,6 +478,43 @@ class ArkEnvAttemptInitialImagesTest(unittest.TestCase):
         self.assertTrue(all('attempt_initial_images' not in item for item in disabled.values()))
         self.assertTrue(all('attempt_initial_images' not in item for item in after_disabled.values()))
         self.assertNotIn('attempt_initial_images', env.sub_env.env_info_mgr.env_config['env_wrapper_cfg'])
+        self.assertEqual((self.mods / 'config.yaml.bak').read_text(encoding='utf-8'), baseline_text)
+        effective_yaml = yaml.safe_load((self.mods / 'config.yaml').read_text(encoding='utf-8'))
+        effective_json = json.loads((self.mods / 'config.json').read_text(encoding='utf-8'))
+        self.assertEqual(effective_yaml, effective_json)
+
+    def test_real_effective_config_overrides_select_reference_on_each_attempt(self):
+        blue = self.mods / 'blue.png'
+        Image.new('RGB', (7, 11), 'blue').save(blue)
+        baseline = {'override_by_task': True, 'load_mod_mode': 'task_name', 'action_mode': 'func',
+                    'engine_para': {}, 'max_attempts': 3, 'max_steps_per_attempt': 2}
+        baseline_text = yaml.safe_dump(baseline)
+        for name in ('config.yaml', 'config.yaml.bak'):
+            (self.mods / name).write_text(baseline_text, encoding='utf-8')
+        self.tasks['enabled']['task_params'] = {'reference_filename': 'reference.png'}
+        self.tasks['enabled']['env_wrapper_cfg']['attempt_initial_images'] = ['${task_params.reference_filename}']
+        for task_name in ('enabled', 'omitted'):
+            task_root = self.mods / 'all_tasks' / task_name
+            (task_root / 'cfg').mkdir(parents=True)
+            (task_root / f'{task_name}.json').write_text('{}', encoding='utf-8')
+            (task_root / 'cfg' / 'task_config.yaml').write_text(yaml.safe_dump(self.tasks[task_name]), encoding='utf-8')
+        env = self.make_env()
+        env.sub_env.env_info_mgr = EnvInfoManager({
+            'mod_path': str(self.mods), 'env_config_overrides': {'task_params': {'reference_filename': 'blue.png'}}})
+
+        def real_config_reset(task_name=None, group_seed=None, env_id=None):
+            env.sub_env.env_info_mgr.reset(task_name=task_name, group_seed=group_seed, env_id=env_id)
+            return deepcopy(env.sub_env.reset_obs), {}
+
+        env.sub_env.reset = real_config_reset
+        first, _ = env.reset(task_name='enabled', group_seed=123, env_id=0)
+        self.assertEqual(first[3]['attempt_initial_images'][0]['image'].getpixel((0, 0)), (0, 0, 255))
+        env.sub_env.env_info_mgr.cfg['env_config_overrides']['task_params']['reference_filename'] = 'reference.png'
+        self.append_step(env, terminal=True)
+        second, _, _, _ = env.step({3: 'a', 9: 'a'})
+        self.assertEqual(second[3]['attempt_initial_images'][0]['image'].getpixel((0, 0)), (255, 0, 0))
+        omitted, _ = env.reset(task_name='omitted', group_seed=123, env_id=0)
+        self.assertTrue(all('attempt_initial_images' not in item for item in omitted.values()))
         self.assertEqual((self.mods / 'config.yaml.bak').read_text(encoding='utf-8'), baseline_text)
         effective_yaml = yaml.safe_load((self.mods / 'config.yaml').read_text(encoding='utf-8'))
         effective_json = json.loads((self.mods / 'config.json').read_text(encoding='utf-8'))

@@ -31,6 +31,22 @@ entry requires an absolute effective Mods root. Operator-provided absolute paths
 are also accepted; keep machine-specific paths out of committed task configs.
 See the [configuration fragment](../config/ark_env/attempt_initial_images.example.yaml).
 
+A path may reference an existing string in the current effective configuration
+using `${section.key}` (additional dictionary-key levels are allowed). For
+example, `all_tasks/YourTask/References/${task_params.reference_filename}` follows
+an evaluation override of `task_params.reference_filename` automatically. The
+reference is read afresh when each attempt's images are loaded. Missing keys,
+non-string values, invalid dotted-key syntax, and values containing further
+configuration references raise `ValueError`; references do not recurse or
+evaluate expressions. Only dotted placeholders have this meaning. Plain paths,
+`~`, `$NAME`, and `${NAME}` retain their existing literal-path behavior; this
+feature does not expand environment variables. Source paths and configuration
+values are not added to observation metadata.
+Task-development tools can reuse
+`agent_ark.ark_env.attempt_initial_images.resolve_attempt_initial_image_paths(env_cfg)`
+to validate and resolve these strings without filesystem access or configuration
+mutation; relative paths in its result still use the effective Mods root.
+
 Supported files are static PNG, JPEG, and WEBP. Limits are 16 images, 16 MiB per
 file, 64 MiB combined source bytes, 32 million pixels per image, and 128 million
 combined pixels. Invalid configuration, unreadable files, unsupported or corrupt

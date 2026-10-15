@@ -9,6 +9,9 @@ applied. PNG-safe grayscale, palette and alpha modes are preserved; other modes
 Each call reads and decodes a fresh copy; callers may cache it only for the
 current attempt.
 
+Explicit ``${section.key}`` placeholders read string values from the current
+effective config on each call; configuration references never recurse.
+
 Bounds are deliberately independent of observation frame/image caps: at most
 16 files, 16 MiB per file / 64 MiB total, and 32 million decoded pixels per
 image / 128 million pixels total. Invalid inputs fail explicitly rather than
@@ -18,6 +21,7 @@ silently removing a task-visible reference.
 import hashlib
 import io
 from pathlib import Path
+import re
 import warnings
 from typing import Optional
 
@@ -32,15 +36,39 @@ MAX_TOTAL_IMAGE_PIXELS = 128_000_000
 SUPPORTED_IMAGE_FORMATS = frozenset({'PNG', 'JPEG', 'WEBP'})
 _PNG_SAFE_MODES = frozenset({'1', 'L', 'LA', 'P', 'RGB', 'RGBA', 'I', 'I;16', 'I;16B'})
 _CONFIG_FIELD = 'env_wrapper_cfg.attempt_initial_images'
+_PLACEHOLDER = re.compile(r'\$\{([^}]*)\}')
+_CONFIG_KEY = re.compile(r'[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+\Z')
 
 
-def load_attempt_initial_images(env_cfg: Optional[dict], mod_path) -> list[dict]:
-    """Return ordered, detached Pillow images and SHA-256 source-byte hashes.
+def _resolve_config_references(value: str, env_cfg: dict, field: str) -> str:
+    """Substitute direct dotted config keys without evaluating or recursing."""
+    def replace(match):
+        key = match.group(1)
+        if '.' not in key:
+            # Preserve literal paths, including environment-style placeholders.
+            return match.group(0)
+        if not _CONFIG_KEY.fullmatch(key):
+            raise ValueError(f'{field} contains an invalid configuration reference')
+        current = env_cfg
+        for component in key.split('.'):
+            if not isinstance(current, dict) or component not in current:
+                raise ValueError(f'{field} contains an unknown configuration reference')
+            current = current[component]
+        if not isinstance(current, str):
+            raise ValueError(f'{field} configuration references must name string values')
+        if any('.' in nested.group(1) for nested in _PLACEHOLDER.finditer(current)):
+            raise ValueError(f'{field} configuration references must not be recursive or cyclic')
+        return current
 
-    The returned records contain only ``index`` (one based), ``image`` and
-    ``sha256``. Source paths are never included in observations. All configured
-    entries are validated before reading any file. A relative entry requires
-    an absolute effective Mods root; this prevents an implicit cwd fallback.
+    return _PLACEHOLDER.sub(replace, value)
+
+
+def resolve_attempt_initial_image_paths(env_cfg: Optional[dict]) -> list[str]:
+    """Validate config and return path strings with direct references resolved.
+
+    This pure helper performs no filesystem/path operations and never modifies
+    the configuration. Relative paths remain relative, and environment-style
+    placeholders and tilde characters remain literal.
     """
     wrapper_cfg = env_cfg.get('env_wrapper_cfg', {}) if isinstance(env_cfg, dict) else {}
     if not isinstance(wrapper_cfg, dict) or 'attempt_initial_images' not in wrapper_cfg:
@@ -58,6 +86,25 @@ def load_attempt_initial_images(env_cfg: Optional[dict], mod_path) -> list[dict]
         field = f'{_CONFIG_FIELD}[{offset}]'
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f'{field} must be a nonempty path string')
+        value = _resolve_config_references(value, env_cfg, field)
+        if not value.strip():
+            raise ValueError(f'{field} must resolve to a nonempty path string')
+        resolved_paths.append(value)
+    return resolved_paths
+
+
+def load_attempt_initial_images(env_cfg: Optional[dict], mod_path) -> list[dict]:
+    """Return ordered, detached Pillow images and SHA-256 source-byte hashes.
+
+    The returned records contain only ``index`` (one based), ``image`` and
+    ``sha256``. Source paths are never included in observations. All configured
+    entries are validated before reading any file. A relative entry requires
+    an absolute effective Mods root; this prevents an implicit cwd fallback.
+    """
+    paths = resolve_attempt_initial_image_paths(env_cfg)
+    resolved_paths = []
+    for offset, value in enumerate(paths):
+        field = f'{_CONFIG_FIELD}[{offset}]'
         path = Path(value)
         if not path.is_absolute():
             if mod_path is None or not str(mod_path).strip() or not Path(mod_path).is_absolute():
