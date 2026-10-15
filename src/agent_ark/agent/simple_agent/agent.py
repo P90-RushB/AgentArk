@@ -59,6 +59,33 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
     return value.get(name, default) if isinstance(value, Mapping) else getattr(value, name, default)
 
 
+def _response_field(value: Any, name: str) -> tuple[bool, Any]:
+    """Read only an explicit response field, including SDK extra fields.
+
+    SDK optional attributes can default to None without having appeared on the
+    wire. Their field-set metadata distinguishes that case from explicit null.
+    """
+    if isinstance(value, Mapping):
+        if name in value:
+            return True, value[name]
+    else:
+        fields_set = getattr(value, "model_fields_set", None)
+        if fields_set is None:
+            fields_set = getattr(value, "__fields_set__", None)
+        if isinstance(fields_set, (set, frozenset)):
+            if name in fields_set:
+                return True, getattr(value, name, None)
+        else:
+            missing = object()
+            item = getattr(value, name, missing)
+            if item is not missing:
+                return True, item
+    extra = _field(value, "model_extra")
+    if isinstance(extra, Mapping) and name in extra:
+        return True, extra[name]
+    return False, None
+
+
 def _usage_dict(usage: ModelUsage) -> dict:
     return {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
             "total_tokens": usage.total_tokens}
@@ -107,26 +134,44 @@ class _OpenAIModel:
             return chat_messages(request.messages)
         return api_chat_messages(request.messages, native_scope=self.native_scope)
 
-    def _response_reasoning(self, message: Any) -> tuple[Any, str | None]:
-        # Fixed OpenRouter Chat Completions protocol. Opaque details remain
-        # native JSON; neither encrypted blocks nor reasoning become content.
+    def _response_reasoning(self, message: Any) -> tuple[dict, str | None]:
+        # Closed native field families. OpenRouter details retain precedence;
+        # a Volcengine encrypted field identifies its original-name protocol.
         extra = _field(message, "model_extra", {})
         details = _field(message, "reasoning_details")
         if details is None:
             details = _field(extra, "reasoning_details")
-        reasoning = None
-        for value in (_field(message, "reasoning"), _field(message, "reasoning_content"),
-                      _field(extra, "reasoning"), _field(extra, "reasoning_content")):
-            if value is not None and value != "":
-                reasoning = value
-                break
         try:
-            if reasoning is not None and not isinstance(reasoning, str):
-                raise ValueError("invalid reasoning text")
             if details is not None and (not isinstance(details, list) or any(not isinstance(part, dict) for part in details)):
                 raise ValueError("invalid reasoning details")
-            audit = {name: value for name, value in (("reasoning", reasoning), ("reasoning_details", details))
-                     if value is not None}
+            encrypted_present, encrypted = (False, None) if details else _response_field(message, "encrypted_content")
+            summary_present, summary = _response_field(message, "reasoning_content") if encrypted_present else (False, None)
+            # Some OpenRouter responses carry an empty foreign encrypted field.
+            # Preserve their existing plaintext reasoning when no native summary
+            # field was actually supplied.
+            plaintext = next((value for value in (_field(message, "reasoning"), _field(extra, "reasoning"))
+                              if isinstance(value, str) and value), None)
+            use_encrypted = encrypted_present and not (
+                encrypted in (None, "") and not summary_present and plaintext is not None)
+            reasoning = None
+            if use_encrypted:
+                audit = {"encrypted_content": encrypted}
+                if summary_present:
+                    audit["reasoning_content"] = summary
+                if any(value is not None and not isinstance(value, str) for value in audit.values()):
+                    raise ValueError("invalid encrypted reasoning")
+                if details is not None:
+                    audit["reasoning_details"] = details
+            else:
+                for value in (_field(message, "reasoning"), _field(message, "reasoning_content"),
+                              _field(extra, "reasoning"), _field(extra, "reasoning_content")):
+                    if value is not None and value != "":
+                        reasoning = value
+                        break
+                if reasoning is not None and not isinstance(reasoning, str):
+                    raise ValueError("invalid reasoning text")
+                audit = {name: value for name, value in (("reasoning", reasoning), ("reasoning_details", details))
+                         if value is not None}
             audit_json = json.dumps(audit, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
             if len(audit_json.encode("utf-8")) > 1024 * 1024:
                 raise ValueError("native reasoning audit exceeds its bound")
@@ -134,10 +179,18 @@ class _OpenAIModel:
             raise ModelResponseError("chat client returned invalid native assistant state") from None
         detached = json.loads(audit_json)
         self.last_response_metadata.update(detached)
-        return detached.get("reasoning_details") or None, detached.get("reasoning")
+        if detached.get("reasoning_details"):
+            native = {"reasoning_details": detached["reasoning_details"]}
+        elif use_encrypted:
+            native = {name: detached[name] for name in ("reasoning_content", "encrypted_content") if name in detached}
+        elif detached.get("reasoning"):
+            native = {"reasoning": detached["reasoning"]}
+        else:
+            native = {}
+        return native, detached.get("reasoning")
 
-    def _native_assistant(self, message: Any, calls: Any, *, details: Any, reasoning: str | None) -> NativeAssistantState | None:
-        if details is None and not reasoning:
+    def _native_assistant(self, message: Any, calls: Any, *, reasoning_fields: dict) -> NativeAssistantState | None:
+        if not reasoning_fields:
             return None
         try:
             native = {"role": "assistant", "content": _field(message, "content")}
@@ -145,10 +198,7 @@ class _OpenAIModel:
                 native["tool_calls"] = [{"id": _field(call, "id"), "type": _field(call, "type"), "function": {
                     "name": _field(_field(call, "function"), "name"),
                     "arguments": _field(_field(call, "function"), "arguments")}} for call in calls]
-            if details is not None:
-                native["reasoning_details"] = details
-            else:
-                native["reasoning"] = reasoning
+            native.update(reasoning_fields)
             state = NativeAssistantState(self.native_scope, json.dumps(
                 native, ensure_ascii=False, separators=(",", ":"), allow_nan=False))
         except (ValueError, TypeError, RecursionError, OverflowError):
@@ -196,7 +246,7 @@ class _OpenAIModel:
         self.last_response_metadata["finish_reason"] = finish_reason
         message = _field(choice, "message")
         content = APIAgent._coerce_response_text(_field(message, "content"))
-        details, reasoning = self._response_reasoning(message)
+        reasoning_fields, reasoning = self._response_reasoning(message)
         # assistant_raw is an audit convenience only, never working context.
         self.last_response_metadata["assistant_raw"] = APIAgent._combine_reasoning_and_content(
             reasoning=reasoning or "", content=content)
@@ -215,7 +265,7 @@ class _OpenAIModel:
             raise ModelResponseError("chat client requested unavailable tools")
         if not calls and finish_reason == "tool_calls":
             raise ModelResponseError("chat client returned no tool calls")
-        native = self._native_assistant(message, calls, details=details, reasoning=reasoning)
+        native = self._native_assistant(message, calls, reasoning_fields=reasoning_fields)
         try:
             parsed = []
             for call in calls:

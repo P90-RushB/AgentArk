@@ -184,9 +184,11 @@ summary-length target.
 These are configurable upper bounds, not a fixed compression ratio or a guarantee
 that a model's native context window is large enough.
 
-SimpleAgent's HTTP backend follows the fixed OpenRouter Chat Completions
-reasoning contract. Response content and native reasoning history are stored
-separately; endpoints with a different contract are not guaranteed compatible.
+SimpleAgent's HTTP backend preserves the supported OpenRouter reasoning fields
+and Volcengine's original `reasoning_content` / `encrypted_content` pair in
+Chat Completions history. Response content and native reasoning are stored
+separately; response fields select the supported replay family without a new
+configuration option. Other endpoint contracts are not guaranteed compatible.
 See [native reasoning history](simple-agent-native-reasoning.md) for replay,
 compaction and record behavior.
 

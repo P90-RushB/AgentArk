@@ -97,8 +97,8 @@ class ToolCall:
 class NativeAssistantState:
     """Detached API-only assistant replay, never ordinary model-visible text.
 
-    This is the fixed OpenRouter Chat Completions contract, not arbitrary
-    provider kwargs. JSON preserves null, whitespace, opaque blocks and order.
+    This is a closed Chat Completions reasoning contract, not arbitrary provider
+    kwargs. JSON preserves missing fields, null, whitespace, opaque data and order.
     The endpoint/model scope prevents replay through a different backend.
     """
     scope: str
@@ -127,7 +127,8 @@ class NativeAssistantState:
             json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
             if (not isinstance(value, dict) or value.get("role") != "assistant"
                 or "content" not in value
-                or set(value) - {"role", "content", "tool_calls", "reasoning", "reasoning_details"}):
+                or set(value) - {"role", "content", "tool_calls", "reasoning", "reasoning_details",
+                                 "reasoning_content", "encrypted_content"}):
                 raise ValueError("invalid native assistant fields")
             if value["content"] is not None and not isinstance(value["content"], (str, list)):
                 raise ValueError("invalid native assistant content")
@@ -137,14 +138,19 @@ class NativeAssistantState:
                 for part in value["content"]
             ):
                 raise ValueError("native assistant content must contain only text parts")
-            if ("reasoning" in value) == ("reasoning_details" in value):
-                raise ValueError("native assistant requires one reasoning representation")
-            if "reasoning_details" in value:
+            fields = set(value) & {"reasoning", "reasoning_details", "reasoning_content", "encrypted_content"}
+            if fields == {"reasoning_details"}:
                 details = value["reasoning_details"]
                 if not isinstance(details, list) or not details or any(not isinstance(part, dict) for part in details):
                     raise ValueError("invalid native reasoning details")
-            elif not isinstance(value["reasoning"], str) or not value["reasoning"]:
-                raise ValueError("invalid native reasoning text")
+            elif fields == {"reasoning"}:
+                if not isinstance(value["reasoning"], str) or not value["reasoning"]:
+                    raise ValueError("invalid native reasoning text")
+            elif "encrypted_content" in fields and not fields - {"reasoning_content", "encrypted_content"}:
+                if any(value[name] is not None and not isinstance(value[name], str) for name in fields):
+                    raise ValueError("invalid native encrypted reasoning")
+            else:
+                raise ValueError("native assistant requires one reasoning representation")
             self._calls(value)
         except (TypeError, RecursionError, OverflowError) as error:
             raise ValueError("invalid native assistant JSON") from error

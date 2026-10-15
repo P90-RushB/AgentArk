@@ -1,10 +1,11 @@
 # SimpleAgent native reasoning history
 
-SimpleAgent's HTTP backend uses one fixed contract: OpenRouter Chat
-Completions messages and function tools, with OpenRouter reasoning extensions.
+SimpleAgent's HTTP backend uses Chat Completions messages and function tools,
+with closed OpenRouter and Volcengine native reasoning field families.
 The existing `provider: openai` setting selects this HTTP backend; it does not
 promise compatibility with every endpoint that describes itself as
-OpenAI-compatible. No vendor-specific dispatch or automatic fallback is added.
+OpenAI-compatible. Response fields select the supported family automatically;
+no new platform setting, URL-based dispatch or automatic request fallback is added.
 Endpoints that reject these fields can fail the request. Successful HTTP
 acceptance alone does not prove that an endpoint uses the reasoning fields.
 
@@ -28,10 +29,29 @@ unchanged, including legacy response-format text.
 - A detached, immutable `NativeAssistantState` retains the original assistant
   content, including null and whitespace, and exact function-call IDs and
   argument strings. Its endpoint/model scope must match the HTTP backend.
-- Nonempty `reasoning_details` takes precedence and is replayed without
-  editing its objects or their order. Otherwise a nonempty `reasoning` string
-  is replayed; the input alias `reasoning_content` maps to `reasoning`.
-  Missing, null, or empty details do not create native replay state.
+- Nonempty OpenRouter `reasoning_details` retains first priority and is replayed
+  without editing its objects or their order. Foreign `encrypted_content` fields
+  do not affect this existing path, including when their shape is unsupported.
+- Otherwise, an explicitly supplied `encrypted_content` selects the Volcengine
+  family. The assistant replays that field and any explicitly supplied
+  `reasoning_content` under their original names and with unchanged string or
+  null values. Ciphertext is never decoded, trimmed, truncated or summarized.
+  The summary is never renamed to `reasoning` or copied into assistant content.
+  A ciphertext-only response creates native state. Missing, null and empty
+  summary fields remain distinct, as do null and empty ciphertext fields; even
+  an explicitly empty family retains native state and its conservative bounds.
+- One compatibility exception preserves existing OpenRouter behavior: when
+  `encrypted_content` is null or empty, `reasoning_content` is absent, and a
+  nonempty `reasoning` string exists, the original `reasoning` path wins.
+  Without an explicit `encrypted_content`, the previous nonempty `reasoning`
+  path and `reasoning_content`-to-`reasoning` alias remain unchanged. Missing,
+  null or empty details alone still do not create native replay state.
+- Native state accepts exactly one of these field families: `reasoning_details`,
+  `reasoning`, or `encrypted_content` with optional `reasoning_content`. Mixed
+  families and unknown replay fields are rejected. A selected encrypted family
+  requires string or null values; malformed state fails before host tools run.
+  SDK optional defaults are distinguished from explicit fields using field-set
+  and extra-field metadata. SDK message extras are never copied wholesale.
 - Portable message encoding, summary input and Codex SDK input exclude this
   API-only state. The SDK transport continues to use its own protocol.
 - Request traces use the actual HTTP message projection. Response traces
@@ -40,6 +60,10 @@ unchanged, including legacy response-format text.
   `action.txt` when a decision has native responses. The native file is an
   audit record, not an instruction to copy opaque data into reply text.
   Existing record file-count and byte quotas apply to it.
+- The original assistant function calls and their IDs remain paired with the
+  runtime's tool results. Native state is replayed on host-tool continuations
+  and subsequent environment steps only within its original endpoint/model
+  scope. The existing scope format is unchanged.
 
 ## Limits and compaction
 
@@ -65,5 +89,7 @@ Offline fake-client tests check HTTP request fields, tool continuation,
 submission, records, compaction and budget boundaries. They do not establish
 compatibility with every remote provider or validate remote signature checks.
 
-Protocol reference:
-[OpenRouter reasoning preservation](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#preserving-reasoning).
+Protocol references:
+[OpenRouter reasoning preservation](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#preserving-reasoning),
+[Volcengine deep thinking](https://docs.volcengine.com/docs/ark/deep-thinking?lang=zh),
+[Volcengine Chat API](https://docs.volcengine.com/docs/ark/chat-api?lang=en).
