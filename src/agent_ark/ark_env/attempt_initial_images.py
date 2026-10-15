@@ -9,8 +9,9 @@ applied. PNG-safe grayscale, palette and alpha modes are preserved; other modes
 Each call reads and decodes a fresh copy; callers may cache it only for the
 current attempt.
 
-Explicit ``${section.key}`` placeholders read string values from the current
-effective config on each call; configuration references never recurse.
+Explicit ``${section.key}`` placeholders read strings or ordered string lists
+from the current effective config on each call. Each path template permits one
+list reference; configuration references never recurse.
 
 Bounds are deliberately independent of observation frame/image caps: at most
 16 files, 16 MiB per file / 64 MiB total, and 32 million decoded pixels per
@@ -40,13 +41,19 @@ _PLACEHOLDER = re.compile(r'\$\{([^}]*)\}')
 _CONFIG_KEY = re.compile(r'[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+\Z')
 
 
-def _resolve_config_references(value: str, env_cfg: dict, field: str) -> str:
-    """Substitute direct dotted config keys without evaluating or recursing."""
-    def replace(match):
+def _resolve_config_references(value: str, env_cfg: dict, field: str) -> list[str]:
+    """Expand direct config keys with at most one ordered list per template."""
+    fragments = []
+    list_index = None
+    end = 0
+    for match in _PLACEHOLDER.finditer(value):
+        fragments.append(value[end:match.start()])
+        end = match.end()
         key = match.group(1)
         if '.' not in key:
             # Preserve literal paths, including environment-style placeholders.
-            return match.group(0)
+            fragments.append(match.group(0))
+            continue
         if not _CONFIG_KEY.fullmatch(key):
             raise ValueError(f'{field} contains an invalid configuration reference')
         current = env_cfg
@@ -54,20 +61,37 @@ def _resolve_config_references(value: str, env_cfg: dict, field: str) -> str:
             if not isinstance(current, dict) or component not in current:
                 raise ValueError(f'{field} contains an unknown configuration reference')
             current = current[component]
-        if not isinstance(current, str):
-            raise ValueError(f'{field} configuration references must name string values')
-        if any('.' in nested.group(1) for nested in _PLACEHOLDER.finditer(current)):
-            raise ValueError(f'{field} configuration references must not be recursive or cyclic')
-        return current
-
-    return _PLACEHOLDER.sub(replace, value)
+        if isinstance(current, list):
+            if list_index is not None:
+                raise ValueError(f'{field} permits at most one list configuration reference')
+            if len(current) > MAX_ATTEMPT_INITIAL_IMAGES:
+                raise ValueError(f'{field} expands to more than {MAX_ATTEMPT_INITIAL_IMAGES} images')
+            list_index = len(fragments)
+            members = current
+        elif isinstance(current, str):
+            members = [current]
+        else:
+            raise ValueError(f'{field} configuration references must name string values or lists of strings')
+        for member_index, member in enumerate(members):
+            if not isinstance(member, str) or (isinstance(current, list) and not member.strip()):
+                raise ValueError(f'{field} list reference member [{member_index}] must be a nonempty string')
+            if any('.' in nested.group(1) for nested in _PLACEHOLDER.finditer(member)):
+                raise ValueError(f'{field} configuration references must not be recursive or cyclic')
+        fragments.append(current)
+    fragments.append(value[end:])
+    if list_index is None:
+        return [''.join(fragments)]
+    prefix = ''.join(fragments[:list_index])
+    suffix = ''.join(fragments[list_index + 1:])
+    return [prefix + member + suffix for member in fragments[list_index]]
 
 
 def resolve_attempt_initial_image_paths(env_cfg: Optional[dict]) -> list[str]:
     """Validate config and return path strings with direct references resolved.
 
-    This pure helper performs no filesystem/path operations and never modifies
-    the configuration. Relative paths remain relative, and environment-style
+    A single list reference per template expands in its original order. This
+    pure helper performs no filesystem/path operations and never modifies the
+    configuration. Relative paths remain relative, and environment-style
     placeholders and tilde characters remain literal.
     """
     wrapper_cfg = env_cfg.get('env_wrapper_cfg', {}) if isinstance(env_cfg, dict) else {}
@@ -78,18 +102,17 @@ def resolve_attempt_initial_image_paths(env_cfg: Optional[dict]) -> list[str]:
         raise ValueError(f'{_CONFIG_FIELD} must be a list of nonempty path strings')
     if not paths:
         return []
-    if len(paths) > MAX_ATTEMPT_INITIAL_IMAGES:
-        raise ValueError(f'{_CONFIG_FIELD} permits at most {MAX_ATTEMPT_INITIAL_IMAGES} images')
-
     resolved_paths = []
     for offset, value in enumerate(paths):
         field = f'{_CONFIG_FIELD}[{offset}]'
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f'{field} must be a nonempty path string')
-        value = _resolve_config_references(value, env_cfg, field)
-        if not value.strip():
+        expanded = _resolve_config_references(value, env_cfg, field)
+        if any(not path.strip() for path in expanded):
             raise ValueError(f'{field} must resolve to a nonempty path string')
-        resolved_paths.append(value)
+        resolved_paths.extend(expanded)
+        if len(resolved_paths) > MAX_ATTEMPT_INITIAL_IMAGES:
+            raise ValueError(f'{_CONFIG_FIELD} permits at most {MAX_ATTEMPT_INITIAL_IMAGES} images after expansion')
     return resolved_paths
 
 
