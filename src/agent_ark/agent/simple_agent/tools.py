@@ -363,15 +363,46 @@ class FileWorkspace(ToolRegistry):
         self._records: dict[str, tuple[RecordSnapshot, tuple[str, str, str], tuple[str, int]]] = {}
         self._published_bytes = 0
         self._notes: dict[tuple[str, str], tuple[int, str]] = {}
-        path = {"type": "string", "maxLength": 512}
-        integer = lambda low, high: {"type": "integer", "minimum": low, "maximum": high}
-        self._builtin("list_files", "List permitted records and notes with logical paths; paginate large listings.",
-                      {"path": path, "offset": integer(0, self.limits.max_records * self.limits.max_record_files + self.limits.max_note_files), "limit": integer(1, 100)}, self._list)
-        self._builtin("read_file", "Read UTF-8 text or JSONL by 1-based lines; output includes next_line and immutable record digest.",
-                      {"path": path, "start_line": integer(1, 10000000), "max_lines": integer(1, 200)}, self._read)
-        self._builtin("view_image", "View an allowed PNG/JPEG/GIF/WebP image as actual vision content.", {"path": path}, self._image)
-        self._builtin("write_note", "Create or replace an own UTF-8 note under notes/. Notes are model memory, not environment facts.",
-                      {"path": path, "content": {"type": "string", "maxLength": self.limits.max_note_bytes}}, self._write)
+        path = {"type": "string", "maxLength": 512,
+                "description": "Exact logical file path discovered with list_files; never an arbitrary OS path."}
+        integer = lambda low, high, description: {"type": "integer", "minimum": low, "maximum": high, "description": description}
+        self._builtin("list_files",
+                      "Discover your virtual workspace: read-only records/<record_id>/ and writable notes/<name>. "
+                      "Completed SimpleAgent decisions publish messages.json, assistant.txt, action.txt and images/0000.png "
+                      "when present (image number/extension vary); the current decision is published only after completion. "
+                      "Compaction removes old text/images from the working request, not published originals: listed images "
+                      "can be reopened with view_image while in this agent case/scope and within tool limits. "
+                      "Discover actual IDs/paths first, never guess them. Start with "
+                      'list_files({"path":"","offset":0,"limit":20}). Returns flat file rows, not directory entries; '
+                      "filter by logical prefix and continue with next_offset until null.",
+                      {"path": {"type": "string", "maxLength": 512,
+                                "description": "Use empty string or '.' for all files; 'records', 'notes' or a listed record root to filter. No trailing slash."},
+                       "offset": integer(0, self.limits.max_records * self.limits.max_record_files + self.limits.max_note_files,
+                                         "Start at 0; use the returned next_offset for the next page with the same path filter."),
+                       "limit": integer(1, 100, "Maximum file rows per page (1-100).")}, self._list)
+        self._builtin("read_file",
+                      "Read listed UTF-8 text by 1-based lines, including records/.../messages.json, assistant.txt, "
+                      "action.txt and your notes. Follow next_line until null for more text. messages.json image paths "
+                      "are relative to that record root; concatenate text_chunks without separators. Use view_image "
+                      "for images. If listed, example: "
+                      'read_file({"path":"records/turn-000001/messages.json","start_line":1,"max_lines":100}).',
+                      {"path": path,
+                       "start_line": integer(1, 10000000, "First line to read (1-based); use returned next_line to continue."),
+                       "max_lines": integer(1, 200, "Maximum lines to return; byte limits may shorten the page.")}, self._read)
+        self._builtin("view_image",
+                      "Reopen a listed PNG/JPEG/GIF/WebP as actual vision content, including an original image no longer "
+                      "in the working request after compaction. Only published, in-scope records within this agent case "
+                      "and tool image/call/byte limits are available; SimpleAgent.reset() or SimpleAgent.close() clears this workspace. "
+                      'If listed, example: view_image({"path":"records/turn-000001/images/0000.png"}).',
+                      {"path": path}, self._image)
+        self._builtin("write_note",
+                      "Create or replace your UTF-8 model memory at notes/<name>, one filename with no nested directories. "
+                      "Notes are your interpretations, not environment facts; records/ is immutable. Example: "
+                      'write_note({"path":"notes/plan.md","content":"Recheck the earlier reference image before acting."}).',
+                      {"path": {"type": "string", "maxLength": 512,
+                                "description": "Writable logical path notes/<name>, e.g. notes/plan.md; no nested directories or OS paths."},
+                       "content": {"type": "string", "maxLength": self.limits.max_note_bytes,
+                                   "description": "Complete replacement note text, subject to UTF-8 byte and workspace quotas."}}, self._write)
 
     def _builtin(self, name: str, description: str, properties: dict, function: Callable) -> None:
         self.register(ToolSpec(name, description, _json({"type": "object", "properties": properties,

@@ -629,9 +629,15 @@ class SimpleAgentTests(unittest.TestCase):
             self.assertIsNone(agent.last_trace_by_agent[0]["action_extracted"])
 
     def test_submission_is_declared_and_budgeted_only_on_action_requests(self):
+        from agent_ark.agent.simple_agent.encoding import tool_declarations
+        from agent_ark.agent.simple_agent.tools import FileWorkspace
+
         backend = FakeModel()
         with tempfile.TemporaryDirectory() as directory:
-            agent = self.agent(backend, simple_agent_config={"context": {"max_context_characters": 6000,
+            tool_chars = len(json.dumps(tool_declarations((*FileWorkspace(directory).specs, SUBMISSION_SPEC)), ensure_ascii=False))
+            # Reserve a fixed message allowance in addition to tool help. The
+            # declarations are still budgeted and repeated inputs must compact.
+            agent = self.agent(backend, simple_agent_config={"context": {"max_context_characters": tool_chars + 4000,
                 "recent_turns": 1, "output_reserve_tokens": 64, "max_context_tokens": 20000},
                 "tools": {"enabled": True, "workspace_parent": directory}})
             found = False
