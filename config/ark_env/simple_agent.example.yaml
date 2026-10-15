@@ -45,11 +45,11 @@ models:
       # max_completion_tokens (the default).
       output_token_parameter: max_tokens
       context:
-        # Total local estimate, including the output reserve; not a model limit.
-        max_context_tokens: 128000
+        # Total local estimate (256 * 1024), including the output reserve; not a model limit.
+        max_context_tokens: 262144
         output_reserve_tokens: 20480
         recent_turns: 2
-        max_images: 128
+        max_images: 256
         max_context_characters: 524288
         max_summary_calls: 4
         summary_input_tokens: 48000

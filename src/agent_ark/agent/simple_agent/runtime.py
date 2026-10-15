@@ -73,11 +73,11 @@ class _DecisionDeadline:
 class SimpleRuntimeConfig:
     max_context_characters: int = 524_288
     max_context_bytes: int = 32 * 1024 * 1024
-    max_context_tokens: int = 128_000
+    max_context_tokens: int = 256 * 1024
     output_reserve_tokens: int = 20_480
     recent_turns: int = 2
     max_summary_calls: int = 4
-    max_images: int = 128
+    max_images: int = 256
     max_image_bytes: int = 16 * 1024 * 1024
     image_token_estimate: int = 1_024
     max_archive_entries: int = 4_096

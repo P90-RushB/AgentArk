@@ -99,16 +99,33 @@ APIAgent, CodexAgent and environment implementations are unchanged. No real
 model, Unity Editor or Player was run for this revision. Current defaults remain
 local budget estimates, not a model-native context-window guarantee.
 
-## Shared image-count default — 2026-10-15
+## Shared context defaults — 2026-10-15
 
-The shared runtime and general example now set `max_images: 128`. Earlier
+The shared runtime and general example set `max_images: 256` and
+`max_context_tokens: 262144` (256 * 1024). The 20,480-token action-output reserve,
+48,000-token summary-input limit, and archive caps are unchanged. Earlier
 validation retains its recorded limits, and task-specific overrides remain
-independent. Image count, estimated tokens, text and bytes are
-separate compaction triggers, so another limit can compact before 128 images.
+independent. Image count, estimated tokens, text and bytes are separate
+compaction triggers, so another limit can compact before 256 images.
 
-A boundary regression isolates image counting with an injected token counter:
-128 images remain uncompressed, the 129th triggers one summary, the two recent
-inputs remain visible, and all 129 original images remain archived.
-The targeted SimpleAgent regression suite passed with fake models and local
-test services: 243 passed, 2 skipped, 31 subtests passed. The skips concern
-existing filesystem link fixtures. No real model or Unity was run for this change.
+Boundary regressions isolate image counting and token accounting with injected
+token counters: 256 images remain uncompressed, the 257th triggers one summary,
+the two recent inputs remain visible, and all 257 original images remain
+archived. Exactly 241,664 input tokens fit with the output reserve; one extra
+input token is rejected before any model call when no prior turn can compact.
+No real model or Unity is required for these regressions.
+
+The complete test directory in the existing working tree passed with fake models
+and local test services:
+
+```text
+python -m pytest tests -q --maxfail=1
+618 passed, 2 skipped, 7 warnings, 130 subtests passed
+```
+
+The run includes preserved, preexisting optional-transport edits outside this
+defaults revision. The skips concern existing filesystem link fixtures; the warnings come from
+configuration fixtures without immutable backups. No real model or Unity was run
+for this change. Local-only logs and preexisting-change preservation checks are
+under `local_save/task_validation/SimpleAgent/20261015_defaults_256k/`, relative
+to the outer repository root, and are unavailable in a fresh clone.

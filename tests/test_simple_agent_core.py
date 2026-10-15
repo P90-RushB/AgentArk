@@ -191,7 +191,42 @@ def test_results_appended_during_summary_are_not_lost():
     asyncio.run(run())
 
 
-def test_default_image_limit_compacts_only_after_128_images():
+def test_default_context_budgets():
+    defaults = SimpleRuntimeConfig()
+    assert defaults.max_context_tokens == 256 * 1024
+    assert defaults.max_images == 256
+    assert defaults.output_reserve_tokens == 20_480
+    assert defaults.summary_input_tokens == 48_000
+
+
+@pytest.mark.parametrize("excess_tokens", [0, 1])
+def test_default_token_limit_includes_output_reserve(excess_tokens):
+    async def run():
+        calls = []
+
+        async def model(value):
+            calls.append(value)
+            return ModelCompletion("{}")
+
+        input_tokens = 256 * 1024 - 20_480 + excess_tokens
+        runtime = SimpleRuntime(CallableModel(model), token_counter=lambda messages: input_tokens)
+        source = request()
+        if excess_tokens:
+            with pytest.raises(AgentLimitError, match="cannot fit context bounds"):
+                await runtime.complete(source)
+            assert calls == []
+        else:
+            await runtime.complete(source)
+            assert len(calls) == 1
+            assert calls[0].input_tokens == input_tokens
+            assert calls[0].max_output_tokens == 20_480
+            assert runtime.usage.summary_calls == 0
+        assert runtime.history_snapshot[0].messages == source.messages
+
+    asyncio.run(run())
+
+
+def test_default_image_limit_compacts_only_after_256_images():
     async def run():
         calls = []
         image = image_from_pixels(bytes([1, 2, 3]), 1, 1)
@@ -202,18 +237,18 @@ def test_default_image_limit_compacts_only_after_128_images():
 
         # Isolate the image-count policy from the independent token limit.
         runtime = SimpleRuntime(CallableModel(model), token_counter=lambda messages: 1)
-        for number in range(1, 129):
+        for number in range(1, 257):
             source = replace(request(number), messages=(*request(number).messages, Message("user", (image,))))
             await runtime.complete(source)
         assert runtime.usage.summary_calls == 0
-        assert sum(isinstance(part, ImagePart) for message in calls[-1].messages for part in message.parts) == 128
+        assert sum(isinstance(part, ImagePart) for message in calls[-1].messages for part in message.parts) == 256
 
-        source = replace(request(129), messages=(*request(129).messages, Message("user", (image,))))
+        source = replace(request(257), messages=(*request(257).messages, Message("user", (image,))))
         await runtime.complete(source)
         assert runtime.usage.summary_calls == 1
         assert sum(isinstance(part, ImagePart) for message in calls[-1].messages for part in message.parts) == 2
         assert sum(isinstance(part, ImagePart) for entry in runtime.history_snapshot
-                   for message in entry.messages for part in message.parts) == 129
+                   for message in entry.messages for part in message.parts) == 257
 
     asyncio.run(run())
 
