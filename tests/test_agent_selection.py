@@ -50,7 +50,6 @@ def test_simple_selection_is_separate_from_provider():
 
 @pytest.mark.parametrize('cfg', [
     {'agent_type': 'missing'},
-    {'agent_type': 'simple', 'provider': 'codex'},
     {'agent_type': 'api', 'provider': 'codex'},
     {'agent_type': 'codex', 'provider': 'openrouter'},
     {'simple_agent': {}},

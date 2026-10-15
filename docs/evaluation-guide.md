@@ -184,6 +184,37 @@ summary-length target.
 These are configurable upper bounds, not a fixed compression ratio or a guarantee
 that a model's native context window is large enough.
 
+SimpleAgent uses the HTTP API transport by default. To select an existing
+ChatGPT subscription instead, use this model entry for any task:
+
+```yaml
+models:
+  - name: simple-codex
+    agent_type: simple
+    provider: codex
+    model: gpt-6.1-sol
+    reasoning_effort: medium
+```
+
+Omitted `simple_agent` settings inherit the shared defaults. Environment, case
+and workspace settings follow `config/ark_env/simple_agent.example.yaml`.
+This backend requires the optional `openai-codex` dependency
+and existing ChatGPT file credentials; use `AGENTARK_CODEX_BIN` when the SDK's
+pinned CLI does not support the requested model.
+SimpleAgent still owns memory, compaction and host tools. Each model request
+starts a fresh isolated SDK thread; a strict JSON envelope transports declared
+tool calls back to SimpleRuntime. These are not Codex native function tools.
+SDK reasoning, cached-token details and usage remain audit metadata. The SDK
+does not expose a hard output-token cap: requested action/summary budgets are
+prompt guidance, while runtime text/byte and summary-estimate checks still
+apply. Traces mark this limitation explicitly. A single SDK turn is not a
+guarantee of a single underlying HTTP request.
+The trace field `simple_agent.sdk_max_retries` describes HTTP backend retries;
+it does not control Codex CLI network recovery. Codex error notifications are
+audited while the same turn continues to its terminal result, bounded by eight
+notifications and the request
+deadline; this adapter does not issue a fresh outer request retry.
+
 Set `simple_agent.tools.enabled: true` and a writable `workspace_parent` to
 enable `list_files`, ranged UTF-8 `read_file`, actual-image `view_image`, and
 `write_note`. Each case/agent has private notes and immutable records of its own

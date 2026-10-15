@@ -673,6 +673,34 @@ def build_model_runtimes(
         player_feedback_cfg = _normalize_player_feedback_cfg(model_cfg.get('player_feedback', None))
         if player_feedback_cfg.get('enabled', False) and provider != 'codex':
             raise ValueError('player_feedback is currently supported only with provider: codex')
+        if provider == 'codex' and agent_spec.name == 'simple':
+            if player_feedback_cfg.get('enabled', False):
+                raise ValueError('SimpleAgent Codex backend does not implement CodexAgent player_feedback')
+            if model_cfg.get('cwd', None) not in (None, ''):
+                raise ValueError('SimpleAgent Codex backend requires an isolated empty cwd')
+            timeout_s = model_cfg.get('timeout_s', model_cfg.get('request_timeout_s', 600.0))
+            timeout_s = None if timeout_s is None else float(timeout_s)
+            reasoning_effort = _normalize_codex_reasoning_effort(
+                model_cfg.get('reasoning_effort', model_cfg.get('effort', 'medium')))
+            max_completion_tokens = APIAgent._normalize_max_completion_tokens(
+                model_cfg.get('max_completion_tokens', 30000))
+            agent = agent_spec.load_class()(
+                name=model_name, model=model_id, provider='codex', temperature=None,
+                timeout_s=timeout_s, max_retries=0, reasoning_effort=reasoning_effort,
+                max_completion_tokens=max_completion_tokens,
+                codex_bin=model_cfg.get('codex_bin', None),
+                **agent_constructor_options(agent_spec, model_cfg))
+            runtimes.append({
+                'name': model_name, 'model': model_id, 'provider': 'codex',
+                'agent_type': 'simple', 'base_url': None, 'api_key_env': None,
+                'temperature': None, 'timeout_s': timeout_s, 'max_retries': 0,
+                'max_completion_tokens': max_completion_tokens,
+                'max_output_tokens_supported': False,
+                'reasoning_effort': reasoning_effort, 'thread_mode': 'per_model_request',
+                'codex_context_mode': 'isolated', 'player_feedback': player_feedback_cfg,
+                'agent': agent,
+            })
+            continue
         if provider == 'codex':
             timeout_s = model_cfg.get('timeout_s', model_cfg.get('request_timeout_s', 600.0))
             if timeout_s is not None:
@@ -857,6 +885,8 @@ def _sanitize_raw_trace_message_part(part: Any) -> Any:
 
     if part_type == 'image':
         out = dict(part)
+        if 'url' in out:
+            out['url'] = _summarize_raw_trace_image_value(out.get('url'))
         if 'image_base64' in out:
             out['image_base64'] = _summarize_raw_trace_image_value(out.get('image_base64'))
         if 'image' in out:

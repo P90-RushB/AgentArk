@@ -66,7 +66,7 @@ def resolve_agent_type(model_cfg: Mapping[str, Any]) -> AgentType:
         spec = _AGENT_TYPES[name]
     except KeyError as exc:
         raise ValueError(f"unknown agent_type: {name!r}; available: {', '.join(_AGENT_TYPES)}") from exc
-    if provider == "codex" and spec.backend != "codex":
+    if provider == "codex" and spec.backend != "codex" and name != "simple":
         raise ValueError(f"agent_type: {name} requires an HTTP model provider, not provider: codex")
     if spec.backend == "codex" and provider not in ("codex", "auto"):
         raise ValueError("agent_type: codex requires provider: codex (or auto)")

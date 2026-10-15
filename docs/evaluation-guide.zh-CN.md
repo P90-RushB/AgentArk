@@ -164,6 +164,31 @@ SimpleAgent 接收新增图文/动作反馈，自行保留近期完整轮次，�
 不另增摘要留存长度参数。
 这些是可覆盖的上限，不代表固定压缩比例，也不保证所选模型的原生窗口足够大。
 
+SimpleAgent 默认使用 HTTP API。使用已有 ChatGPT 订阅作为模型调用后端时，
+可为任意任务配置以下模型条目：
+
+```yaml
+models:
+  - name: simple-codex
+    agent_type: simple
+    provider: codex
+    model: gpt-6.1-sol
+    reasoning_effort: medium
+```
+
+未填写的 `simple_agent` 设置继承通用默认值。环境、case 和工具工作目录的设置
+参照 `config/ark_env/simple_agent.example.yaml`。
+需要可选的 `openai-codex` 依赖和已有 ChatGPT 文件登录凭据；SDK 自带 CLI 不支持
+目标模型时，通过 `AGENTARK_CODEX_BIN` 指定兼容版本。
+上下文、摘要和宿主工具仍由 SimpleAgent 管理。每次模型请求新建隔离 SDK thread，
+用严格 JSON 封装把工具选择交回 SimpleRuntime；这不是 Codex 原生 function tool。
+SDK 推理、缓存 token 细节和实际用量留在审计记录中。SDK 没有硬输出 token 上限接口，
+因此动作/摘要预算是提示要求，返回后仍检查运行时文本、字节和摘要 token 估算界限；
+trace 会明确标记该限制。一次 SDK turn 不保证只有一次底层 HTTP 请求。
+trace 中的 `simple_agent.sdk_max_retries` 描述 HTTP 后端重试，不控制 Codex CLI 的网络恢复。
+Codex 错误通知会留在审计中，适配器继续等待同一 turn 的终态，受八条通知和请求时限约束；
+适配器不会为此额外重发一个外层模型请求。
+
 `simple_agent.tools.enabled: true` 启用四个宿主工具：`list_files`、按行 `read_file`、
 实际图像 `view_image`、`write_note`。同时设置 `workspace_parent` 为已有运行可写目录。
 每条 case/agent 有独立私有目录；只读记录来自已经提供给模型的观察及它自己的完成输出，

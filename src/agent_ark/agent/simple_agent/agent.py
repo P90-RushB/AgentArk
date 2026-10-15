@@ -282,13 +282,13 @@ class SimpleAgent(BaseAgent):
     """
     def __init__(
         self, name: str = "SimpleAgent", api_key: Optional[str] = None,
-        base_url: Optional[str] = None, model: str = "qwen3-vl-plus",
+        base_url: Optional[str] = None, model: Optional[str] = None,
         temperature: Optional[float] = 0.2, provider: str = "auto",
         timeout_s: Optional[float] = 1800.0, max_retries: int = 0,
         thinking: Any = None, reasoning_effort: Optional[str] = None,
         max_completion_tokens: Optional[int] = 30000, *,
         simple_agent_config: Optional[Mapping] = None, env_message_mode: str = "delta",
-        model_backend: Any = None, tool_setup: Any = None,
+        model_backend: Any = None, tool_setup: Any = None, codex_bin: Optional[str] = None,
     ) -> None:
         super().__init__(name)
         if env_message_mode != "delta":
@@ -317,7 +317,9 @@ class SimpleAgent(BaseAgent):
         if self.tool_choice not in ("required", "auto"):
             raise ValueError("simple_agent.tool_choice must be required or auto")
         self.base_url = str(base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1")
-        self.model, self.provider = str(model), str(provider or "auto").strip().lower()
+        self.provider = str(provider or "auto").strip().lower()
+        self.model = str(model or ("gpt-6.1-sol" if self.provider == "codex" else "qwen3-vl-plus"))
+        self.codex_bin = codex_bin or os.getenv("AGENTARK_CODEX_BIN") or None
         self.temperature = None if temperature is None else float(temperature)
         self.timeout_s = None if timeout_s is None else float(timeout_s)
         self.max_retries = int(max_retries)
@@ -327,6 +329,8 @@ class SimpleAgent(BaseAgent):
             raise ValueError("max_retries must be nonnegative")
         self.thinking_type = APIAgent._normalize_thinking_type(thinking)
         self.reasoning_effort = APIAgent._normalize_reasoning_effort(reasoning_effort)
+        if self.provider == "codex" and self.reasoning_effort is None:
+            self.reasoning_effort = "medium"
         self.max_completion_tokens = APIAgent._normalize_max_completion_tokens(max_completion_tokens)
         if self.thinking_type == "disabled" and self.reasoning_effort is not None:
             raise ValueError("thinking.type=disabled conflicts with reasoning_effort")
@@ -334,14 +338,19 @@ class SimpleAgent(BaseAgent):
         parameter_source.client = SimpleNamespace(provider=self.provider, base_url_host=(urlparse(self.base_url).hostname or "").lower())
         parameter_source.thinking_type = self.thinking_type
         parameter_source.reasoning_effort = self.reasoning_effort
-        self.extra_body, self._request_reasoning_effort = parameter_source._request_parameters()
+        if self.provider == "codex":
+            if self.thinking_type is not None:
+                raise ValueError("Codex backend uses reasoning_effort instead of thinking")
+            self.extra_body, self._request_reasoning_effort = {}, None
+        else:
+            self.extra_body, self._request_reasoning_effort = parameter_source._request_parameters()
         self._api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY")
         if model_backend is not None and not callable(getattr(model_backend, "complete", None)):
             raise TypeError("model_backend must expose async complete")
         if tool_setup is not None and not callable(tool_setup):
             raise TypeError("tool_setup must be a trusted callable")
         self._tool_setup = tool_setup
-        self._backend = model_backend if model_backend is not None else _OpenAIModel(self)
+        self._backend = model_backend if model_backend is not None else self._new_backend()
         self._owns_backend = model_backend is None
         self._loop: Optional[_LoopOwner] = None
         self._lock = threading.RLock()
@@ -646,7 +655,7 @@ class SimpleAgent(BaseAgent):
                 # factory object. Explicit reset starts a new owned client/loop.
                 self._closed = False
                 if self._owns_backend:
-                    self._backend = _OpenAIModel(self)
+                    self._backend = self._new_backend()
             for state in self._states.values():
                 state.runtime.close()
                 if state.directory is not None:
@@ -669,3 +678,10 @@ class SimpleAgent(BaseAgent):
                     self._loop = None
                     self._closed = True
             self._closed = True
+
+    def _new_backend(self):
+        if self.provider == "codex":
+            from .codex_model import CodexModel
+            return CodexModel(model=self.model, reasoning_effort=self.reasoning_effort or "medium",
+                              timeout_s=self.timeout_s, codex_bin=self.codex_bin)
+        return _OpenAIModel(self)
