@@ -25,6 +25,11 @@ SUBMISSION_SPEC = ToolSpec(
 NATIVE_INSTRUCTIONS = (
     "SimpleAgent native action transport protocol. This system directive controls the "
     "response transport; the source-labelled task instructions below control the task. "
+    "Task requests for an explicit <think>...</think> reply are superseded here. "
+    "Use native model/backend reasoning when available, without adding a separate "
+    "reasoning block to assistant prose or wrapping the action in one. Reasoning may "
+    "be hidden or absent from the response. Literal text required inside a task payload "
+    "remains allowed. "
     "Use declared native host function calls for list_files, read_file, view_image, "
     "write_note, or other declared host tools. These tools do not operate the environment. "
     "After any host tool work, finish with exactly one standalone native submit_action "

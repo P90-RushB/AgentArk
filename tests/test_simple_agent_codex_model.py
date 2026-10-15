@@ -557,10 +557,18 @@ def test_runtime_executes_host_tools_then_submit_action_without_codex_memory(fak
     agent = SimpleAgent(provider="codex", model="gpt-6.1-sol", reasoning_effort="medium",
         simple_agent_config={"tools": {"enabled": True, "workspace_parent": str(tmp_path / "workspace")}})
     try:
-        result, trace = agent.forward_with_trace({0: {"messages": [{"role": "user", "content": "Visible task"}]}})
+        legacy_format = "First output <think>OLD_FORMAT</think>, then <tool_call> JSON </tool_call>."
+        result, trace = agent.forward_with_trace({0: {"messages": [
+            {"role": "system", "content": legacy_format}, {"role": "user", "content": "Visible task"}]}})
         assert json.loads(result[0]["action"][11:-12]) == action
         assert len(trace[0]["model_requests"]) == 2
         assert len(fake_sdk.instances) == 2
+        ordered_input = str(fake_sdk.requests[0][0])
+        assert "<think>...</think> reply are superseded" in ordered_input
+        assert "native model/backend reasoning when available" in ordered_input
+        assert "hidden or absent" in ordered_input
+        assert "exactly one standalone native submit_action" in ordered_input
+        assert legacy_format in ordered_input
         assert '"tool_call_id": "call_1"' in str(fake_sdk.requests[1][0])
         assert all(item["response_metadata"]["sdk_native_function_tools"] is False
                    for item in trace[0]["model_requests"])

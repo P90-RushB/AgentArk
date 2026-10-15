@@ -504,7 +504,8 @@ class SimpleAgentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             agent = self.agent(backend, simple_agent_config={"tools": {"enabled": True, "workspace_parent": directory}})
             with patch("agent_ark.agent.simple_agent.agent.FileWorkspace.execute", wraps=agent._state(0).workspace.execute) as execute:
-                response, trace = agent.forward_with_trace(obs("initial visible state", system="Output <tool_call> JSON </tool_call>."))
+                legacy_format = "First output <think>THINK_CONTENT</think>, then <tool_call> JSON </tool_call>."
+                response, trace = agent.forward_with_trace(obs("initial visible state", system=legacy_format))
                 self.assertEqual(response[0], {"action": ACTION, "assistant": ACTION})
                 self.assertEqual(execute.call_count, 1)
                 self.assertEqual(trace[0]["assistant_raw"], "Choosing tap.")
@@ -518,6 +519,14 @@ class SimpleAgentTests(unittest.TestCase):
             request = backend.requests[2]
             self.assertEqual(request.messages[0].role, "system")
             self.assertIn("native action transport protocol", text_of(request).lower())
+            transport = "".join(part.text for part in request.messages[0].parts)
+            self.assertIn("<think>...</think> reply are superseded", transport)
+            self.assertIn("native model/backend reasoning when available", transport)
+            self.assertIn("hidden or absent", transport)
+            self.assertIn("Literal text required inside a task payload remains allowed", transport)
+            self.assertIn("exactly one standalone native submit_action", transport)
+            self.assertTrue(any(message.role == "developer" and legacy_format in "".join(
+                part.text for part in message.parts) for message in request.messages))
             self.assertEqual(sum(message.role == "system" for message in request.messages), 1)
             self.assertTrue(any(message.role == "assistant" and message.tool_calls and message.tool_calls[0].name == "submit_action"
                                 for message in request.messages))
