@@ -150,7 +150,8 @@ class LegacyThinkCompatibilityTest(unittest.TestCase):
                       "scope": "Default and explicit legacy_think only; no claim of whole SimpleAgent request byte equality.",
                       "files": {}, "cases": [], "known_differences": [
                           "Working-tree CRLF versus Git LF changes physical hashes; loaded text normalizes newlines.",
-                          "SimpleAgent native transport has three explanation-wording substitutions; byte equality is false.",
+                          "SimpleAgent native prompts are intentionally changed and loaded from dedicated resources; "
+                          "whole-request byte equality is not asserted. Codex transport keeps its known wording substitutions.",
                           "brief_rationale is new opt-in behavior and is intentionally outside legacy compatibility."]}
         for path in FILES:
             current_blob = git("show", f"HEAD:{path}")
@@ -348,7 +349,7 @@ class LegacyThinkCompatibilityTest(unittest.TestCase):
             self.assertTrue(deliveries[1][-1][0])
         self.same("dispatch_valid_then_invalid_clears_only_failed_agent", *results)
 
-    def test_09_simpleagent_native_wording_is_explicitly_not_byte_identical(self):
+    def test_09_native_prompt_is_intentionally_changed_but_submission_behavior_is_locked(self):
         replacements = {
             "Task requests for an explicit <think>...</think> reply are superseded here. ":
                 "Task requests for separate reasoning blocks are superseded here. ",
@@ -357,40 +358,53 @@ class LegacyThinkCompatibilityTest(unittest.TestCase):
             "payload. Do not wrap the rationale in <think> tags. ":
                 "payload. Use ordinary prose for the rationale, without explanation tags. ",
         }
-        native = []
-        for snapshot in (self.old, self.new):
-            tree = ast.parse(snapshot.files[SUBMISSION].decode("utf-8"))
-            native.append(ast.literal_eval(next(node.value for node in tree.body if isinstance(node, ast.Assign)
-                          and any(isinstance(target, ast.Name) and target.id == "NATIVE_INSTRUCTIONS"
-                                  for target in node.targets))))
-        self.assertNotEqual(*native)
-        normalized = native[0]
-        for before, after in replacements.items():
-            normalized = normalized.replace(before, after)
-        self.same("simpleagent_native_directive_after_documented_wording_substitutions", normalized, native[1])
-        for path in (SUBMISSION, CODEX):
-            old_tree = ast.parse(self.old.files[path].decode("utf-8"))
-            new_tree = ast.parse(self.new.files[path].decode("utf-8"))
-            class ReplaceKnownWording(ast.NodeTransformer):
-                def visit_Constant(self, node):
-                    if isinstance(node.value, str):
-                        for before, after in replacements.items():
-                            node.value = node.value.replace(before, after)
-                    return node
-            old_tree = ReplaceKnownWording().visit(old_tree)
-            self.assertEqual(ast.dump(old_tree, include_attributes=False), ast.dump(new_tree, include_attributes=False), path)
-        for text in native:
-            for invariant in ("exactly one standalone native submit_action", "format and content",
-                              "one or two sentences", "submit_action content", "only the task action payload",
-                              "without fences or XML wrappers", "does not mean execution succeeded"):
-                self.assertIn(invariant, text)
+        class ReplaceKnownWording(ast.NodeTransformer):
+            def visit_Constant(self, node):
+                if isinstance(node.value, str):
+                    for before, after in replacements.items():
+                        node.value = node.value.replace(before, after)
+                return node
+
+        old_submission = ast.parse(self.old.files[SUBMISSION].decode("utf-8"))
+        new_submission = ast.parse(self.new.files[SUBMISSION].decode("utf-8"))
+        old_functions = {node.name: node for node in old_submission.body
+                         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        new_functions = {node.name: node for node in new_submission.body
+                         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        self.assertTrue(old_functions.keys() <= new_functions.keys(), "Reference submission functions must remain present")
+        # Freeze all existing action translation/validation/registration code,
+        # while deliberately excluding prompt constants, imports, and any new
+        # resource-loading helpers. Dedicated native-prompt tests cover those.
+        self.same("simpleagent_native_submission_behavior_ast",
+                  {name: ast.dump(ReplaceKnownWording().visit(copy.deepcopy(node)), include_attributes=False)
+                   for name, node in old_functions.items()},
+                  {name: ast.dump(new_functions[name], include_attributes=False) for name in old_functions})
+
+        old_codex = ReplaceKnownWording().visit(ast.parse(self.old.files[CODEX].decode("utf-8")))
+        new_codex = ast.parse(self.new.files[CODEX].decode("utf-8"))
+        self.assertEqual(ast.dump(old_codex, include_attributes=False),
+                         ast.dump(new_codex, include_attributes=False), CODEX)
+
+        def native_definition(tree):
+            return next(node.value for node in tree.body if isinstance(node, ast.Assign)
+                        and any(isinstance(target, ast.Name) and target.id == "NATIVE_INSTRUCTIONS"
+                                for target in node.targets))
+
+        old_definition, new_definition = native_definition(old_submission), native_definition(new_submission)
+        self.assertNotEqual(ast.dump(old_definition, include_attributes=False),
+                            ast.dump(new_definition, include_attributes=False))
         self.report["simpleagent_native"] = {
             "whole_request_byte_equal": False,
-            "observed_difference": list(replacements.items()),
-            "other_submission_and_codex_module_ast_equal": True,
-            "semantic_assessment": "The same action payload/native submission/rationale separation is retained; "
-                                   "the wording broadens the prohibition from literal think tags to explanation tags. "
-                                   "Model behavior equivalence is not proved by offline tests."}
+            "native_prompt_intentionally_changed": True,
+            "native_prompt_current_definition": ast.unparse(new_definition),
+            "submission_behavior_functions_ast_equal": sorted(old_functions),
+            "additional_top_level_functions": sorted(new_functions.keys() - old_functions.keys()),
+            "codex_module_ast_equal_after_known_wording_substitutions": True,
+            "known_wording_substitutions": list(replacements.items()),
+            "prompt_resource_validation": "Covered by dedicated native-prompt tests, outside this historical validator.",
+            "semantic_assessment": "All reference submission/translation/validation functions remain unchanged; "
+                                   "native prompt content and its resource loading are intentionally outside this equality claim. "
+                                   "No whole-request or model-behavior equivalence is asserted."}
 
 
 if __name__ == "__main__":

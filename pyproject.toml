@@ -44,5 +44,6 @@ agent_ark = [
     "ark_env/info/system_prompt_brief_rationale.txt",
     "ark_env/info/system_prompt_func_brief_rationale.txt",
     "ark_env/info/system_prompt_code_brief_rationale.txt",
+    "agent/simple_agent/info/*.txt",
     "ark_eval/human_review_assets/*",
 ]

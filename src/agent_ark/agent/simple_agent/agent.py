@@ -31,6 +31,7 @@ from .types import (
     ModelRequest, ModelUsage, NativeAssistantState, TextPart, ToolCall,
 )
 from .action_submission import NATIVE_INSTRUCTIONS, SUBMISSION_NAME, register_submission, translate_submission
+from .prompt_adapter import adapt_native_environment_pin
 
 
 _INSTRUCTIONS = (
@@ -574,7 +575,8 @@ class SimpleAgent(BaseAgent):
             native = self.tools_enabled or self._tool_setup is not None
             if native:
                 pins = (Message.text("system", NATIVE_INSTRUCTIONS),) + tuple(
-                    Message("developer", (TextPart("Original environment task instructions (task rules and payload recipes):\n"),) + message.parts)
+                    Message("developer", (TextPart("Environment task instructions (task rules and available actions):\n"),)
+                            + adapt_native_environment_pin(message).parts)
                     for message in env_pins)
             else:
                 pins = env_pins + (Message.text("developer", _INSTRUCTIONS),)
@@ -645,6 +647,8 @@ class SimpleAgent(BaseAgent):
         image_count = 0
         extensions = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
         for message in messages:
+            if self.tools_enabled or self._tool_setup is not None:
+                message = adapt_native_environment_pin(message)
             parts = []
             for part in message.parts:
                 if isinstance(part, TextPart):

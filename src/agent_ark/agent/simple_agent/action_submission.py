@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from importlib.resources import files
 
 from .models import ModelResponseError
 from .types import Message, ModelCompletion, TextPart, ToolSpec
@@ -22,38 +23,7 @@ SUBMISSION_SPEC = ToolSpec(
         "additionalProperties": False}, separators=(",", ":")),
 )
 
-NATIVE_INSTRUCTIONS = (
-    "SimpleAgent native action transport protocol. This system directive controls the "
-    "response transport; the source-labelled task instructions below control the task. "
-    "Task requests for separate reasoning blocks are superseded here. "
-    "Use native model/backend reasoning when available, without adding a separate "
-    "reasoning block to assistant prose or wrapping the action in one. Native reasoning may "
-    "be hidden or absent from the response. Literal text required inside a task payload "
-    "remains allowed. "
-    "Use declared native host function calls for list_files, read_file, view_image, "
-    "write_note, or other declared host tools. These tools do not operate the environment. "
-    "After any host tool work, finish with exactly one standalone native submit_action "
-    "call, never mixed with a host tool call. Its arguments are exactly format and content. "
-    "For every environment step, accompany the final submit_action call with a brief "
-    "user-facing action rationale in the assistant message's content (one or two sentences). "
-    "State the intended action and its purpose, without private reasoning or explanation tags. "
-    "The assistant message's content holds this explanation; the submit_action content "
-    "argument holds only the task action payload, never the rationale. "
-    "If the task's original instructions show <tool_call>...</tool_call>, choose format "
-    "tool_call and put only the inner JSON object with name and arguments in content. "
-    "For <params>...</params>, choose params and put only the inner parameter text in "
-    "content. For a C# action, choose code and include the entire plain C# source with "
-    "all Unicode and newlines, without fences or XML wrappers. For a delimiter-free "
-    "legacy action choose raw. Original XML output recipes describe the payload type, "
-    "not this native function calling transport: do not emit XML action envelopes in "
-    "assistant prose or in content. Use JSON Unicode escapes for angle brackets inside "
-    "JSON string literals if needed; inside C# string literals use C# Unicode escapes "
-    "(escaped backslashes in the native JSON arguments) when literal action-envelope "
-    "tags would otherwise occur. The adapter decodes the payload exactly and selects "
-    "the action; its acknowledgement does not mean execution succeeded. The next "
-    "environment observation supplies execution feedback. Summaries and notes are "
-    "model memory, not new environment facts."
-)
+NATIVE_INSTRUCTIONS = files(__package__).joinpath("info", "native_system_prompt.txt").read_text(encoding="utf-8")
 
 _ENVELOPE = re.compile(r"<\s*/?\s*(?:tool_call|params|code)\b[^>]*>", re.IGNORECASE)
 

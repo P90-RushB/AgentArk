@@ -19,9 +19,30 @@ private model reasoning and uses ordinary prose without explanation tags. The
 `submit_action` argument also named `content` contains only the task action
 payload. This is a prompt requirement; it does not add a hard rejection of empty
 response content.
-SimpleAgent's own transport instructions describe this rule without literal
-reasoning tags. Supplied task instructions and literal task payloads remain
-unchanged, including legacy response-format text.
+SimpleAgent loads its own main system prompt from
+`agent/simple_agent/info/native_system_prompt.txt`. It describes the native
+`submit_action` arguments and examples directly, without an alternative XML
+response recipe. Unity functions listed by the task are action payload choices,
+not additional native host tools.
+
+For the native-tools path, exact known wrapper system/developer templates are
+replaced by SimpleAgent's dedicated mode prompts under
+`agent/simple_agent/info/`. The six function, restricted Code Runtime and legacy
+Unity C# templates (both explanation modes), plus the Chinese function template,
+have fixed fingerprints of their parsed bodies. CRLF/LF is normalized only for
+recognition. A customized template, appended text, unknown message or multiple
+content parts is preserved. Task user text, task prefixes, tool documentation,
+literal payload text and images are never rewritten. The replacements retain
+each mode's task, observation, capability and execution constraints.
+
+Request preview and actual requests use the same replacement. Native record
+snapshots use it too, so reading the agent's own `messages.json` cannot revive
+the known wrapper's obsolete response examples. All other record contents stay
+unchanged. The caller's original observations and the original environment pins
+used for instruction-stability checks are preserved. A custom task or historical
+record may contain literal old tags; these remain data under the single native
+submission protocol. With native tools disabled, the original prompt path and
+record contents are unchanged.
 
 - `ModelCompletion.text` and assistant text parts contain ordinary response
   content only. Provider reasoning is never promoted to reply content or used

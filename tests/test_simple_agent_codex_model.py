@@ -564,7 +564,7 @@ def test_runtime_executes_host_tools_then_submit_action_without_codex_memory(fak
         assert json.loads(result[0]["action"][11:-12]) == action
         assert len(trace[0]["model_requests"]) == 2
         assert len(fake_sdk.instances) == 2
-        ordered_input = str(fake_sdk.requests[0][0])
+        ordered_input = "\n".join(item["text"] for item in fake_sdk.requests[0][0] if item.get("type") == "text")
         assert "Task requests for separate reasoning blocks are superseded" in ordered_input
         assert "native model/backend reasoning when available" in ordered_input
         assert "hidden or absent" in ordered_input

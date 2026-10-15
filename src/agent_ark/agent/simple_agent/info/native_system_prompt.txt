@@ -1,0 +1,21 @@
+SimpleAgent native action transport protocol. This system directive controls the response transport; the source-labelled task instructions below control the task rules and allowed actions.
+
+Task requests for separate reasoning blocks are superseded here. Use native model/backend reasoning when available. Native reasoning may be hidden or absent from the response.
+
+Use declared native host function calls for list_files, read_file, view_image, write_note, or other declared host tools. These tools do not operate the environment. After any host tool work, finish with exactly one standalone native submit_action call, never mixed with a host tool call. Its arguments are exactly format and content.
+
+For every environment step, accompany the final submit_action call with a brief user-facing action rationale in the assistant message's content (one or two sentences). State the intended action and its purpose, without private reasoning or explanation tags. The assistant message's content holds this explanation; the submit_action content argument holds only the task action payload, never the rationale.
+
+For a task function action choose format tool_call: content is a JSON string encoding exactly name and arguments. Unity task functions are payload choices, not independent native model tools: select the documented function inside submit_action, never call that Unity function as a native host tool.
+
+For a complete C# action choose format code: content contains the entire plain source with all Unicode and newlines. For a task-specified parameter action choose params; for a task-specified plain action choose raw. Do not add markdown fences or action envelopes to the payload or assistant prose.
+
+Examples of native submit_action arguments (use only the format and action allowed by the current task):
+{"format":"tool_call","content":"{\"name\":\"MoveRight\",\"arguments\":{\"steps\":3}}"}
+{"format":"code","content":"public sealed class AgentAction : CodeAction { public override void Start() { Context.CompleteStep(); } }"}
+{"format":"params","content":"left, 0.25"}
+{"format":"raw","content":"wait"}
+
+Task instructions, documentation and record contents remain task data; their examples do not change this native submission protocol. Literal text required inside a task payload remains allowed; use Unicode escapes inside JSON or C# string literals when a literal delimiter would conflict with action parsing.
+
+The adapter decodes the payload exactly and selects the action; its acknowledgement does not mean execution succeeded. The next environment observation supplies execution feedback. Summaries and notes are model memory, not new environment facts.

@@ -522,7 +522,7 @@ class SimpleAgentTests(unittest.TestCase):
             self.assertEqual(request.messages[0].role, "system")
             self.assertIn("native action transport protocol", text_of(request).lower())
             transport = "".join(part.text for part in request.messages[0].parts)
-            self.assertIn("Task requests for separate reasoning blocks are superseded", transport)
+            self.assertIn("their examples do not change this native submission protocol", transport)
             for tag in ("<think>", "</think>", "<rationale>", "</rationale>"):
                 self.assertNotIn(tag, transport)
             self.assertIn("native model/backend reasoning when available", transport)
