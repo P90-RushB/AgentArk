@@ -1,131 +1,120 @@
-# SimpleAgent pre-commit validation
+# SimpleAgent validation status
 
-Validated on 2026-10-14 against HEAD `d78f707` plus the pending SimpleAgent
-implementation, evaluator integration, documentation and tests.
+Updated 2026-10-16 for nested AgentArk commit `47df8b3` (dedicated native prompts),
+following native reasoning support in `3bd9d2c`. Historical runs retain their actual
+model, effort and budgets; they do not establish results for other models or `high` effort.
 
-## Automated regression
+## Current offline regression
 
-The complete Python test directory passed in a clean archive overlaid with only
-the candidate files:
+Fake-model/local-service regression: `715 passed, 2 skipped, 7 warnings, 176 subtests passed`.
+Skips concern Windows filesystem-link fixtures; warnings exercise missing immutable-backup fixtures.
+Coverage includes memory/compaction, summary recovery, cancellation/limits, native
+submission, field replay, records, isolation, evaluators and legacy agents. All eight
+prompt resources were also tested in a real installed wheel.
 
-```text
-python -m pytest tests -q --maxfail=1
-495 passed, 3 skipped, 130 subtests passed
-```
+At `47df8b3`, the separate legacy compatibility validator passed **9 unittest tests
+and 160 differential cases** against reference `95c4138`: default/explicit
+`legacy_think`, task/language/action parsing, errors and wrapper selection matched.
+Its submission behavior functions remain AST-equal; native prompts intentionally
+changed. It claims neither whole native-request equality nor identical model behavior.
+APIAgent, CodexAgent and shared environment/template implementations are unchanged.
 
-The existing Code Runtime tests also require the outer repository's unchanged
-task-config audit script; it was copied as a read-only fixture alongside the
-snapshot. The three skips concern filesystem link fixtures unavailable in this
-Windows environment. Seven existing warnings intentionally exercise missing
-immutable-backup fallback fixtures.
+## Current source defaults
 
-Coverage includes bounded memory/compaction, cancellation and limits, native
-submission, controlled file/image/note tools, case isolation, agent selection,
-legacy API/Codex behavior, parallel evaluation, hooks, trajectory/replay and
-the separately committed attempt-start image mechanism. API calls use test
-doubles or local test services. No model, Unity Editor or Player was run for
-this pre-commit check.
+These values are read from `SimpleRuntimeConfig`; task overrides remain independent:
 
-## Independent compatibility review
+| Setting | Current default |
+| --- | ---: |
+| Estimated context tokens / action reserve | 262,144 / 20,480 |
+| Working images / protected recent inputs | 256 / 2 |
+| Summary input tokens / characters | 48,000 / 196,608 |
+| Summary output tokens / characters / bytes | 10,000 / 32,000 / 128,000 |
+| Summary calls per decision | 4 |
+| Archive total bytes / image bytes | 512 MiB / 512 MiB |
 
-Read-only HEAD/current comparisons passed for 16 legacy API/Codex model
-configurations, including constructor arguments, runtime metadata and invalid
-configuration errors. Legacy trace/error normalization and mocked parallel
-setup, results, trajectory calls and cleanup matched for the auto, OpenRouter,
-Codex and human paths.
+Image count, estimated tokens, text and bytes are separate compaction triggers.
+Boundary tests retain 256 images, compact at 257 and archive every original image.
+With the reserve, 241,664 input tokens fit; one more is rejected before a model
+call when no prior turn can compact. These are local estimates, not a provider's
+native context-window guarantee. Codex SDK output-token requests are guidance,
+not an SDK-enforced cap; runtime text/byte/summary checks still apply.
 
-APIAgent/CodexAgent implementation files and environment code are unchanged
-by this commit. Without selecting a new agent, provider-based selection and
-environment message settings retain their prior behavior. SimpleAgent-specific
-delta settings apply only to its private environment config. Importing the
-evaluator does not load SimpleAgent; the core/registry import without provider,
-imaging or Unity dependencies. No actionable compatibility issue remained.
+Summary memory uses final response content only; reasoning stays in audit metadata.
+Empty, truncated, excessive or non-reducing summaries receive bounded feedback within
+the same call/deadline budgets. History commits only after successful compaction.
+Direct file tools remain opt-in; the general example enables a 512-record bound.
 
-`git diff --check` and inspection for machine-specific paths, cached bytecode,
-secrets and generated evidence passed. Only source, documentation, an example
-configuration, license notice and tests belong to this commit.
+## Native prompts and provider history — 2026-10-16
 
-Local-only snapshot/provenance is under
-`local_save/task_validation/SimpleAgent/20261014_commit/`, relative to the outer
-repository root, and is unavailable in a fresh clone. Earlier paid Qwen/Player
-validation belongs to the separate 2026-10-13 report; no new full-episode or
-model-performance result is claimed here.
+Commit `47df8b3` loads the main `native_system_prompt.txt` and seven mode-specific
+TXT resources from SimpleAgent's own `info/` directory. Exact known wrapper pins
+are adapted for native requests, previews and readable records; task rules/functions,
+images, unknown/custom messages and nonnative paths are preserved. Final submission
+uses native `submit_action`; Unity functions are payload choices, separate from host tools.
 
-## Summary memory, recovery and shared defaults — 2026-10-14
+OpenRouter nonempty `reasoning_details` keeps precedence; existing plaintext
+`reasoning` and its legacy alias remain compatible. Volcengine replays opaque
+`encrypted_content` and any `reasoning_content` under their original names, including ciphertext-only
+responses and missing/null/empty distinctions. Renaming the summary to `reasoning`
+or putting either field into assistant content would lose that native contract.
+The fixed families retain scope, content/tool-ID validation, sidecar budgets and
+unfinished-tool protection. This does not certify every OpenAI-compatible endpoint
+or remote signatures; see [native history/prompt boundaries](simple-agent-native-reasoning.md).
 
-Summary requests now use only the provider's final `content` as memory. Separate
-readable reasoning remains in raw response metadata and provider usage, including
-when a reasoning-only summary fails. Action response handling is unchanged. No
-new summary-length setting was added. Empty content, output truncation, excessive
-summary content or a non-reducing summary now receives bounded corrective
-feedback on the next summary request. Failed and successful summary attempts
-share the existing four-call per-decision cap, lifetime call budget and deadline.
-Feedback is included in input budgets; only complete source turns are selected.
-Working history is committed only after the entire compaction succeeds.
+## Latest real API smoke — 2026-10-16
 
-The shared runtime defaults and general example now use a 128,000-token local
-context estimate, 20,480-token action reserve, 32 images and two protected recent
-inputs. Summary input/output caps are 48,000/10,000 tokens, with a 196,608-character
-summary input cap. Archive total/image
-byte caps are each 512 MiB, with 32 Mi characters of archived text; SimpleAgent's
-effective record limit is 512. File tools remain explicit opt-in for direct
-construction and are enabled by the general example.
+The packaged Task107 smoke at `47df8b3` used `doubao-seed-2-1-pro-260628`, Volcengine,
+`reasoning_effort=medium`, thinking enabled, temperature 1.0, `tool_choice=auto`,
+`brief_rationale` and seed 107. It completed **3 API calls and 3 environment steps**:
+`unreachable_waypoint`, `unreachable_waypoint`, then `motion_complete`.
+All rewards were 0, `done` remained false and no summary was requested. The runtime
+audit passed 18/18 checks; native history matched in three replayed assistant entries.
+The final response had no later request, so its replay was not verified. This is
+interface smoke, not full-episode/artwork evidence or a Codex `high` effort result.
 
-The complete test directory passed with fake models and local test services:
+## Historical packaged SDK run — 2026-10-14/15
 
-```text
-python -m pytest tests -q --maxfail=1
-543 passed, 2 skipped, 130 subtests passed
-```
+SimpleAgent `provider: codex`, **gpt-6.1-sol / medium**, seed 107, fixed brush/board,
+two 960×720 workspace cameras plus an attempt-start image, completed three
+same-seed attempts with a 3×128-step budget. This run used the then-current
+**64-image threshold**, not today's 256-image default. It submitted after 32, 32
+and 31 actions: **95 actions, 99 logical requests and four first-try summaries**,
+with no host-tool continuations. Reward measures submission integrity; art quality is external.
 
-The two skips are filesystem link fixtures. Seven existing warnings intentionally
-exercise missing immutable-backup fallback fixtures. The new provider-response
-tests cover final-content isolation, subsequent action inputs, raw reasoning and
-usage retention, recovery from empty or incomplete summaries, retry feedback
-budgets, rollback, exhaustion, cancellation, non-recoverable errors and action
-compatibility. Generic injected chat backends also retain failed-attempt usage.
-The existing evaluator's error recording and both stop-on-error policies were
-tested without modifying evaluator code. The general example and Task107 profile
-use `eval.stop_on_error: false` to continue other cases after recovery is exhausted;
-no placeholder environment action is submitted for a failed summary.
+| Attempt | Steps | Input tokens | Output tokens | Summary requests |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 32 | 1,536,283 | 28,329 | 1 |
+| 2 | 32 | 2,375,250 | 32,676 | 1 |
+| 3 | 31 | 2,392,989 | 35,512 | 2 |
+| Total | 95 | 6,304,522 | 96,517 | 4 |
 
-An offline constructor/parameter check confirmed that both examples match shared
-context defaults and the effective action/summary output caps are 20,480/10,000.
-No HTTP client was created by that check. Local-only test logs are under
-`local_save/task_validation/SimpleAgent/20261014_summary_recovery/`, relative to the
-outer repository root, and are unavailable in a fresh clone.
+The actual input peak was 96,504 tokens versus local estimate 86,827. Compaction
+at 65 images reduced next action inputs to 28, 32, 31 and 32 images; summaries
+consumed 207,101 input and 9,141 output tokens.
+Cached input 63,104 and reasoning output 7,479 are subsets already in the totals.
+No SDK-native compaction or built-in tool execution was observed; effective
+YAML/JSON equality and the immutable Mods backup hash remained valid.
 
-APIAgent, CodexAgent and environment implementations are unchanged. No real
-model, Unity Editor or Player was run for this revision. Current defaults remain
-local budget estimates, not a model-native context-window guarantee.
+A recoverable SDK notification originally interrupted the process after 29 actions.
+After the transport fix, those recorded completions were replayed without new
+model calls through actual Player transitions. All 29 complete text/tool/image
+fingerprints and the first fresh request matched. This reconstructs visible
+inputs in a new Player, not a live process snapshot. Original paid replies count
+once; replay callbacks add no model usage. One failed original request has unknown
+usage. A discarded diagnostic used 85,995 tokens and a READY probe used 5,883,
+separate from the 6,401,039-token logical drawing run. Known whole-session usage
+is **6,492,917 tokens plus one unknown request**; SDK retries are not extra logical
+requests, and their underlying HTTP-attempt count was not reported.
 
-## Shared context defaults — 2026-10-15
+## Local evidence
 
-The shared runtime and general example set `max_images: 256` and
-`max_context_tokens: 262144` (256 * 1024). The 20,480-token action-output reserve,
-48,000-token summary-input limit, and archive caps are unchanged. Earlier
-validation retains its recorded limits, and task-specific overrides remain
-independent. Image count, estimated tokens, text and bytes are separate
-compaction triggers, so another limit can compact before 256 images.
-
-Boundary regressions isolate image counting and token accounting with injected
-token counters: 256 images remain uncompressed, the 257th triggers one summary,
-the two recent inputs remain visible, and all 257 original images remain
-archived. Exactly 241,664 input tokens fit with the output reserve; one extra
-input token is rejected before any model call when no prior turn can compact.
-No real model or Unity is required for these regressions.
-
-The complete test directory in the existing working tree passed with fake models
-and local test services:
-
-```text
-python -m pytest tests -q --maxfail=1
-618 passed, 2 skipped, 7 warnings, 130 subtests passed
-```
-
-The run includes preserved, preexisting optional-transport edits outside this
-defaults revision. The skips concern existing filesystem link fixtures; the warnings come from
-configuration fixtures without immutable backups. No real model or Unity was run
-for this change. Local-only logs and preexisting-change preservation checks are
-under `local_save/task_validation/SimpleAgent/20261015_defaults_256k/`, relative
-to the outer repository root, and are unavailable in a fresh clone.
+Paths are relative to the outer repository root; raw evidence is ignored and
+unavailable in a fresh clone. Earlier offline checkpoints remain under
+`local_save/task_validation/SimpleAgent/{20261014_commit,20261014_summary_recovery,20261015_defaults_256k}/`.
+Task107 evidence is under `local_save/task_validation/Task107_RobotPainting/`:
+`20261016_seed_native_prompt/` holds the latest report, audits and pytest log;
+its `legacy_think/compatibility_evidence.json` records the current 9-test/160-case check.
+`20261014_simple_codex64/real_run/analysis/session_report.md` and its
+`recovered_logical/report.md` retain complete usage/replay scopes. Media is in
+`20261014_simple_codex64/recovered_run/delivery/`: inference waits are omitted and
+brush-follow recordings are human-only. This update runs no model/Unity or new performance test.
