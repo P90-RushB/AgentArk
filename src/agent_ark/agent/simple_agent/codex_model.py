@@ -172,7 +172,7 @@ class CodexModel:
             "For action requests, the brief user-facing rationale required alongside submit_action "
             "belongs in text, which represents assistant-message content in this transport. "
             "Keep it out of the submit_action content argument, which holds only the task action "
-            "payload. Do not wrap the rationale in <think> tags. "
+            "payload. Use ordinary prose for the rationale, without explanation tags. "
             f"Request purpose: {request.purpose}. Aim to stay within {request.max_output_tokens} "
             "output tokens; this is a requested budget, not a provider hard cap.\n"
             "Declared runtime tools: " + json.dumps(tool_declarations(request.tools), ensure_ascii=False)

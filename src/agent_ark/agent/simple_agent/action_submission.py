@@ -25,7 +25,7 @@ SUBMISSION_SPEC = ToolSpec(
 NATIVE_INSTRUCTIONS = (
     "SimpleAgent native action transport protocol. This system directive controls the "
     "response transport; the source-labelled task instructions below control the task. "
-    "Task requests for an explicit <think>...</think> reply are superseded here. "
+    "Task requests for separate reasoning blocks are superseded here. "
     "Use native model/backend reasoning when available, without adding a separate "
     "reasoning block to assistant prose or wrapping the action in one. Native reasoning may "
     "be hidden or absent from the response. Literal text required inside a task payload "
@@ -36,7 +36,7 @@ NATIVE_INSTRUCTIONS = (
     "call, never mixed with a host tool call. Its arguments are exactly format and content. "
     "For every environment step, accompany the final submit_action call with a brief "
     "user-facing action rationale in the assistant message's content (one or two sentences). "
-    "State the intended action and its purpose, without private reasoning or <think> wrappers. "
+    "State the intended action and its purpose, without private reasoning or explanation tags. "
     "The assistant message's content holds this explanation; the submit_action content "
     "argument holds only the task action payload, never the rationale. "
     "If the task's original instructions show <tool_call>...</tool_call>, choose format "

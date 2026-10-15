@@ -432,7 +432,9 @@ def test_final_submission_rationale_stays_in_assistant_content_records_and_next_
         protocol = body(first_messages[0])
         assert "For every environment step" in protocol
         assert "action rationale" in protocol and "one or two sentences" in protocol
-        assert "without private reasoning or <think> wrappers" in protocol
+        assert "without private reasoning or explanation tags" in protocol
+        for tag in ("<think>", "</think>", "<rationale>", "</rationale>"):
+            assert tag not in protocol
         assert "only the task action payload, never the rationale" in protocol
         assert legacy_unity_instructions not in protocol
         assert any(message["role"] == "developer" and legacy_unity_instructions in body(message)

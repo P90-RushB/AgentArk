@@ -565,13 +565,17 @@ def test_runtime_executes_host_tools_then_submit_action_without_codex_memory(fak
         assert len(trace[0]["model_requests"]) == 2
         assert len(fake_sdk.instances) == 2
         ordered_input = str(fake_sdk.requests[0][0])
-        assert "<think>...</think> reply are superseded" in ordered_input
+        assert "Task requests for separate reasoning blocks are superseded" in ordered_input
         assert "native model/backend reasoning when available" in ordered_input
         assert "hidden or absent" in ordered_input
         assert "exactly one standalone native submit_action" in ordered_input
         assert "user-facing action rationale in the assistant message's content" in ordered_input
         assert "belongs in text, which represents assistant-message content" in ordered_input
         assert "Keep it out of the submit_action content argument" in ordered_input
+        sdk_transport = fake_sdk.requests[0][0][0]["text"]
+        assert "Use ordinary prose for the rationale, without explanation tags" in sdk_transport
+        for tag in ("<think>", "</think>", "<rationale>", "</rationale>"):
+            assert tag not in sdk_transport
         assert legacy_format in ordered_input
         assert '"tool_call_id": "call_1"' in str(fake_sdk.requests[1][0])
         assert all(item["response_metadata"]["sdk_native_function_tools"] is False

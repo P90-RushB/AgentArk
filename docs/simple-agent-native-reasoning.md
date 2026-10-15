@@ -14,9 +14,13 @@ Native action instructions require a brief, user-facing action rationale (one or
 two sentences) alongside the final `submit_action` of every environment step.
 Use the HTTP assistant message's `content`, or the Codex transport envelope's
 `text`, for this explanation of the action and its purpose. It is separate from
-private model reasoning and uses no `<think>` wrapper. The `submit_action`
-argument also named `content` contains only the task action payload. This is a
-prompt requirement; it does not add a hard rejection of empty response content.
+private model reasoning and uses ordinary prose without explanation tags. The
+`submit_action` argument also named `content` contains only the task action
+payload. This is a prompt requirement; it does not add a hard rejection of empty
+response content.
+SimpleAgent's own transport instructions describe this rule without literal
+reasoning tags. Supplied task instructions and literal task payloads remain
+unchanged, including legacy response-format text.
 
 - `ModelCompletion.text` and assistant text parts contain ordinary response
   content only. Provider reasoning is never promoted to reply content or used

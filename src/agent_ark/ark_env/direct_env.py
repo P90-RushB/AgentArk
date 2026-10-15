@@ -429,6 +429,7 @@ class EnvInfoManager(object):
         if isinstance(env_cfg_overrides, dict) and env_cfg_overrides:
             self.env_config = self._apply_env_config_overrides(self.env_config, env_cfg_overrides)
 
+        self._get_explanation_mode(self.env_config)
         self.env_config = normalize_max_steps_per_attempt(self.env_config)
         self._validate_effective_code_runtime_config(
             self.env_config,
@@ -648,6 +649,7 @@ class EnvInfoManager(object):
         if isinstance(env_cfg_overrides, dict) and env_cfg_overrides:
             self.env_config = self._apply_env_config_overrides(self.env_config, env_cfg_overrides)
 
+        self._get_explanation_mode(self.env_config)
         self.env_config = normalize_max_steps_per_attempt(self.env_config)
         self._validate_effective_code_runtime_config(
             self.env_config,
@@ -872,6 +874,7 @@ class EnvInfoManager(object):
             raise NotImplementedError('暂不支持自定义system_prompt_path')
 
         default_root = os.path.dirname(os.path.abspath(__file__))
+        explanation_mode = self._get_explanation_mode(getattr(self, 'env_config', None))
         mode = action_mode.strip().lower() if isinstance(action_mode, str) else ''
         if mode == 'func':
             sys_prompt_path = os.path.join(default_root, 'info/system_prompt_func.txt')
@@ -881,8 +884,20 @@ class EnvInfoManager(object):
             # Backward-compatible default
             sys_prompt_path = os.path.join(default_root, 'info/system_prompt.txt')
 
+        if explanation_mode == 'brief_rationale':
+            sys_prompt_path = sys_prompt_path.removesuffix('.txt') + '_brief_rationale.txt'
+
         with open(sys_prompt_path, 'r', encoding='utf-8') as f:
             return f.read()
+
+    @staticmethod
+    def _get_explanation_mode(env_config) -> str:
+        """Select only the common response recipe; never rewrite task/history text."""
+        prompt_cfg = env_config.get('prompt', {}) if isinstance(env_config, dict) else {}
+        value = prompt_cfg.get('explanation_mode', 'legacy_think') if isinstance(prompt_cfg, dict) else 'legacy_think'
+        if not isinstance(value, str) or value not in ('legacy_think', 'brief_rationale'):
+            raise ValueError('prompt.explanation_mode must be legacy_think or brief_rationale')
+        return value
 
     @staticmethod
     def _save_config(data, save_path, file_name):
@@ -1073,6 +1088,15 @@ class EnvInfoManager(object):
         for key in ('max_attempts', 'max_steps_per_attempt'):
             if key in task_cfg:
                 result[key] = deepcopy(task_cfg[key])
+
+        # New Python-only prompt options must also work with older immutable
+        # config.yaml.bak files, whose closed task overlay lacks these keys.
+        task_prompt_cfg = task_cfg.get('prompt', {})
+        if isinstance(task_prompt_cfg, dict) and 'explanation_mode' in task_prompt_cfg:
+            EnvInfoManager._get_explanation_mode(task_cfg)
+            if not isinstance(result.get('prompt'), dict):
+                result['prompt'] = {}
+            result['prompt']['explanation_mode'] = task_prompt_cfg['explanation_mode']
 
         task_wrapper_cfg = task_cfg.get('env_wrapper_cfg', {})
         wrapper_cfg = result.get('env_wrapper_cfg', {})
@@ -1416,14 +1440,24 @@ class EnvWrapper(object):
             and self._has_explicit_exact_code_action_mode()
             and exec_code_act
         ):
-            # The model-facing exact-Code protocol uses <think> + <code>, while
-            # Unity's closed compiler accepts raw C# only. Strip the envelope
+            # The model-facing exact-Code protocol allows an explanation then
+            # <code>, while Unity's closed compiler accepts raw C# only. Strip the envelope
             # here and only here; Func and legacy/tool transport stay untouched.
             extracted = {}
             pattern = re.compile(
                 r'^\s*(?:<think>[\s\S]*?</think>\s*)?<code>([\s\S]*)</code>\s*$',
                 re.IGNORECASE,
             )
+            env_config = getattr(getattr(self, 'env_info_mgr', None), 'env_config', None)
+            brief_rationale = EnvInfoManager._get_explanation_mode(env_config) == 'brief_rationale'
+            if brief_rationale:
+                # Match an outer code block on a new line, never tags embedded
+                # in raw C# strings/comments. Multiline source has its closing
+                # tag on a separate line; a single-line block also works.
+                pattern = re.compile(
+                    r'^(?:[^\r\n]*\r?\n)*?[ \t]*<code>'
+                    r'([^\r\n]*|[\s\S]*\r?\n[ \t]*)</code>\s*$', re.IGNORECASE,
+                )
             for ml_id, payload in exec_code_act.items():
                 if isinstance(payload, str):
                     match = pattern.fullmatch(payload)

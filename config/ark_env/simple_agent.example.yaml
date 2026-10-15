@@ -6,6 +6,11 @@ env_cfg:
   env_config_overrides:
     override_by_task: true
     num_parallel_envs: 1
+    # Optional common prompt recipe: legacy_think (default) or brief_rationale.
+    # The latter uses a short public explanation without an explanation tag.
+    # SimpleAgent places it in assistant content and submits via submit_action.
+    # prompt:
+    #   explanation_mode: brief_rationale
   # The evaluator sets append_only + return_mode: delta only for SimpleAgent.
 
 eval:
