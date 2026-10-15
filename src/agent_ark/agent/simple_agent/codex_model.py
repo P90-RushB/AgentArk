@@ -169,6 +169,10 @@ class CodexModel:
             "a unique id, an exact declared name, and arguments_json containing a strict JSON "
             "object. When no tool call is needed, use an empty tool_calls array. Put final content "
             "or summary content in text. Do not include private reasoning in text. "
+            "For action requests, the brief user-facing rationale required alongside submit_action "
+            "belongs in text, which represents assistant-message content in this transport. "
+            "Keep it out of the submit_action content argument, which holds only the task action "
+            "payload. Do not wrap the rationale in <think> tags. "
             f"Request purpose: {request.purpose}. Aim to stay within {request.max_output_tokens} "
             "output tokens; this is a requested budget, not a provider hard cap.\n"
             "Declared runtime tools: " + json.dumps(tool_declarations(request.tools), ensure_ascii=False)

@@ -408,6 +408,60 @@ def record_agent(directory, *, limits=None):
         "enabled": True, "workspace_parent": str(directory), "limits": limits or {}}})
 
 
+def test_final_submission_rationale_stays_in_assistant_content_records_and_next_step_history(tmp_path):
+    rationale = "Tap the visible point at x=3 to select the highlighted option."
+    legacy_unity_instructions = "Unity task: tap the highlighted option. Reply with <think>reasoning</think> and the action."
+    action_arguments = {"format": "tool_call", "content": ACTION[11:-12]}
+    submit = ToolCall("step-one-selection", "submit_action", json.dumps(action_arguments, separators=(",", ":")))
+    next_submit = replace(submit, call_id="step-two-selection")
+    replies = [response(rationale, calls=(submit,), reasoning_details=deepcopy(DETAILS)),
+               response("Tap the visible point again to confirm the selection.", calls=(next_submit,), reasoning="private follow-up")]
+    agent, client = fake_agent(lambda _: replies.pop(0), simple_agent_config={"tools": {
+        "enabled": True, "workspace_parent": str(tmp_path / "workspace")}})
+
+    def body(message):
+        content = message["content"]
+        return content if isinstance(content, str) else "\n".join(part["text"] for part in content or [] if part["type"] == "text")
+
+    try:
+        result, traces = agent.forward_with_trace({0: {"messages": [
+            {"role": "system", "content": legacy_unity_instructions},
+            {"role": "user", "content": "The option at x=3 is highlighted."}]}})
+        first_messages = client.requests[0]["messages"]
+        assert first_messages[0]["role"] == "system"
+        protocol = body(first_messages[0])
+        assert "For every environment step" in protocol
+        assert "action rationale" in protocol and "one or two sentences" in protocol
+        assert "without private reasoning or <think> wrappers" in protocol
+        assert "only the task action payload, never the rationale" in protocol
+        assert legacy_unity_instructions not in protocol
+        assert any(message["role"] == "developer" and legacy_unity_instructions in body(message)
+                   for message in first_messages)
+        assert result[0]["action"] == ACTION
+        trace_call = traces[0]["model_requests"][0]
+        assert trace_call["completion"] == rationale
+        assert trace_call["native_assistant"]["message"]["content"] == rationale
+        assert trace_call["native_assistant"]["message"]["reasoning_details"] == DETAILS
+        assert PRIVATE not in trace_call["completion"] and "<think>" not in trace_call["completion"]
+        assert json.loads(trace_call["tool_calls"][0]["arguments_json"]) == action_arguments
+        assert rationale not in trace_call["tool_calls"][0]["arguments_json"]
+        first_snapshot = agent._states[0].workspace._records["turn-000001"][0]
+        files = dict(first_snapshot.files)
+        assert files["assistant.txt"].decode("utf-8") == rationale
+        assert files["action.txt"].decode("utf-8") == ACTION
+
+        agent.forward({0: {"messages": [{"role": "user", "content": "Environment feedback: the option is selected."}]}})
+        previous_assistant = next(message for message in client.requests[1]["messages"]
+                                  if message.get("tool_calls", [{}])[0].get("id") == submit.call_id)
+        assert previous_assistant == {"role": "assistant", "content": rationale,
+                                      "tool_calls": [wire_call(submit)], "reasoning_details": DETAILS}
+        assert json.loads(previous_assistant["tool_calls"][0]["function"]["arguments"]) == action_arguments
+        assert any(message["role"] == "tool" and message["tool_call_id"] == submit.call_id
+                   for message in client.requests[1]["messages"])
+    finally:
+        agent.close()
+
+
 @pytest.fixture
 def published_native_record(tmp_path):
     agent, client = record_agent(tmp_path / "workspace")

@@ -550,9 +550,10 @@ def test_empty_summary_is_bounded_runtime_retry_candidate(fake_sdk):
 
 def test_runtime_executes_host_tools_then_submit_action_without_codex_memory(fake_sdk, tmp_path):
     action = {"name": "tap", "arguments": {"x": 3}}
+    rationale = "Tap the visible button to advance the task."
     fake_sdk.scripts = [
         successful(envelope(calls=[call("list_files", {"path": "records"})])),
-        successful(envelope(calls=[call("submit_action", {"format": "tool_call", "content": json.dumps(action)})])),
+        successful(envelope(rationale, calls=[call("submit_action", {"format": "tool_call", "content": json.dumps(action)})])),
     ]
     agent = SimpleAgent(provider="codex", model="gpt-6.1-sol", reasoning_effort="medium",
         simple_agent_config={"tools": {"enabled": True, "workspace_parent": str(tmp_path / "workspace")}})
@@ -568,10 +569,21 @@ def test_runtime_executes_host_tools_then_submit_action_without_codex_memory(fak
         assert "native model/backend reasoning when available" in ordered_input
         assert "hidden or absent" in ordered_input
         assert "exactly one standalone native submit_action" in ordered_input
+        assert "user-facing action rationale in the assistant message's content" in ordered_input
+        assert "belongs in text, which represents assistant-message content" in ordered_input
+        assert "Keep it out of the submit_action content argument" in ordered_input
         assert legacy_format in ordered_input
         assert '"tool_call_id": "call_1"' in str(fake_sdk.requests[1][0])
         assert all(item["response_metadata"]["sdk_native_function_tools"] is False
                    for item in trace[0]["model_requests"])
+        assert trace[0]["assistant_raw"] == rationale
+        submitted = agent._states[0].runtime.history_snapshot[-1].messages[0]
+        assert submitted.parts == (TextPart(rationale),)
+        arguments = json.loads(submitted.tool_calls[0].arguments_json)
+        assert json.loads(arguments["content"]) == action
+        record = dict(agent._states[0].workspace._records["turn-000001"][0].files)
+        assert record["assistant.txt"] == rationale.encode("utf-8")
+        assert json.loads(record["action.txt"].decode("utf-8")[11:-12]) == action
         old_backend = agent._backend
         agent.close()
         agent.reset()

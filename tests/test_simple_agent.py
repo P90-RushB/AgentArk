@@ -493,13 +493,15 @@ class SimpleAgentTests(unittest.TestCase):
 
     def test_native_submission_runs_host_tools_then_two_decisions_with_native_history(self):
         payload = json.dumps({"name": "tap", "arguments": {"x": 3}})
+        first_rationale = "Tap the visible button to advance the task."
+        second_rationale = "Tap again after checking the earlier observation."
         backend = FakeModel([
             ModelCompletion("Need my own files.", tool_calls=(ToolCall("list", "list_files", json.dumps({
                 "path": "records", "offset": 0, "limit": 10})),)),
-            submission("tool_call", payload, call_id="submit1", text="Choosing tap."),
+            submission("tool_call", payload, call_id="submit1", text=first_rationale),
             ModelCompletion("Check the earlier visible observation.", tool_calls=(ToolCall("read", "read_file", json.dumps({
                 "path": "records/turn-000001/messages.json", "start_line": 1, "max_lines": 20})),)),
-            submission("tool_call", payload, call_id="submit2"),
+            submission("tool_call", payload, call_id="submit2", text=second_rationale),
         ])
         with tempfile.TemporaryDirectory() as directory:
             agent = self.agent(backend, simple_agent_config={"tools": {"enabled": True, "workspace_parent": directory}})
@@ -508,7 +510,7 @@ class SimpleAgentTests(unittest.TestCase):
                 response, trace = agent.forward_with_trace(obs("initial visible state", system=legacy_format))
                 self.assertEqual(response[0], {"action": ACTION, "assistant": ACTION})
                 self.assertEqual(execute.call_count, 1)
-                self.assertEqual(trace[0]["assistant_raw"], "Choosing tap.")
+                self.assertEqual(trace[0]["assistant_raw"], first_rationale)
                 self.assertEqual(trace[0]["model_requests"][-1]["tool_calls"][0]["name"], "submit_action")
                 event = next(event for event in trace[0]["agent_events"] if event["kind"] == "action_translation")
                 self.assertEqual(event, {"kind": "action_translation", "call_id": "submit1", "format": "tool_call",
@@ -525,11 +527,16 @@ class SimpleAgentTests(unittest.TestCase):
             self.assertIn("hidden or absent", transport)
             self.assertIn("Literal text required inside a task payload remains allowed", transport)
             self.assertIn("exactly one standalone native submit_action", transport)
+            self.assertIn("user-facing action rationale in the assistant message's content", transport)
+            self.assertIn("argument holds only the task action payload, never the rationale", transport)
             self.assertTrue(any(message.role == "developer" and legacy_format in "".join(
                 part.text for part in message.parts) for message in request.messages))
             self.assertEqual(sum(message.role == "system" for message in request.messages), 1)
             self.assertTrue(any(message.role == "assistant" and message.tool_calls and message.tool_calls[0].name == "submit_action"
                                 for message in request.messages))
+            previous_submission = next(message for message in request.messages if message.tool_calls
+                                       and message.tool_calls[0].call_id == "submit1")
+            self.assertEqual(previous_submission.parts, (TextPart(first_rationale),))
             assistant_prose = "\n".join(part.text for message in request.messages if message.role == "assistant"
                                          for part in message.parts if isinstance(part, TextPart))
             self.assertNotIn(ACTION, assistant_prose)
@@ -540,6 +547,7 @@ class SimpleAgentTests(unittest.TestCase):
             self.assertEqual(final_entry.text, ACTION)
             self.assertEqual(len(final_entry.messages), 2)
             self.assertEqual(final_entry.messages[0].tool_calls[0].name, "submit_action")
+            self.assertEqual(final_entry.messages[0].parts, (TextPart(second_rationale),))
 
     def test_native_full_csharp_source_unicode_and_all_newlines_are_exact(self):
         source = "\nusing System;\npublic sealed class AgentAction : CodeAction\n{\n" + "\n".join(
