@@ -45,13 +45,32 @@ def image_from_pixels(
 
 
 def chat_messages(messages: Sequence[Message]) -> list[dict[str, object]]:
-    """Return detached Chat Completions JSON with full text and image bytes."""
+    """Return portable JSON, excluding API-only native assistant state."""
+    return _chat_messages(messages)
+
+
+def api_chat_messages(messages: Sequence[Message], native_scope: str) -> list[dict[str, object]]:
+    """Restore native assistant JSON only within its endpoint/model scope."""
+    if not isinstance(native_scope, str) or not native_scope or len(native_scope) > 256:
+        from .models import ModelResponseError
+        raise ModelResponseError("native assistant replay requires a valid endpoint and model scope")
+    return _chat_messages(messages, native_scope=native_scope)
+
+
+def _chat_messages(messages: Sequence[Message], *, native_scope: str | None = None) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     images_pending: list[dict[str, object]] = []
     for message in messages:
         if message.role != "tool" and images_pending:
             result.extend(images_pending)
             images_pending = []
+        if native_scope is not None and message.native_assistant is not None:
+            if message.native_assistant.scope != native_scope:
+                # models imports this module, so defer the exception import.
+                from .models import ModelResponseError
+                raise ModelResponseError("native assistant state belongs to a different endpoint or model")
+            result.append(message.native_assistant.message)
+            continue
         content: list[dict[str, object]] = []
         for part in message.parts:
             if isinstance(part, TextPart):

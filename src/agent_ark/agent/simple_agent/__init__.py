@@ -9,7 +9,7 @@ from .types import (
     AgentRuntime, ArchiveEntry, AsyncModel, AgentError, AgentEvent,
     AgentInputIdentity, AgentLimitError, AgentRequest, AgentResponse,
     AgentReuseError, AgentSupersededError, AgentUsage, ImagePart, Message, ModelCompletion,
-    ModelRequest, ModelUsage, TextPart, ToolCall, ToolResult, ToolSpec,
+    ModelRequest, ModelUsage, NativeAssistantState, TextPart, ToolCall, ToolResult, ToolSpec,
 )
 
 __all__ = [
@@ -18,7 +18,7 @@ __all__ = [
     "CallableModel", "ChatCompletionsModel", "ModelResponseError", "AgentError", "AgentEvent",
     "AgentInputIdentity", "AgentLimitError", "AgentRequest", "AgentResponse", "AgentReuseError",
     "AgentSupersededError", "AgentUsage", "ImagePart", "Message", "ModelCompletion",
-    "ModelRequest", "ModelUsage", "TextPart", "chat_messages", "encode_png", "image_from_pixels",
+    "ModelRequest", "ModelUsage", "NativeAssistantState", "TextPart", "chat_messages", "encode_png", "image_from_pixels",
     "SimpleRuntime", "SimpleRuntimeConfig", "SimpleAgent",
 ]
 

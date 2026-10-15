@@ -8,7 +8,7 @@ import asyncio
 import json
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .encoding import encoded_messages, tool_declarations
 from .models import SummaryResponseError
@@ -126,13 +126,20 @@ def _metrics(messages: tuple[Message, ...]) -> tuple[int, int, int, int]:
     characters = images = image_bytes = 0
     for message in messages:
         characters += sum(len(c.arguments_json) + len(c.name) + len(c.call_id) for c in message.tool_calls)
+        if message.native_assistant is not None:
+            characters += len(message.native_assistant.message_json)
         for part in message.parts:
             if isinstance(part, TextPart):
                 characters += len(part.text)
             else:
                 images += 1
                 image_bytes += len(part.data)
-    return characters, len(encoded_messages(messages)), images, image_bytes
+    # Conservatively include API-only replay in addition to the portable text
+    # projection. Opaque reasoning must not bypass working/archive byte limits.
+    native_bytes = sum(len(message.native_assistant.message_json.encode("utf-8"))
+                       + len(message.native_assistant.scope.encode("utf-8"))
+                       for message in messages if message.native_assistant is not None)
+    return characters, len(encoded_messages(messages)) + native_bytes, images, image_bytes
 
 
 class SimpleRuntime:
@@ -367,17 +374,22 @@ class SimpleRuntime:
     observe = observe_result
 
     def _tokens(self, messages: tuple[Message, ...], byte_count: int) -> int:
+        native_bytes = sum(len(message.native_assistant.message_json.encode("utf-8"))
+                           for message in messages if message.native_assistant is not None)
         if self._token_counter is None:
             text_bytes = sum(len(part.text.encode("utf-8")) for message in messages
                              for part in message.parts if isinstance(part, TextPart))
             text_bytes += sum(len(c.arguments_json.encode("utf-8")) + len(c.name) + len(c.call_id)
                               for message in messages for c in message.tool_calls)
+            text_bytes += native_bytes
             images = sum(isinstance(part, ImagePart) for message in messages for part in message.parts)
             return math.ceil(text_bytes / 4) + len(messages) * 8 + images * self.config.image_token_estimate
         value = self._token_counter(messages)
         if type(value) is not int or value < 0:
             raise AgentError("model token counter returned an invalid count")
-        return value
+        # A portable counter need not know this API-only state. Include a
+        # conservative allowance even with a caller-supplied text counter.
+        return value + math.ceil(native_bytes / 4)
 
     def _fits(self, messages: tuple[Message, ...], *, summary: bool = False) -> bool:
         if self.tools is not None and not summary:
@@ -396,7 +408,8 @@ class SimpleRuntime:
         budget_messages = messages + ((self._tool_budget_message(),) if self.tools is not None and purpose == "action" else ())
         token_count = self._tokens(budget_messages, len(encoded_messages(budget_messages)))
         return ModelRequest(messages, purpose, self.config.summary_output_tokens if purpose == "summary" else self.config.output_reserve_tokens,
-                            token_count, self._token_counter is None, self.tools.specs if self.tools is not None and purpose == "action" else ())
+                            token_count, self._token_counter is None or any(m.native_assistant is not None for m in messages),
+                            self.tools.specs if self.tools is not None and purpose == "action" else ())
 
     def _tool_budget_message(self) -> Message:
         return Message.text("developer", json.dumps(tool_declarations(self.tools.specs), ensure_ascii=False))
@@ -481,7 +494,8 @@ class SimpleRuntime:
                     # objects, including interleaved text/image ordering.
                     messages.append(Message("user", (label, *message.parts)))
                 else:
-                    messages.append(message)
+                    messages.append(replace(message, native_assistant=None)
+                                    if message.native_assistant is not None else message)
         return tuple(messages)
 
     async def _compact(self, identity: AgentInputIdentity, *, original=None, pinned=None, required_events=None):
@@ -532,7 +546,8 @@ class SimpleRuntime:
                     self._deadline.check()
                 retry(failure.reason)
                 continue
-            if not isinstance(completion, ModelCompletion) or completion.tool_calls or completion.context_messages:
+            if (not isinstance(completion, ModelCompletion) or completion.tool_calls
+                or completion.context_messages or completion.native_assistant is not None):
                 raise AgentError("summary model returned an invalid completion")
             self._append_archive(ArchiveEntry(len(self._archive) + 1, "summary_completion", identity, text=completion.text, usage=completion.usage))
             self._summary_usage.append(completion.usage)
@@ -553,10 +568,14 @@ class SimpleRuntime:
             # and append-only observer results survive cancellation or failure.
             candidate = [replacement, *staged[len(span):]]
             old_messages = tuple(message for entry in span for message in entry.messages)
-            if len(encoded_messages((note,))) >= len(encoded_messages(old_messages)):
+            if _metrics((note,))[1] >= _metrics(old_messages)[1]:
                 retry("not_reduced")
                 continue
-            staged = candidate
+            # A changed prefix invalidates signature-bound replay, including
+            # blocks attached to retained recent turns. Originals remain in
+            # the immutable archive; only the new working projection changes.
+            staged = [replace(entry, messages=tuple(replace(message, native_assistant=None)
+                      for message in entry.messages)) for entry in candidate]
             retry_instruction = last_failure = None
         if not self._fits(snapshot()):
             if last_failure:
@@ -595,9 +614,14 @@ class SimpleRuntime:
         messages, local_working = await self._compact(request.identity)
         self._action_attempted.add(request.identity)
         usages: list[ModelUsage] = []
+        native_tool_turn = False
         rounds = self.tools.limits.max_model_rounds if self.tools is not None else 1
         for _ in range(rounds):
             if not self._fits(messages):
+                if native_tool_turn:
+                    # The tool result continues the same assistant turn. Do
+                    # not rewrite a prefix used to generate its native blocks.
+                    raise AgentLimitError("native tool continuation cannot fit context bounds without changing its prefix")
                 messages, local_working = await self._compact(request.identity, original=local_working,
                     pinned=pinned, required_events=frozenset(included_events))
             if session is not None and session.generation != self.tools._generation:
@@ -607,17 +631,24 @@ class SimpleRuntime:
                 raise AgentError("action model returned an invalid completion")
             usages.append(completion.usage)
             self._action_usage.append(completion.usage)
-            if (len(completion.text) > self.config.max_action_output_characters
-                or len(completion.text.encode("utf-8")) > self.config.max_action_output_bytes):
+            native = completion.native_assistant
+            context = completion.context_messages or (Message("assistant", (TextPart(completion.text),),
+                       completion.tool_calls, native_assistant=native),)
+            native_json = "".join(message.native_assistant.message_json
+                                  for message in context if message.native_assistant is not None)
+            if (len(completion.text) + len(native_json) > self.config.max_action_output_characters
+                or len(completion.text.encode("utf-8")) + len(native_json.encode("utf-8")) > self.config.max_action_output_bytes):
                 self._append_archive(ArchiveEntry(len(self._archive) + 1, "completion", request.identity,
-                                                messages=completion.context_messages,
+                                                messages=context,
                                                 text=completion.text, usage=completion.usage))
                 raise AgentLimitError("action output exceeds its hard bounds")
             if not completion.tool_calls:
                 break
             if session is None:
                 raise AgentError("model requested unavailable tools")
-            assistant = Message("assistant", (TextPart(completion.text),) if completion.text else (), completion.tool_calls)
+            assistant = Message("assistant", (TextPart(completion.text),) if completion.text else (), completion.tool_calls,
+                                native_assistant=native)
+            native_tool_turn = native_tool_turn or native is not None
             group = [assistant]
             for call in completion.tool_calls:
                 self._deadline.check()
@@ -645,11 +676,10 @@ class SimpleRuntime:
             raise AgentLimitError("model tool round budget exhausted")
         sequence = len(self._archive) + 1
         self._append_archive(ArchiveEntry(sequence, "completion", request.identity,
-                                        messages=completion.context_messages,
+                                        messages=completion.context_messages or (context if native is not None else ()),
                                         text=completion.text, usage=completion.usage))
         self._completed.add(request.identity)
         if self._current is not None and _scope(request.identity) == _scope(self._current):
-            context = completion.context_messages or (Message.text("assistant", completion.text),)
             # A native submission pair is trusted adapter evidence. The action
             # stays in archive.text; neither this call nor its acknowledgement
             # is executed by the runtime or dispatched through ToolRegistry.

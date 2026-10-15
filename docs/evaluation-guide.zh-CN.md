@@ -164,6 +164,10 @@ SimpleAgent 接收新增图文/动作反馈，自行保留近期完整轮次，�
 不另增摘要留存长度参数。
 这些是可覆盖的上限，不代表固定压缩比例，也不保证所选模型的原生窗口足够大。
 
+SimpleAgent 的 HTTP 后端统一采用 OpenRouter Chat Completions 的推理字段协议，
+分开保存回复正文和原生推理历史；不保证兼容采用其他协议的端点。
+回传、压缩和记录行为详见[原生推理历史说明](simple-agent-native-reasoning.md)。
+
 SimpleAgent 默认使用 HTTP API。使用已有 ChatGPT 订阅作为模型调用后端时，
 可为任意任务配置以下模型条目：
 

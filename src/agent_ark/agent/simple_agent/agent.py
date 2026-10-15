@@ -22,13 +22,13 @@ from urllib.parse import urlparse
 
 from ..api_agent import APIAgent
 from ..base_agent import BaseAgent
-from .encoding import chat_messages, tool_declarations
+from .encoding import api_chat_messages, chat_messages, tool_declarations
 from .models import ModelResponseError, SummaryResponseError
 from .runtime import SimpleRuntime, SimpleRuntimeConfig
 from .tools import FileWorkspace, RecordSnapshot, ToolLimits, ToolRegistry
 from .types import (
     AgentInputIdentity, AgentLimitError, AgentRequest, ImagePart, Message, ModelCompletion,
-    ModelRequest, ModelUsage, TextPart, ToolCall,
+    ModelRequest, ModelUsage, NativeAssistantState, TextPart, ToolCall,
 )
 from .action_submission import NATIVE_INSTRUCTIONS, SUBMISSION_NAME, register_submission, translate_submission
 
@@ -97,6 +97,65 @@ class _OpenAIModel:
         self.client = None
         self.last_response_metadata: dict = {}
 
+    @property
+    def native_scope(self) -> str:
+        identity = json.dumps([self.owner.base_url, self.owner.model], ensure_ascii=False, separators=(",", ":"))
+        return "simple-api:" + sha256(identity.encode("utf-8")).hexdigest()
+
+    def request_messages(self, request: ModelRequest) -> list[dict[str, object]]:
+        if request.purpose == "summary":
+            return chat_messages(request.messages)
+        return api_chat_messages(request.messages, native_scope=self.native_scope)
+
+    def _response_reasoning(self, message: Any) -> tuple[Any, str | None]:
+        # Fixed OpenRouter Chat Completions protocol. Opaque details remain
+        # native JSON; neither encrypted blocks nor reasoning become content.
+        extra = _field(message, "model_extra", {})
+        details = _field(message, "reasoning_details")
+        if details is None:
+            details = _field(extra, "reasoning_details")
+        reasoning = None
+        for value in (_field(message, "reasoning"), _field(message, "reasoning_content"),
+                      _field(extra, "reasoning"), _field(extra, "reasoning_content")):
+            if value is not None and value != "":
+                reasoning = value
+                break
+        try:
+            if reasoning is not None and not isinstance(reasoning, str):
+                raise ValueError("invalid reasoning text")
+            if details is not None and (not isinstance(details, list) or any(not isinstance(part, dict) for part in details)):
+                raise ValueError("invalid reasoning details")
+            audit = {name: value for name, value in (("reasoning", reasoning), ("reasoning_details", details))
+                     if value is not None}
+            audit_json = json.dumps(audit, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            if len(audit_json.encode("utf-8")) > 1024 * 1024:
+                raise ValueError("native reasoning audit exceeds its bound")
+        except (ValueError, TypeError, RecursionError, OverflowError):
+            raise ModelResponseError("chat client returned invalid native assistant state") from None
+        detached = json.loads(audit_json)
+        self.last_response_metadata.update(detached)
+        return detached.get("reasoning_details") or None, detached.get("reasoning")
+
+    def _native_assistant(self, message: Any, calls: Any, *, details: Any, reasoning: str | None) -> NativeAssistantState | None:
+        if details is None and not reasoning:
+            return None
+        try:
+            native = {"role": "assistant", "content": _field(message, "content")}
+            if _field(message, "tool_calls") is not None:
+                native["tool_calls"] = [{"id": _field(call, "id"), "type": _field(call, "type"), "function": {
+                    "name": _field(_field(call, "function"), "name"),
+                    "arguments": _field(_field(call, "function"), "arguments")}} for call in calls]
+            if details is not None:
+                native["reasoning_details"] = details
+            else:
+                native["reasoning"] = reasoning
+            state = NativeAssistantState(self.native_scope, json.dumps(
+                native, ensure_ascii=False, separators=(",", ":"), allow_nan=False))
+        except (ValueError, TypeError, RecursionError, OverflowError):
+            raise ModelResponseError("chat client returned invalid native assistant state") from None
+        self.last_response_metadata["native_assistant"] = {"scope": state.scope, "message": state.message}
+        return state
+
     def request_parameters(self, request: ModelRequest) -> dict:
         owner = self.owner
         kwargs = {"model": owner.model, "extra_body": dict(owner.extra_body),
@@ -116,6 +175,8 @@ class _OpenAIModel:
         return kwargs
 
     async def complete(self, request: ModelRequest) -> ModelCompletion:
+        self.last_response_metadata = {}
+        messages = self.request_messages(request)
         if self.client is None:
             from openai import AsyncOpenAI
             kwargs = {"api_key": self.owner._api_key, "base_url": self.owner.base_url,
@@ -123,9 +184,8 @@ class _OpenAIModel:
             if self.owner.timeout_s is not None:
                 kwargs["timeout"] = self.owner.timeout_s
             self.client = AsyncOpenAI(**kwargs)
-        self.last_response_metadata = {}
         response = await self.client.chat.completions.create(
-            messages=chat_messages(request.messages), **self.request_parameters(request))
+            messages=messages, **self.request_parameters(request))
         usage = _field(response, "usage")
         self.last_response_metadata = {"usage": APIAgent._usage_to_jsonable(usage)}
         choices = _field(response, "choices")
@@ -136,28 +196,26 @@ class _OpenAIModel:
         self.last_response_metadata["finish_reason"] = finish_reason
         message = _field(choice, "message")
         content = APIAgent._coerce_response_text(_field(message, "content"))
-        reasoning = APIAgent._coerce_response_text(
-            _field(message, "reasoning") or _field(message, "reasoning_content")
-            or _field(_field(message, "model_extra", {}), "reasoning")
-            or _field(_field(message, "model_extra", {}), "reasoning_content"))
-        text = APIAgent._combine_reasoning_and_content(reasoning=reasoning, content=content)
-        self.last_response_metadata["assistant_raw"] = text
+        details, reasoning = self._response_reasoning(message)
+        # assistant_raw is an audit convenience only, never working context.
+        self.last_response_metadata["assistant_raw"] = APIAgent._combine_reasoning_and_content(
+            reasoning=reasoning or "", content=content)
         self.last_response_metadata["refusal"] = _field(message, "refusal")
+        calls = _field(message, "tool_calls")
+        if calls is None:
+            calls = ()
+        if not isinstance(calls, (list, tuple)) or len(calls) > 32:
+            raise ModelResponseError("chat client returned invalid tool calls")
         summary_incomplete = request.purpose == "summary" and finish_reason == "length"
         if finish_reason not in (None, "stop", "tool_calls") and not summary_incomplete:
             raise ModelResponseError("chat completion was not complete")
         if _field(message, "refusal"):
             raise ModelResponseError("chat client refused completion")
-        calls = _field(message, "tool_calls") or ()
-        if not isinstance(calls, (list, tuple)) or len(calls) > 32:
-            raise ModelResponseError("chat client returned invalid tool calls")
         if calls and (not request.tools or finish_reason not in (None, "tool_calls")):
             raise ModelResponseError("chat client requested unavailable tools")
         if not calls and finish_reason == "tool_calls":
             raise ModelResponseError("chat client returned no tool calls")
-        if request.purpose == "summary":
-            # Keep provider reasoning in the audit metadata, not model notes.
-            text = content
+        native = self._native_assistant(message, calls, details=details, reasoning=reasoning)
         try:
             parsed = []
             for call in calls:
@@ -166,13 +224,16 @@ class _OpenAIModel:
                 function = _field(call, "function")
                 parsed.append(ToolCall(_field(call, "id"), _field(function, "name"), _field(function, "arguments")))
             counts = ModelUsage(_field(usage, "prompt_tokens"), _field(usage, "completion_tokens"), _field(usage, "total_tokens"))
-            completion = ModelCompletion(text, counts, tuple(parsed))
+            completion = ModelCompletion(content, counts, tuple(parsed),
+                native_assistant=native if request.purpose == "action" else None)
         except (ValueError, TypeError):
             raise ModelResponseError("chat client returned invalid tools or usage") from None
         if summary_incomplete:
             raise SummaryResponseError("incomplete", counts)
         if request.purpose == "summary" and not content:
             raise SummaryResponseError("empty_content", counts)
+        if request.purpose == "action" and not content and not parsed:
+            raise ModelResponseError("chat client returned no assistant content or tool calls")
         return completion
 
     async def close(self) -> None:
@@ -191,14 +252,16 @@ class _TracedModel:
         self.usages: list[tuple[str, ModelUsage]] = []
         self.events: list[dict] = []
 
-    def _failure_metadata(self, record: dict, request: ModelRequest, error: Exception | None = None) -> None:
-        metadata = getattr(self.backend, "last_response_metadata", None)
+    def _failure_metadata(self, record: dict, request: ModelRequest, error: Exception | None = None, *, backend_called: bool = True) -> None:
+        metadata = getattr(self.backend, "last_response_metadata", None) if backend_called else None
         raw_record_usage = record.get("usage") or {}
         usage = ModelUsage(raw_record_usage.get("input_tokens"), raw_record_usage.get("output_tokens"), raw_record_usage.get("total_tokens"))
         if isinstance(error, SummaryResponseError):
             usage = error.usage
         if metadata:
             record["response_metadata"] = dict(metadata)
+            if metadata.get("native_assistant") is not None:
+                record["native_assistant"] = metadata["native_assistant"]
             raw = metadata.get("usage") or {}
             try:
                 if raw:
@@ -210,7 +273,7 @@ class _TracedModel:
         self.usages.append((request.purpose, usage))
 
     async def complete(self, request: ModelRequest) -> ModelCompletion:
-        record = {"purpose": request.purpose, "request_messages": chat_messages(request.messages),
+        record = {"purpose": request.purpose,
                   "max_output_tokens": request.max_output_tokens, "input_tokens": request.input_tokens,
                   "token_count_is_estimate": request.token_count_is_estimate,
                   "tools": tool_declarations(request.tools), "status": "pending"}
@@ -224,7 +287,11 @@ class _TracedModel:
         if callable(parameters):
             record["parameters"] = parameters(request)
         self.calls.append(record)
+        backend_called = False
         try:
+            encoder = getattr(self.backend, "request_messages", None)
+            record["request_messages"] = encoder(request) if callable(encoder) else chat_messages(request.messages)
+            backend_called = True
             completion = await self.backend.complete(request)
             if not isinstance(completion, ModelCompletion):
                 raise ModelResponseError("model returned an invalid completion")
@@ -234,6 +301,11 @@ class _TracedModel:
             metadata = getattr(self.backend, "last_response_metadata", None)
             if metadata:
                 record["response_metadata"] = dict(metadata)
+                if metadata.get("native_assistant") is not None:
+                    record["native_assistant"] = metadata["native_assistant"]
+            if completion.native_assistant is not None:
+                native = completion.native_assistant
+                record["native_assistant"] = {"scope": native.scope, "message": native.message}
             translated = completion
             if (self.native_submission and request.purpose == "action"
                 and any(tool.name == SUBMISSION_NAME for tool in request.tools)):
@@ -248,11 +320,11 @@ class _TracedModel:
             return translated
         except asyncio.CancelledError:
             record["status"] = "cancelled"
-            self._failure_metadata(record, request)
+            self._failure_metadata(record, request, backend_called=backend_called)
             raise
         except Exception as exc:
             record.update({"status": "failed", "error_type": type(exc).__name__})
-            self._failure_metadata(record, request, exc)
+            self._failure_metadata(record, request, exc, backend_called=backend_called)
             raise
 
 
@@ -545,6 +617,12 @@ class SimpleAgent(BaseAgent):
                           "messages": visible}
         files.extend((("messages.json", json.dumps(message_record, ensure_ascii=False, indent=2).encode("utf-8")),
                       ("assistant.txt", final.encode("utf-8")), ("action.txt", (action or "").encode("utf-8"))))
+        native_calls = [{"call_index": index, "purpose": call["purpose"], **call["native_assistant"]}
+                        for index, call in enumerate(state.model.calls, start=1) if call.get("native_assistant") is not None]
+        if native_calls:
+            files.append(("native_assistants.json", json.dumps(
+                {"format": "native-assistants-v1", "calls": native_calls},
+                ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")))
         size = sum(len(data) for _, data in files)
         limits = self.tool_limits
         if (state.published_records >= limits.max_records or state.published_bytes + size > limits.max_published_bytes
@@ -578,8 +656,14 @@ class SimpleAgent(BaseAgent):
         events = []
         for entry in state.runtime.history_snapshot[archive_start:]:
             if entry.kind in ("tool_exchange", "summary_completion", "event"):
-                events.append({"kind": entry.kind, "sequence": entry.sequence, "text": entry.text,
-                               "messages": chat_messages(entry.messages), "usage": _usage_dict(entry.usage)})
+                event = {"kind": entry.kind, "sequence": entry.sequence, "text": entry.text,
+                         "messages": chat_messages(entry.messages), "usage": _usage_dict(entry.usage)}
+                native_messages = [{"message_index": index, "scope": message.native_assistant.scope,
+                                    "message": message.native_assistant.message}
+                                   for index, message in enumerate(entry.messages) if message.native_assistant is not None]
+                if native_messages:
+                    event["native_assistants"] = native_messages
+                events.append(event)
         events.extend(state.model.events)
         events.extend(extra_events)
         usages = state.model.usages

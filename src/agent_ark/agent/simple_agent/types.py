@@ -94,6 +94,99 @@ class ToolCall:
 
 
 @dataclass(frozen=True, slots=True)
+class NativeAssistantState:
+    """Detached API-only assistant replay, never ordinary model-visible text.
+
+    This is the fixed OpenRouter Chat Completions contract, not arbitrary
+    provider kwargs. JSON preserves null, whitespace, opaque blocks and order.
+    The endpoint/model scope prevents replay through a different backend.
+    """
+    scope: str
+    message_json: str
+
+    def __post_init__(self) -> None:
+        _text(self.scope, "native assistant scope")
+        _text(self.message_json, "native assistant JSON")
+        if len(self.scope) > 256 or len(self.message_json.encode("utf-8")) > 1024 * 1024:
+            raise ValueError("native assistant state exceeds its bound")
+
+        def pairs(items):
+            value = {}
+            for key, item in items:
+                if key in value:
+                    raise ValueError("duplicate native assistant fields")
+                value[key] = item
+            return value
+
+        def constant(value):
+            raise ValueError("nonfinite native assistant JSON")
+
+        try:
+            value = json.loads(self.message_json, object_pairs_hook=pairs, parse_constant=constant)
+            # Also reject overflowing numeric literals, e.g. 1e999.
+            json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            if (not isinstance(value, dict) or value.get("role") != "assistant"
+                or "content" not in value
+                or set(value) - {"role", "content", "tool_calls", "reasoning", "reasoning_details"}):
+                raise ValueError("invalid native assistant fields")
+            if value["content"] is not None and not isinstance(value["content"], (str, list)):
+                raise ValueError("invalid native assistant content")
+            if isinstance(value["content"], list) and any(
+                not isinstance(part, dict) or not isinstance(part.get("text"), str)
+                or part.get("type", "text") != "text" or set(part) - {"type", "text"}
+                for part in value["content"]
+            ):
+                raise ValueError("native assistant content must contain only text parts")
+            if ("reasoning" in value) == ("reasoning_details" in value):
+                raise ValueError("native assistant requires one reasoning representation")
+            if "reasoning_details" in value:
+                details = value["reasoning_details"]
+                if not isinstance(details, list) or not details or any(not isinstance(part, dict) for part in details):
+                    raise ValueError("invalid native reasoning details")
+            elif not isinstance(value["reasoning"], str) or not value["reasoning"]:
+                raise ValueError("invalid native reasoning text")
+            self._calls(value)
+        except (TypeError, RecursionError, OverflowError) as error:
+            raise ValueError("invalid native assistant JSON") from error
+
+    @staticmethod
+    def _calls(value: dict) -> tuple[ToolCall, ...]:
+        calls = value.get("tool_calls")
+        if calls is None:
+            calls = []
+        if not isinstance(calls, list) or len(calls) > 32:
+            raise ValueError("invalid native assistant tool calls")
+        parsed = []
+        for call in calls:
+            if (not isinstance(call, dict) or set(call) != {"id", "type", "function"}
+                or call["type"] != "function" or not isinstance(call["function"], dict)
+                or set(call["function"]) != {"name", "arguments"}):
+                raise ValueError("invalid native assistant tool call")
+            parsed.append(ToolCall(call["id"], call["function"]["name"], call["function"]["arguments"]))
+        if len({call.call_id for call in parsed}) != len(parsed):
+            raise ValueError("duplicate native assistant tool call ID")
+        return tuple(parsed)
+
+    @property
+    def message(self) -> dict:
+        return json.loads(self.message_json)
+
+    @property
+    def tool_calls(self) -> tuple[ToolCall, ...]:
+        return self._calls(self.message)
+
+    @property
+    def content_text(self) -> str:
+        """The portable text projection; the API still replays raw content."""
+        content = self.message["content"]
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content.strip()
+        return "\n".join(part["text"].strip() for part in content if part["text"].strip())
+
+
+@dataclass(frozen=True, slots=True)
 class ToolResult:
     call_id: str
     parts: tuple[TextPart | ImagePart, ...]
@@ -113,6 +206,7 @@ class Message:
     parts: tuple[TextPart | ImagePart, ...]
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
+    native_assistant: NativeAssistantState | None = None
 
     def __post_init__(self) -> None:
         if self.role not in ("system", "developer", "user", "assistant", "tool"):
@@ -129,6 +223,13 @@ class Message:
             _text(self.tool_call_id, "tool call ID")
         elif self.tool_call_id is not None:
             raise ValueError("only tool results may have a call ID")
+        if self.native_assistant is not None:
+            if (self.role != "assistant" or not isinstance(self.native_assistant, NativeAssistantState)
+                or self.native_assistant.tool_calls != self.tool_calls):
+                raise ValueError("native assistant state must match the assistant tool calls")
+            if (any(not isinstance(part, TextPart) for part in self.parts)
+                or "".join(part.text for part in self.parts) != self.native_assistant.content_text):
+                raise ValueError("native assistant state must match the assistant content")
 
     @classmethod
     def text(cls, role: Literal["system", "developer", "user", "assistant"], text: str) -> Message:
@@ -166,7 +267,7 @@ class AgentRequest:
             raise ValueError("messages must be a nonempty immutable tuple")
         if self.history_policy not in ("carry", "omit"):
             raise ValueError("unsupported history policy")
-        if any(m.role == "tool" or m.tool_calls for m in self.messages):
+        if any(m.role == "tool" or m.tool_calls or m.native_assistant is not None for m in self.messages):
             raise ValueError("environment input cannot supply runtime tool interactions")
 
 
@@ -235,6 +336,7 @@ class ModelCompletion:
     usage: ModelUsage = ModelUsage()
     tool_calls: tuple[ToolCall, ...] = ()
     context_messages: tuple[Message, ...] = ()
+    native_assistant: NativeAssistantState | None = None
 
     def __post_init__(self) -> None:
         _text(self.text, "completion text", empty=True)
@@ -244,6 +346,12 @@ class ModelCompletion:
             raise ValueError("tool calls must be a bounded immutable tuple")
         if len({c.call_id for c in self.tool_calls}) != len(self.tool_calls):
             raise ValueError("duplicate completion tool call ID")
+        if self.native_assistant is not None:
+            if (not isinstance(self.native_assistant, NativeAssistantState) or self.context_messages
+                or self.native_assistant.tool_calls != self.tool_calls):
+                raise ValueError("native completion state must match the assistant tool calls")
+            if self.text != self.native_assistant.content_text:
+                raise ValueError("native completion state must match the assistant content")
         if not isinstance(self.context_messages, tuple) or any(
             not isinstance(message, Message) for message in self.context_messages
         ):

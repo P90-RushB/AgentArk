@@ -184,6 +184,12 @@ summary-length target.
 These are configurable upper bounds, not a fixed compression ratio or a guarantee
 that a model's native context window is large enough.
 
+SimpleAgent's HTTP backend follows the fixed OpenRouter Chat Completions
+reasoning contract. Response content and native reasoning history are stored
+separately; endpoints with a different contract are not guaranteed compatible.
+See [native reasoning history](simple-agent-native-reasoning.md) for replay,
+compaction and record behavior.
+
 SimpleAgent uses the HTTP API transport by default. To select an existing
 ChatGPT subscription instead, use this model entry for any task:
 

@@ -142,7 +142,8 @@ def translate_submission(completion: ModelCompletion, *, max_bytes: int, max_cha
         translated = "<params>" + content + "</params>" if kind == "params" else content
     if len(translated.encode("utf-8")) > max_bytes or len(translated) > max_characters:
         raise _error("translated action exceeds its bound")
-    assistant = Message("assistant", (TextPart(completion.text),) if completion.text else (), (call,))
+    assistant = Message("assistant", (TextPart(completion.text),) if completion.text else (), (call,),
+                        native_assistant=completion.native_assistant)
     ack = Message("tool", (TextPart(
         "Synthetic adapter acknowledgement: Adapter selected action; not executed yet; next observation gives outcome."),), tool_call_id=call.call_id)
     event = {"kind": "action_translation", "call_id": call.call_id,

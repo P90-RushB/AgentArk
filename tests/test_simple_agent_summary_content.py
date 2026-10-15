@@ -79,6 +79,7 @@ def test_summary_completion_uses_only_coerced_content_but_trace_keeps_reasoning(
         try:
             completion = await traced.complete(ModelRequest((Message.text("user", "old records"),), purpose="summary"))
             assert completion.text == "Earlier trials\nselected the left path."
+            assert completion.native_assistant is None
             assert completion.usage == ModelUsage(21, 39, 60)
             record = traced.calls[0]
             assert record["completion"] == completion.text
@@ -230,16 +231,15 @@ def test_summary_still_rejects_incomplete_refused_or_tool_responses(message, fin
     (ACTION, "Choose the visible tap.", ACTION),
     ("<code>public sealed class AgentAction : CodeAction {}</code>", "Use the task API.",
      "public sealed class AgentAction : CodeAction {}"),
-    (None, ACTION, ACTION),
 ])
-def test_action_responses_keep_existing_reasoning_merge_extraction_and_full_usage(content, reasoning, expected_action):
+def test_action_responses_extract_only_content_and_keep_full_usage(content, reasoning, expected_action):
     agent, client = fake_agent(lambda _: response({"content": content, "reasoning": reasoning}, usage=ACTION_USAGE))
     try:
         result, traces = agent.forward_with_trace({0: {"messages": [{"role": "user", "content": "visible state"}]}})
         raw = "<think>\n" + reasoning + "\n</think>\n" + content if content else reasoning
-        assert result[0] == {"action": expected_action, "assistant": raw}
+        assert result[0] == {"action": expected_action, "assistant": content}
         record = traces[0]["model_requests"][0]
-        assert record["completion"] == raw
+        assert record["completion"] == content
         assert record["response_metadata"]["assistant_raw"] == raw
         assert record["response_metadata"]["usage"] == ACTION_USAGE
         assert traces[0]["usage"] == {"input_tokens": 11, "output_tokens": 19, "total_tokens": 30}
