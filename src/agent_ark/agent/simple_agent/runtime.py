@@ -72,7 +72,8 @@ class _DecisionDeadline:
 @dataclass(frozen=True, slots=True)
 class SimpleRuntimeConfig:
     max_context_characters: int = 524_288
-    max_context_bytes: int = 32 * 1024 * 1024
+    # Encoded messages include base64 images; leave room for API request envelopes.
+    max_context_bytes: int = 16_000_000
     max_context_tokens: int = 256 * 1024
     output_reserve_tokens: int = 20_480
     recent_turns: int = 2
@@ -85,7 +86,7 @@ class SimpleRuntimeConfig:
     max_archive_bytes: int = 512 * 1024 * 1024
     max_archive_image_bytes: int = 512 * 1024 * 1024
     summary_input_characters: int = 196_608
-    summary_input_bytes: int = 32 * 1024 * 1024
+    summary_input_bytes: int = 16_000_000
     summary_input_tokens: int = 48_000
     summary_output_characters: int = 32_000
     summary_output_bytes: int = 128_000

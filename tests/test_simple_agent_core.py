@@ -194,9 +194,83 @@ def test_results_appended_during_summary_are_not_lost():
 def test_default_context_budgets():
     defaults = SimpleRuntimeConfig()
     assert defaults.max_context_tokens == 256 * 1024
+    assert defaults.max_context_bytes == 16_000_000
+    assert defaults.max_context_characters == 524_288
     assert defaults.max_images == 256
+    assert defaults.max_image_bytes == 16 * 1024 * 1024
     assert defaults.output_reserve_tokens == 20_480
+    assert defaults.recent_turns == 2
+    assert defaults.max_summary_calls == 4
     assert defaults.summary_input_tokens == 48_000
+    assert defaults.summary_input_bytes == 16_000_000
+    assert defaults.summary_input_characters == 196_608
+
+
+def test_default_encoded_byte_limit_compacts_image_history_before_action_request():
+    from agent_ark.agent.simple_agent.runtime import _metrics
+
+    async def run():
+        # 68 modest PNGs fit the raw-image and token bounds, but base64 plus
+        # conversation text takes the encoded request beyond 20 decimal MB.
+        image = image_from_pixels(random.Random(23).randbytes(256 * 283 * 3), 256, 283)
+        calls = []
+
+        async def model(value):
+            calls.append(value)
+            bound = defaults.summary_input_bytes if value.purpose == "summary" else defaults.max_context_bytes
+            assert _metrics(value.messages)[1] <= bound
+            return ModelCompletion("Earlier camera facts retained." if value.purpose == "summary" else "{}")
+
+        defaults = SimpleRuntimeConfig()
+        runtime = SimpleRuntime(CallableModel(model))
+        for number in range(1, 35):
+            source = request(number, "x" * 13_350)
+            source = replace(source, messages=(*source.messages, Message("user", (image, image))))
+            runtime.accept_input(source)
+        original = runtime.working_snapshot
+        characters, byte_count, images, image_bytes = _metrics(original)
+        assert 20_000_000 < byte_count < 32 * 1024 * 1024
+        assert characters < defaults.max_context_characters
+        assert images == 68 and image_bytes < defaults.max_image_bytes
+        assert runtime._tokens(original, byte_count) + defaults.output_reserve_tokens < defaults.max_context_tokens
+        previous_budget = SimpleRuntime(CallableModel(model), replace(defaults, max_context_bytes=32 * 1024 * 1024))
+        assert previous_budget._fits(original)
+        assert not runtime._fits(original)
+
+        await runtime.complete(source)
+
+        assert calls[0].purpose == "summary" and calls[-1].purpose == "action"
+        assert runtime.usage.summary_calls >= 1 and runtime.usage.action_calls == 1
+        assert "Model notes; not environment facts" in texts(calls[-1].messages)
+        assert sum(isinstance(part, ImagePart) for entry in runtime.history_snapshot
+                   for message in entry.messages for part in message.parts) == 68
+        assert all(entry.messages[-1].parts == (image, image) for entry in runtime.history_snapshot if entry.kind == "input")
+
+    asyncio.run(run())
+
+
+def test_default_summary_byte_limit_bounds_candidate_before_model_call():
+    from agent_ark.agent.simple_agent.runtime import _metrics
+
+    async def model(value):
+        raise AssertionError("Selecting a summary span must not call a model")
+
+    image = image_from_pixels(random.Random(29).randbytes(1024 * 720 * 3), 1024, 720)
+    defaults = SimpleRuntimeConfig()
+    runtime = SimpleRuntime(CallableModel(model))
+    for number in range(1, 9):
+        source = request(number)
+        runtime.accept_input(replace(source, messages=(*source.messages, Message("user", (image,)))))
+    span = runtime._summary_span(runtime._working, frozenset())
+    summary = runtime._summary_messages(span)
+    next_candidate = runtime._summary_messages((*span, runtime._working[len(span)]))
+    assert span and _metrics(summary)[1] <= defaults.summary_input_bytes
+    assert defaults.summary_input_bytes < _metrics(next_candidate)[1] < 32 * 1024 * 1024
+    assert runtime._fits(summary, summary=True)
+    assert not runtime._fits(next_candidate, summary=True)
+    previous_budget = SimpleRuntime(CallableModel(model), replace(defaults, summary_input_bytes=32 * 1024 * 1024))
+    assert previous_budget._fits(next_candidate, summary=True)  # Every other summary bound still fits.
+    assert len(previous_budget._summary_span(runtime._working, frozenset())) > len(span)
 
 
 @pytest.mark.parametrize("excess_tokens", [0, 1])

@@ -26,6 +26,7 @@ These values are read from `SimpleRuntimeConfig`; task overrides remain independ
 | Setting | Current default |
 | --- | ---: |
 | Estimated context tokens / action reserve | 262,144 / 20,480 |
+| Working-context / summary-input encoded bytes | 16,000,000 / 16,000,000 |
 | Working images / protected recent inputs | 256 / 2 |
 | Summary input tokens / characters | 48,000 / 196,608 |
 | Summary output tokens / characters / bytes | 10,000 / 32,000 / 128,000 |
@@ -33,6 +34,8 @@ These values are read from `SimpleRuntimeConfig`; task overrides remain independ
 | Archive total bytes / image bytes | 512 MiB / 512 MiB |
 
 Image count, estimated tokens, text and bytes are separate compaction triggers.
+Encoded-byte budgets include base64 image expansion and leave room for the API
+request envelope; raw-image bytes alone do not bound the HTTP payload.
 Boundary tests retain 256 images, compact at 257 and archive every original image.
 With the reserve, 241,664 input tokens fit; one more is rejected before a model
 call when no prior turn can compact. These are local estimates, not a provider's

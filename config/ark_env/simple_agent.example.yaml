@@ -56,9 +56,12 @@ models:
         recent_turns: 2
         max_images: 256
         max_context_characters: 524288
+        # Encoded messages include base64 images; leave room for the API envelope.
+        max_context_bytes: 16000000
         max_summary_calls: 4
         summary_input_tokens: 48000
         summary_input_characters: 196608
+        summary_input_bytes: 16000000
         # API generation cap includes reasoning; memory keeps final content only.
         summary_output_tokens: 10000
         summary_output_characters: 32000

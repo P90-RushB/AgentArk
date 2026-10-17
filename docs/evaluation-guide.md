@@ -167,6 +167,8 @@ summaries are labelled model memory, not environment facts. Instructions, curren
 observations, necessary feedback, and complete code are not silently shortened.
 Token counting uses a configurable image/text estimate alongside encoded-byte,
 image-count, and raw-image-byte limits.
+Working-context and summary-input encoded bytes each default to 16,000,000,
+including base64 images, leaving room for the API request envelope.
 
 The shared defaults allow 262,144 (256 * 1024) estimated context tokens, including a
 20,480 action-output reserve, up to 256 working images, and two protected recent inputs
