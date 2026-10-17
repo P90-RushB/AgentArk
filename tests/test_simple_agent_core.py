@@ -204,6 +204,7 @@ def test_default_context_budgets():
     assert defaults.summary_input_tokens == 48_000
     assert defaults.summary_input_bytes == 16_000_000
     assert defaults.summary_input_characters == 196_608
+    assert defaults.summary_output_tokens == 32 * 1024
 
 
 def test_default_encoded_byte_limit_compacts_image_history_before_action_request():
@@ -397,7 +398,9 @@ def test_summary_transaction_rolls_back_after_second_summary_failure():
                 raise RuntimeError("second summary failed")
             return ModelCompletion("Facts retained.")
 
-        runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=700, summary_input_characters=600))
+        runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=700))
+        instruction_characters = len(texts(runtime._summary_messages(())))
+        runtime.config = replace(runtime.config, summary_input_characters=instruction_characters + 350)
         for number in range(1, 5):
             runtime.accept_input(request(number, "x" * 300))
         before = runtime.working_snapshot
@@ -1323,7 +1326,7 @@ def test_summary_transcript_preserves_exact_calls_reply_parts_images_and_source_
         _WorkingEntry(4, "event", identity(), (feedback,), (4,)),
     )
     original = tuple(entry.messages for entry in entries)
-    summary = SimpleRuntime._summary_messages(entries)
+    summary = SimpleRuntime(CallableModel(lambda _: None))._summary_messages(entries)
     assert not any(message.tool_calls or message.role == "tool" for message in summary)
     assert summary[1] is observation and summary[-1] is feedback
     assert summary[2].role == summary[3].role == summary[4].role == "user"
@@ -1403,7 +1406,7 @@ def test_transformed_summary_budget_keeps_complete_native_turn_and_rolls_back(bo
         first = request(1, "x" * 260)
         probe = SimpleRuntime(CallableModel(model), config(max_context_characters=700))
         await probe.complete(first)
-        transformed = SimpleRuntime._summary_messages(tuple(probe._working))
+        transformed = probe._summary_messages(tuple(probe._working))
         raw = (transformed[0],) + tuple(message for entry in probe._working for message in entry.messages)
         transformed_characters, transformed_bytes, _, _ = _metrics(transformed)
         raw_characters, raw_bytes, _, _ = _metrics(raw)

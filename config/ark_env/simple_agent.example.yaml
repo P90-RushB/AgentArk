@@ -62,8 +62,10 @@ models:
         summary_input_tokens: 48000
         summary_input_characters: 196608
         summary_input_bytes: 16000000
-        # API generation cap includes reasoning; memory keeps final content only.
-        summary_output_tokens: 10000
+        # Independent API cap includes reasoning; inherits the action effort.
+        # The action max_completion_tokens does not reduce this summary cap.
+        # Memory keeps final content only.
+        summary_output_tokens: 32768
         summary_output_characters: 32000
         summary_output_bytes: 128000
         max_archive_bytes: 536870912

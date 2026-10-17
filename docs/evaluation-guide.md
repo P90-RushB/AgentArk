@@ -173,7 +173,7 @@ including base64 images, leaving room for the API request envelope.
 The shared defaults allow 262,144 (256 * 1024) estimated context tokens, including a
 20,480 action-output reserve, up to 256 working images, and two protected recent inputs
 (including the current input). Summary requests accept up to 48,000 estimated
-input tokens and have a separate 10,000-token generation cap. Only their final
+input tokens and have a separate 32,768-token generation budget. Only their final
 `content` becomes memory; separate readable reasoning remains in the raw trace
 and still counts toward provider output usage. Empty final content, output-limit
 truncation, overlong summaries and summaries that do not reduce the source are
@@ -275,7 +275,8 @@ Working context, original archive, model calls, tool rounds/results, records and
 notes have finite bounds. Failed compaction or exhausted budgets fail explicitly.
 New agent HTTP retries default to zero; an explicit `max_retries` controls client
 retries. Action output is capped by the smaller of `max_completion_tokens` and
-`output_reserve_tokens`; summaries use `summary_output_tokens`. This is not
+`output_reserve_tokens`; summaries use their independent `summary_output_tokens`
+budget (default 32,768), without the action `max_completion_tokens` cap. This is not
 unbounded history, disk-backed conversation resume, or an operating-system
 sandbox against hostile local processes.
 If summary recovery is exhausted, the evaluator records the case error and its
@@ -284,10 +285,17 @@ continue other cases; it does not replay the failed case. Authentication,
 parameter, refusal, cancellation, timeout and archive-capacity failures do not
 receive automatic summary-generation retries. An unsuccessful summary does not
 allocate an environment step or submit a placeholder action.
-Reasoning tokens share the completion cap. A response ending with `length`
-fails without submitting a partial action; when increasing reasoning effort,
-size both action caps and the separate summary output budget accordingly. The
-Qwen example selects low reasoning effort. The current budgets require validation
+Reasoning tokens share each request's completion cap. Summary requests keep
+the same reasoning/thinking parameters as action requests, including the Codex
+SDK backend. Only final assistant content becomes summary memory; reasoning
+fields remain audit data. Separating these fields does not reserve output tokens
+for content, so the independent summary budget must allow room for both.
+The first summary prompt includes the token budget (including reasoning) and
+the final-content character/UTF-8 byte limits, and requests only concise notes.
+A response ending with `length` fails without submitting a partial action or
+accepting partial notes. Size both action caps and the independent summary
+budget for the chosen profile. The Qwen example selects low reasoning effort.
+The current budgets require validation
 with the chosen model; earlier bounded Player checks do not validate these new
 defaults. Direct construction keeps file tools opt-in and requires a writable
 `workspace_parent` when enabled; the example enables them explicitly.

@@ -211,7 +211,7 @@ class _OpenAIModel:
         owner = self.owner
         kwargs = {"model": owner.model, "extra_body": dict(owner.extra_body),
                   owner.output_token_parameter: request.max_output_tokens}
-        if owner.max_completion_tokens is not None:
+        if request.purpose == "action" and owner.max_completion_tokens is not None:
             kwargs[owner.output_token_parameter] = min(request.max_output_tokens, owner.max_completion_tokens)
         if owner.temperature is not None:
             kwargs["temperature"] = owner.temperature

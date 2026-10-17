@@ -90,7 +90,7 @@ class SimpleRuntimeConfig:
     summary_input_tokens: int = 48_000
     summary_output_characters: int = 32_000
     summary_output_bytes: int = 128_000
-    summary_output_tokens: int = 10_000
+    summary_output_tokens: int = 32 * 1024
     max_action_output_characters: int = 120_000
     max_action_output_bytes: int = 512_000
     max_model_calls: int = 4_096
@@ -462,10 +462,19 @@ class SimpleRuntime:
                 break
         return tuple(candidate)
 
-    @staticmethod
-    def _summary_messages(span: tuple[_WorkingEntry, ...], *, retry_instruction: str | None = None) -> tuple[Message, ...]:
+    def _summary_messages(self, span: tuple[_WorkingEntry, ...], *,
+                          retry_instruction: str | None = None) -> tuple[Message, ...]:
+        config = self.config
         sources = [number for entry in span for number in entry.source_sequences]
-        instruction_text = "Summarize this agent's earlier complete conversation turns. Preserve concrete facts, decisions, feedback, and useful code details. Do not invent facts. Return concise plain text model notes. Source archive entries: " + ",".join(map(str, sources))
+        instruction_text = (
+            "Summarize this agent's earlier complete conversation turns. Preserve concrete facts, decisions, feedback, "
+            "and useful code details. Do not invent facts. Return only concise plain text model notes, without private "
+            "reasoning or a preamble. "
+            f"The total output budget is {config.summary_output_tokens} tokens, including any reasoning tokens; "
+            "leave enough of that budget to finish the notes. "
+            f"The final notes must fit {config.summary_output_characters} characters and "
+            f"{config.summary_output_bytes} UTF-8 bytes. Compress repetition and keep only useful details rather than "
+            "filling these limits. Source archive entries: " + ",".join(map(str, sources)))
         if retry_instruction:
             instruction_text += "\nSummary retry instructions: " + retry_instruction
         instruction = Message.text("system", instruction_text)

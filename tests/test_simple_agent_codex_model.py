@@ -234,6 +234,29 @@ def test_summary_uses_final_text_only_and_reasoning_stays_in_audit(fake_sdk):
     assert "audit-only-reasoning" in str(backend.last_response_metadata["sdk_items"])
 
 
+@pytest.mark.parametrize("effort", [None, "high", "max"])
+def test_codex_summary_preserves_action_effort_in_actual_turn_and_audit(fake_sdk, effort):
+    fake_sdk.scripts = [successful(envelope("action")), successful(envelope("concise notes"))]
+    agent = SimpleAgent(provider="codex", reasoning_effort=effort, max_completion_tokens=20480)
+
+    async def run():
+        backend = agent._backend
+        await backend.complete(request())
+        action_metadata = dict(backend.last_response_metadata)
+        summary_request = agent._state(0).runtime._model_request((Message.text("user", "old"),), "summary")
+        await backend.complete(summary_request)
+        return action_metadata, backend.last_response_metadata
+
+    try:
+        action, summary = asyncio.run(run())
+        assert fake_sdk.requests[0][1]["effort"] == action["reasoning_effort"] == (effort or "medium")
+        assert fake_sdk.requests[1][1]["effort"] == summary["reasoning_effort"] == (effort or "medium")
+        assert summary["max_output_tokens"]["requested"] == 32768
+        assert summary["max_output_tokens"]["supported"] is False
+    finally:
+        agent.close()
+
+
 def test_sdk_retry_notification_preserves_same_turn_and_single_action(fake_sdk, tmp_path):
     action = {"name": "tap", "arguments": {"x": 3}}
     fake_sdk.scripts = [[sdk_error(retry=True)] + successful(envelope(calls=[

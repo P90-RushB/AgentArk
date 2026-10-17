@@ -29,7 +29,7 @@ These values are read from `SimpleRuntimeConfig`; task overrides remain independ
 | Working-context / summary-input encoded bytes | 16,000,000 / 16,000,000 |
 | Working images / protected recent inputs | 256 / 2 |
 | Summary input tokens / characters | 48,000 / 196,608 |
-| Summary output tokens / characters / bytes | 10,000 / 32,000 / 128,000 |
+| Summary output tokens / characters / bytes | 32,768 / 32,000 / 128,000 |
 | Summary calls per decision | 4 |
 | Archive total bytes / image bytes | 512 MiB / 512 MiB |
 
@@ -43,6 +43,10 @@ native context-window guarantee. Codex SDK output-token requests are guidance,
 not an SDK-enforced cap; runtime text/byte/summary checks still apply.
 
 Summary memory uses final response content only; reasoning stays in audit metadata.
+Summary generation inherits the action reasoning/thinking parameters, with its own
+output-token budget that is not reduced by the action `max_completion_tokens` cap.
+Reasoning and content still share the provider's completion-token allowance. The
+first summary prompt states that total budget and the final-content bounds.
 Empty, truncated, excessive or non-reducing summaries receive bounded feedback within
 the same call/deadline budgets. History commits only after successful compaction.
 Direct file tools remain opt-in; the general example enables a 512-record bound.
