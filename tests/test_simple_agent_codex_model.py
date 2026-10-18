@@ -6,6 +6,7 @@ import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -615,6 +616,49 @@ def test_runtime_executes_host_tools_then_submit_action_without_codex_memory(fak
         agent.close()
         agent.reset()
         assert isinstance(agent._backend, CodexModel) and agent._backend is not old_backend
+    finally:
+        agent.close()
+
+
+@pytest.mark.parametrize("batch", ["host_first", "duplicate", "extra_fields"])
+def test_codex_invalid_submission_retries_with_original_batch_and_paired_feedback(fake_sdk, tmp_path, batch):
+    bad = call("submit_action", {"format": "raw", "content": "a"}, id="bad-selection")
+    if batch == "host_first":
+        calls = [call("write_note", {"path": "notes/forbidden.txt", "content": "SIDE EFFECT"}, id="note-first"), bad]
+    elif batch == "duplicate":
+        calls = [bad, call("submit_action", {"format": "raw", "content": "a"}, id="second-selection")]
+    else:
+        calls = [call("submit_action", {"format": "raw", "content": "a", "extra": 1}, id="bad-selection")]
+    rejected = envelope("Original rationale.", calls=calls)
+    fake_sdk.scripts = [successful(rejected, reasoning="Original native SDK reasoning audit."),
+        successful(envelope("Corrected rationale.", calls=[call("submit_action",
+            {"format": "raw", "content": "a"}, id="corrected-selection")]))]
+    agent = SimpleAgent(provider="codex", simple_agent_config={
+        "tools": {"enabled": True, "workspace_parent": str(tmp_path / "workspace")}})
+    try:
+        with patch.object(agent._state(0).workspace, "execute") as execute:
+            result, traces = agent.forward_with_trace({0: {"messages": [{"role": "user", "content": "Visible state"}]}})
+            execute.assert_not_called()
+        assert result[0]["action"] == "a"
+        assert len(fake_sdk.requests) == 2
+        first, retry = [inputs for inputs, _ in fake_sdk.requests]
+        assert retry[:len(first)] == first
+        continuation = "\n".join(item["text"] for item in retry[len(first):] if item.get("type") == "text")
+        labels = [json.loads(item["text"][len("BEGIN SUPPLIED MESSAGE "):]) for item in retry[len(first):]
+                  if item.get("type") == "text" and item["text"].startswith("BEGIN SUPPLIED MESSAGE ")]
+        assert labels[0]["tool_calls"] == [{"call_id": item["id"], "name": item["name"],
+                                           "arguments_json": item["arguments_json"]} for item in calls]
+        assert [label["tool_call_id"] for label in labels[1:]] == [item["id"] for item in calls]
+        assert "Original rationale." in continuation and "invalid_action_submission" in continuation
+        exchange = next(entry for entry in agent._states[0].runtime.history_snapshot if entry.kind == "tool_exchange")
+        assert [message.tool_call_id for message in exchange.messages[1:]] == [item["id"] for item in calls]
+        assert [json.loads(message.parts[0].text)["executed"] for message in exchange.messages[1:]] == [False] * len(calls)
+        records = traces[0]["model_requests"]
+        assert [item["status"] for item in records] == ["rejected", "completed"]
+        assert records[0]["response_metadata"]["assistant_raw"] == rejected
+        assert traces[0]["usage"]["total_tokens"] == 62
+        assert agent._states[0].runtime.usage.action_calls == 2
+        assert not list(tmp_path.rglob("forbidden.txt"))
     finally:
         agent.close()
 

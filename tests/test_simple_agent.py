@@ -10,7 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent_ark.agent.simple_agent.agent import SimpleAgent
-from agent_ark.agent.simple_agent.action_submission import SUBMISSION_SPEC
+from agent_ark.agent.simple_agent.action_submission import SUBMISSION_SPEC, translate_submission
+from agent_ark.agent.simple_agent.models import ModelResponseError
 from agent_ark.agent.simple_agent.encoding import encode_png
 from agent_ark.agent.simple_agent.types import (
     AgentLimitError, ImagePart, ModelCompletion, ModelUsage, TextPart, ToolCall, ToolSpec,
@@ -626,15 +627,26 @@ class SimpleAgentTests(unittest.TestCase):
         ])
         for completion in malformed:
             with self.subTest(arguments=completion.tool_calls), tempfile.TemporaryDirectory() as directory:
+                # The adapter stays strict; recovery belongs to the bounded
+                # runtime and may never choose one call from an invalid batch.
+                with self.assertRaisesRegex(ModelResponseError, "submit_action"):
+                    translate_submission(completion, max_bytes=512000, max_characters=120000)
                 backend = FakeModel([completion])
                 agent = self.agent(backend, simple_agent_config={"tools": {"enabled": True, "workspace_parent": directory}})
                 with patch("agent_ark.agent.simple_agent.agent.FileWorkspace.execute") as execute:
-                    with self.assertRaisesRegex(RuntimeError, "submit_action"):
-                        agent.forward(obs())
+                    self.assertEqual(agent.forward(obs())[0], ACTION)
                     execute.assert_not_called()
-                self.assertEqual(agent.last_trace_by_agent[0]["usage"]["total_tokens"], 30)
-                self.assertIsNone(agent.last_trace_by_agent[0]["action_extracted"])
-                self.assertEqual(agent.last_trace_by_agent[0]["model_requests"][0]["status"], "failed")
+                self.assertEqual(agent.last_trace_by_agent[0]["usage"]["total_tokens"], 48)
+                self.assertEqual(agent.last_trace_by_agent[0]["action_extracted"], ACTION)
+                self.assertEqual([item["status"] for item in agent.last_trace_by_agent[0]["model_requests"]],
+                                 ["rejected", "completed"])
+                original, *feedback = backend.requests[1].messages[-len(completion.tool_calls) - 1:]
+                self.assertEqual(original.tool_calls, completion.tool_calls)
+                self.assertEqual([message.tool_call_id for message in feedback],
+                                 [call.call_id for call in completion.tool_calls])
+                self.assertTrue(all(json.loads(message.parts[0].text)["executed"] is False for message in feedback))
+                self.assertEqual(agent._states[0].runtime.usage.action_calls, 2)
+                self.assertFalse(list(Path(directory).rglob("forbidden.txt")))
                 agent.close()
 
     def test_native_decoded_action_limit_rejects_instead_of_truncating(self):
@@ -642,10 +654,10 @@ class SimpleAgentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             agent = self.agent(backend, simple_agent_config={"context": {"max_action_output_bytes": 64},
                 "tools": {"enabled": True, "workspace_parent": directory}})
-            with self.assertRaisesRegex(RuntimeError, "decoded action exceeds"):
-                agent.forward(obs())
+            self.assertEqual(agent.forward(obs())[0], ACTION)
             self.assertEqual(json.loads(agent.last_trace_by_agent[0]["model_requests"][0]["tool_calls"][0]["arguments_json"])["content"], "x" * 100)
-            self.assertIsNone(agent.last_trace_by_agent[0]["action_extracted"])
+            self.assertIn("decoded action exceeds", agent.last_trace_by_agent[0]["model_requests"][0]["error"])
+            self.assertEqual(agent.last_trace_by_agent[0]["action_extracted"], ACTION)
 
     def test_submission_is_declared_and_budgeted_only_on_action_requests(self):
         from agent_ark.agent.simple_agent.encoding import tool_declarations

@@ -15,6 +15,24 @@ class ModelResponseError(AgentError):
     pass
 
 
+class SubmissionResponseError(ModelResponseError):
+    """A rejected native action batch that the same decision may correct.
+
+    Only the trusted submission adapter creates this failure after receiving a
+    structurally valid provider completion. The runtime owns feedback, budgets,
+    and replay of the complete original assistant message.
+    """
+
+    def __init__(self, completion: ModelCompletion, reason: str) -> None:
+        if not isinstance(completion, ModelCompletion) or not completion.tool_calls:
+            raise TypeError("submission failure requires the original tool completion")
+        if not isinstance(reason, str) or not reason or len(reason) > 256:
+            raise ValueError("submission failure requires a bounded reason")
+        self.completion = completion
+        self.reason = reason
+        super().__init__(reason)
+
+
 class SummaryResponseError(ModelResponseError):
     """A bounded summary-generation failure that another attempt can correct."""
 

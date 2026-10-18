@@ -7,11 +7,12 @@ import hashlib
 import asyncio
 import json
 import math
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from .encoding import encoded_messages, tool_declarations
-from .models import SummaryResponseError
+from .models import SubmissionResponseError, SummaryResponseError
 from .tools import FileWorkspace, ToolRegistry
 from .types import (
     ArchiveEntry, AsyncModel, AgentError, AgentEvent, AgentInputIdentity,
@@ -636,7 +637,12 @@ class SimpleRuntime:
                     pinned=pinned, required_events=frozenset(included_events))
             if session is not None and session.generation != self.tools._generation:
                 raise AgentSupersededError("tool scope was superseded")
-            completion = await self._call_model(self._model, self._model_request(messages, "action"))
+            submission_failure = None
+            try:
+                completion = await self._call_model(self._model, self._model_request(messages, "action"))
+            except SubmissionResponseError as error:
+                submission_failure = error
+                completion = error.completion
             if not isinstance(completion, ModelCompletion):
                 raise AgentError("action model returned an invalid completion")
             usages.append(completion.usage)
@@ -658,22 +664,25 @@ class SimpleRuntime:
                 raise AgentError("model requested unavailable tools")
             assistant = Message("assistant", (TextPart(completion.text),) if completion.text else (), completion.tool_calls,
                                 native_assistant=native)
-            native_tool_turn = native_tool_turn or native is not None
+            native_tool_turn = native_tool_turn or native is not None or submission_failure is not None
             group = [assistant]
-            for call in completion.tool_calls:
-                self._deadline.check()
-                self._reserve_tool_audit(request.identity, call, session)
-                try:
-                    result = self.tools.execute(call, session)
-                except Exception as error:
-                    self._append_archive(self._tool_audit_entry(request.identity, call, error=error))
-                    raise
-                # Keep the exact returned result before checking another limit
-                # or executing the next call. These complete single-call audit
-                # pairs stay out of the model's working conversation.
-                self._append_archive(self._tool_audit_entry(request.identity, call, result))
-                self._deadline.check()
-                group.append(Message("tool", result.parts, tool_call_id=result.call_id))
+            if submission_failure is not None:
+                group.extend(self._submission_feedback(submission_failure, session))
+            else:
+                for call in completion.tool_calls:
+                    self._deadline.check()
+                    self._reserve_tool_audit(request.identity, call, session)
+                    try:
+                        result = self.tools.execute(call, session)
+                    except Exception as error:
+                        self._append_archive(self._tool_audit_entry(request.identity, call, error=error))
+                        raise
+                    # Keep the exact returned result before checking another limit
+                    # or executing the next call. These complete single-call audit
+                    # pairs stay out of the model's working conversation.
+                    self._append_archive(self._tool_audit_entry(request.identity, call, result))
+                    self._deadline.check()
+                    group.append(Message("tool", result.parts, tool_call_id=result.call_id))
             sequence = len(self._archive) + 1
             exchange = tuple(group)
             self._append_archive(ArchiveEntry(sequence, "tool_exchange", request.identity, exchange, usage=completion.usage))
@@ -699,3 +708,36 @@ class SimpleRuntime:
             values = [getattr(usage, field) for usage in usages]
             return sum(values) if all(v is not None for v in values) else None
         return AgentResponse(completion.text, ModelUsage(total("input_tokens"), total("output_tokens"), total("total_tokens")))
+
+    def _submission_feedback(self, failure: SubmissionResponseError, session) -> tuple[Message, ...]:
+        """Reject every call without dispatch, charging the existing tool budget.
+
+        This runs only after ordinary completion/native output checks. Feedback
+        has fixed guidance and a bounded validator diagnostic; no submitted
+        arguments are interpolated into it.
+        """
+        self._deadline.check()
+        calls = failure.completion.tool_calls
+        text = json.dumps({"error": "invalid_action_submission", "detail": failure.reason,
+            "batch_rejected": True, "executed": False,
+            "retry": "No call in this batch executed. Correct the format and use new call IDs. "
+                     "Call host tools separately; finish with exactly one standalone submit_action "
+                     "whose arguments contain only format and content."}, separators=(",", ":"))
+        size = len(text.encode("utf-8"))
+        limits = self.tools.limits
+        # Match ToolRegistry's scope and call-ID rules without invoking any
+        # handler, even for a host call preceding the invalid submission.
+        with self.tools._lock:
+            if (session._owner is not self.tools or session.closed or session.generation != self.tools._generation
+                or self.tools._current is None or _scope(session.identity) != _scope(self.tools._current)):
+                raise AgentReuseError("tool scope is no longer active")
+            if time.monotonic() >= session.deadline or session.calls + len(calls) > limits.max_calls:
+                raise AgentLimitError("tool call/time budget exhausted")
+            if any(call.call_id in session._ids for call in calls):
+                raise AgentReuseError("tool call ID was already executed")
+            if size > limits.max_text_bytes or session.text_bytes + size * len(calls) > limits.max_total_text_bytes:
+                raise AgentLimitError("tool result budget exhausted")
+            session.calls += len(calls)
+            session._ids.update(call.call_id for call in calls)
+            session.text_bytes += size * len(calls)
+        return tuple(Message("tool", (TextPart(text),), tool_call_id=call.call_id) for call in calls)

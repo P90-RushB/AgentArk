@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace
 import json
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -69,6 +70,52 @@ def fake_agent(respond, **kwargs):
     client = FakeChatClient(respond)
     agent._backend.client = client
     return agent, client
+
+
+@pytest.mark.parametrize("batch", ["host_first", "duplicate", "extra_fields"])
+@pytest.mark.parametrize("reasoning", [
+    {"reasoning_details": DETAILS}, {"reasoning": " opaque reasoning \n"},
+    {"reasoning_content": "summary", "encrypted_content": " opaque+/=\n"},
+])
+def test_api_invalid_submission_recovers_with_entire_native_batch_and_prefix_unchanged(tmp_path, batch, reasoning):
+    submit = ToolCall("bad-selection", "submit_action", '{"format":"raw","content":"a"}')
+    if batch == "host_first":
+        calls = (ToolCall("note-first", "write_note", '{"path":"notes/forbidden.txt","content":"SIDE EFFECT"}'), submit)
+    elif batch == "duplicate":
+        calls = (submit, ToolCall("duplicate-selection", submit.name, submit.arguments_json))
+    else:
+        calls = (ToolCall(submit.call_id, submit.name, '{"format":"raw","content":"a","extra":1}'),)
+    good = ToolCall("corrected-selection", "submit_action", '{"format":"raw","content":"a"}')
+    replies = iter((response(" original content \n", calls=calls, **reasoning),
+                    response("Corrected selection.", calls=(good,), reasoning_details=DETAILS)))
+    agent, client = fake_agent(lambda _: next(replies), simple_agent_config={
+        "tools": {"enabled": True, "workspace_parent": str(tmp_path / "workspace")}})
+    try:
+        with patch.object(agent._state(0).workspace, "execute") as execute:
+            result, traces = agent.forward_with_trace({0: {"messages": [{"role": "user", "content": "Visible state"}]}})
+            execute.assert_not_called()
+        assert result[0]["action"] == "a"
+        assert len(client.requests) == 2
+        first, retry = (item["messages"] for item in client.requests)
+        assert retry[:len(first)] == first
+        original = {"role": "assistant", "content": " original content \n",
+                    "tool_calls": [wire_call(call) for call in calls], **deepcopy(reasoning)}
+        assert retry[len(first)] == original
+        feedback = retry[len(first) + 1:]
+        assert [item["tool_call_id"] for item in feedback] == [call.call_id for call in calls]
+        assert all(json.loads(item["content"])["executed"] is False for item in feedback)
+        exchange = next(entry for entry in agent._states[0].runtime.history_snapshot if entry.kind == "tool_exchange")
+        assert exchange.messages[0].native_assistant.message == original
+        assert exchange.messages[0].tool_calls == calls
+        records = traces[0]["model_requests"]
+        assert [item["status"] for item in records] == ["rejected", "completed"]
+        assert records[0]["native_assistant"]["message"] == original
+        assert records[0]["completion"] == "original content"
+        assert traces[0]["usage"]["total_tokens"] == 24
+        assert agent._states[0].runtime.usage.action_calls == 2
+        assert not list(tmp_path.rglob("forbidden.txt"))
+    finally:
+        agent.close()
 
 
 def request(number=1, text="visible observation"):

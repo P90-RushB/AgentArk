@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 from ..api_agent import APIAgent
 from ..base_agent import BaseAgent
 from .encoding import api_chat_messages, chat_messages, tool_declarations
-from .models import ModelResponseError, SummaryResponseError
+from .models import ModelResponseError, SubmissionResponseError, SummaryResponseError
 from .runtime import SimpleRuntime, SimpleRuntimeConfig
 from .tools import FileWorkspace, RecordSnapshot, ToolLimits, ToolRegistry
 from .types import (
@@ -362,9 +362,15 @@ class _TracedModel:
                 and any(tool.name == SUBMISSION_NAME for tool in request.tools)):
                 if self.tool_choice == "required" and not completion.tool_calls:
                     raise ModelResponseError("native tool_choice=required returned no native function call")
-                translated, event = translate_submission(completion,
-                    max_bytes=self.config.max_action_output_bytes,
-                    max_characters=self.config.max_action_output_characters)
+                try:
+                    translated, event = translate_submission(completion,
+                        max_bytes=self.config.max_action_output_bytes,
+                        max_characters=self.config.max_action_output_characters)
+                except ModelResponseError as error:
+                    # A structurally valid provider reply with a bad action
+                    # selection is correctable within this decision. Preserve
+                    # every call and any opaque native state for runtime replay.
+                    raise SubmissionResponseError(completion, str(error)) from None
                 if event is not None:
                     self.events.append(event)
             self.usages.append((request.purpose, completion.usage))
@@ -372,6 +378,10 @@ class _TracedModel:
         except asyncio.CancelledError:
             record["status"] = "cancelled"
             self._failure_metadata(record, request, backend_called=backend_called)
+            raise
+        except SubmissionResponseError as exc:
+            record.update({"status": "rejected", "error_type": type(exc).__name__, "error": exc.reason})
+            self._failure_metadata(record, request, exc, backend_called=backend_called)
             raise
         except Exception as exc:
             record.update({"status": "failed", "error_type": type(exc).__name__})
