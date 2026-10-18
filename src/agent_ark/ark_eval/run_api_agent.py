@@ -25,7 +25,7 @@ from agent_ark.ark_env import ArkEnv, ensure_runtime_pool_range, require_rollout
 from agent_ark.ark_env.ark_sub_env import _normalize_optional_path, _resolve_cli_mod_path
 from agent_ark.ark_env.direct_env import EnvInfoManager
 from agent_ark.interaction import HookManager, HumanActionBroker, HumanInteractiveAgent, LocalViewerHook
-from agent_ark.interaction.serialization import serialize_action_details, serialize_obs_map
+from agent_ark.interaction.serialization import observation_event_metadata, serialize_action_details, serialize_obs_map
 
 
 _trajectory_io = importlib.import_module('agent_ark.ark_eval.trajectory_io')
@@ -1105,6 +1105,7 @@ def _run_case_rollout(
                 'case_id': case['case_id'],
                 'model_name': model_runtime['name'],
                 'turn_index': int(turn_idx),
+                **observation_event_metadata(env),
                 'obs': serialize_obs_map(
                     obs,
                     text_max_chars=limits['text_max_chars'],

@@ -31,7 +31,7 @@ from agent_ark.ark_env.serving.lease_protocol import (
     request_fingerprint,
 )
 from agent_ark.interaction.hooks import ensure_hook_manager
-from agent_ark.interaction.serialization import serialize_action_details, serialize_obs_map
+from agent_ark.interaction.serialization import observation_event_metadata, serialize_action_details, serialize_obs_map
 
 
 def _decode_history_snapshot(history_snapshot: Optional[Dict[int, list]]) -> Dict[int, list]:
@@ -72,6 +72,8 @@ class EnvRuntime:
     def _emit_env_event(self, event: str, payload: Dict[str, Any], *, phase: Optional[str] = None):
         if not getattr(self.hooks, 'enabled', False):
             return
+        if event in ('env_reset', 'env_step'):
+            payload = {**payload, **observation_event_metadata(self.env)}
         self.hooks.emit(event, payload, source='EnvRuntime', phase=phase, env_id=self.env_id)
 
     @staticmethod

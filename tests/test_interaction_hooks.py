@@ -13,12 +13,12 @@ import requests
 
 from agent_ark.agent.api_agent import APIAgent, LLMClient
 from agent_ark.agent.codex_agent import CodexAgent
-from agent_ark.ark_env.ark_env import ArkRolloutContext
+from agent_ark.ark_env.ark_env import ArkEnv, ArkRolloutContext
 from agent_ark.ark_env.context_manager import MessageContext
 from agent_ark.ark_env.serving.session_manager import EnvRuntime
 from agent_ark.interaction.hooks import HookManager
 from agent_ark.interaction.local_viewer import HumanActionBroker, LocalViewerHook, _VIEWER_HTML
-from agent_ark.interaction.serialization import serialize_images, serialize_messages, serialize_obs_map
+from agent_ark.interaction.serialization import observation_event_metadata, serialize_images, serialize_messages, serialize_obs_map
 from agent_ark.ark_eval.run_api_agent import (
     _run_case_rollout,
     build_eval_hook_manager,
@@ -1303,14 +1303,15 @@ class InteractionHookTest(unittest.TestCase):
             viewer.close()
 
     def test_local_viewer_html_deduplicates_by_event_seq_not_content(self):
-        self.assertIn('let seenEventSeqs = new Set();', _VIEWER_HTML)
-        self.assertIn('let renderedMessageCounts = new Map();', _VIEWER_HTML)
+        self.assertIn('let seenEventSeqs = new Map();', _VIEWER_HTML)
+        self.assertIn('let renderedMessagesByAgent = new Map();', _VIEWER_HTML)
+        self.assertIn('let renderedObservationsByAgent = new Map();', _VIEWER_HTML)
         self.assertIn('let pendingAssistantByAgent = new Map();', _VIEWER_HTML)
-        self.assertIn('if (seenEventSeqs.has(seq)) return;', _VIEWER_HTML)
-        self.assertIn('let startIndex = renderedMessageCounts.get(agentId) || 0;', _VIEWER_HTML)
-        self.assertIn('for (let idx = startIndex; idx < messages.length; idx += 1)', _VIEWER_HTML)
-        self.assertIn('renderedMessageCounts.set(agentId, messages.length);', _VIEWER_HTML)
-        self.assertIn("pendingAssistantByAgent.set(String(item.agentId), String(text));", _VIEWER_HTML)
+        self.assertIn('seenEventSeqs.get(seq) === eventIdentity) return;', _VIEWER_HTML)
+        self.assertIn('function fullMessageStart(previous, current)', _VIEWER_HTML)
+        self.assertIn("payload.message_mode === 'full' ? 'full' : 'legacy'", _VIEWER_HTML)
+        self.assertIn('if (seen.has(String(observationId))) continue;', _VIEWER_HTML)
+        self.assertIn("pendingAssistantByAgent.set(String(agentId), String(text));", _VIEWER_HTML)
         self.assertIn("pendingAssistantByAgent.delete(agentId);", _VIEWER_HTML)
         self.assertIn('function extractTurnIndex(ev)', _VIEWER_HTML)
         self.assertIn('function buildSeparatorText(text, ev)', _VIEWER_HTML)
@@ -1321,6 +1322,95 @@ class InteractionHookTest(unittest.TestCase):
         self.assertNotIn("else if (ev.event === 'human_response' && payload.action) appendBubble", _VIEWER_HTML)
         self.assertNotIn('renderedMessageKeys', _VIEWER_HTML)
         self.assertNotIn('stableContentKey', _VIEWER_HTML)
+
+    def test_ark_env_hook_metadata_uses_effective_message_mode_without_changing_obs(self):
+        for enabled, append_only, return_mode, expected in [
+            (True, True, 'delta', 'delta'), (True, True, 'full', 'full'),
+            (True, False, 'delta', 'full'), (False, True, 'delta', 'full'),
+        ]:
+            with self.subTest(enabled=enabled, append_only=append_only, return_mode=return_mode):
+                hook = CollectorHook()
+                env = object.__new__(ArkEnv)
+                env.hooks = HookManager([hook])
+                env.rollout_ctx = SimpleNamespace(msg_ctx=SimpleNamespace(
+                    enabled=enabled, append_only=append_only, return_mode=return_mode,
+                ))
+                obs = {7: {'messages': [{'role': 'user', 'content': 'exact model input'}]}}
+                original = deepcopy(obs)
+                payload = {'obs': obs}
+                env._emit_env_event('env_reset', payload)
+                reset_metadata = observation_event_metadata(env)
+                env._emit_env_event('env_step', {'next_obs': obs})
+                self.assertEqual(reset_metadata['message_mode'], expected)
+                self.assertEqual(hook.events[0]['payload']['message_mode'], expected)
+                self.assertNotEqual(reset_metadata['observation_id'], observation_event_metadata(env)['observation_id'])
+                self.assertEqual(obs, original)
+                self.assertEqual(payload, {'obs': original})
+                self.assertNotIn('message_mode', obs[7])
+                self.assertNotIn('observation_id', obs[7])
+
+    def test_hook_metadata_is_available_to_wrappers_with_inner_hooks_disabled(self):
+        env = object.__new__(ArkEnv)
+        env.hooks = HookManager()
+        env._emit_env_event('env_reset', {'obs': {}})
+        self.assertEqual(observation_event_metadata(env)['message_mode'], 'full')
+        self.assertTrue(observation_event_metadata(env)['observation_id'])
+        self.assertEqual(observation_event_metadata(SimpleNamespace()), {})
+        self.assertEqual(observation_event_metadata(SimpleNamespace(_hook_observation_metadata={'message_mode': 'unknown'})), {})
+
+    def test_observer_bookkeeping_failure_does_not_prevent_attempt_finalization(self):
+        context = ArkRolloutContext()
+        context.msg_ctx.configure({'enabled': True, 'append_only': False, 'return_mode': 'full'})
+        finalized = []
+
+        def fail_bookkeeping(_unity_id):
+            raise RuntimeError('observer bookkeeping failed')
+
+        context.history_ctx = SimpleNamespace(
+            enabled=True, current_episode=fail_bookkeeping,
+            finalize_episode=lambda unity_id: finalized.append(unity_id),
+        )
+        context.finalize_attempt([7])
+        self.assertEqual(finalized, [7])
+
+    def test_append_only_finalization_skips_observer_history_copy(self):
+        context = ArkRolloutContext()
+        context.msg_ctx.configure({'enabled': True, 'append_only': True, 'return_mode': 'full'})
+        finalized = []
+        copied = []
+
+        def unexpected_history_copy(_unity_id):
+            copied.append(_unity_id)
+            return []
+
+        context.history_ctx = SimpleNamespace(
+            enabled=True, current_episode=unexpected_history_copy,
+            finalize_episode=lambda unity_id: finalized.append(unity_id),
+        )
+        context._hook_terminal_step_by_uid[7] = {'done': True}
+        context.finalize_attempt([7])
+        self.assertEqual(finalized, [7])
+        self.assertEqual(copied, [])
+        self.assertNotIn(7, context._hook_terminal_step_by_uid)
+
+    def test_env_runtime_mirror_reuses_underlying_observation_metadata(self):
+        hook = CollectorHook()
+        env = object.__new__(ArkEnv)
+        env.hooks = HookManager([hook])
+        env.rollout_ctx = SimpleNamespace(msg_ctx=SimpleNamespace(enabled=True, append_only=True, return_mode='delta'))
+        env._emit_env_event('env_reset', {'obs': {'7': {'messages': []}}})
+        runtime = object.__new__(EnvRuntime)
+        runtime.env = env
+        runtime.env_id = 'fake-env'
+        runtime.hooks = env.hooks
+        runtime._emit_env_event('env_reset', {'obs': {'7': {'messages': []}}})
+        self.assertEqual(hook.events[0]['payload'], hook.events[1]['payload'])
+        env.rollout_ctx.msg_ctx.append_only = False
+        env.rollout_ctx._hook_new_message_start_by_uid = {7: 2}
+        env._emit_env_event('env_step', {'next_obs': {'7': {'messages': []}}})
+        runtime._emit_env_event('env_step', {'next_obs': {'7': {'messages': []}}})
+        self.assertEqual(hook.events[2]['payload'], hook.events[3]['payload'])
+        self.assertEqual(hook.events[3]['payload']['new_message_start_by_agent'], {'7': 2})
 
     def test_run_case_rollout_passes_turn_index_to_env_step(self):
         class FakeAgent:
@@ -1349,6 +1439,10 @@ class InteractionHookTest(unittest.TestCase):
                 self.sub_env = SimpleNamespace(env_info_mgr=_FakeInfoMgr())
 
             def reset(self, **kwargs):
+                self._hook_observation_metadata = {
+                    'message_mode': 'full', 'observation_id': 'reset-observation',
+                    'new_message_start_by_agent': {'1': 0},
+                }
                 return ({1: {'step_msg': 'initial'}}, {})
 
             def step(self, code_act, info=None):
@@ -1361,6 +1455,7 @@ class InteractionHookTest(unittest.TestCase):
                 )
 
         env = FakeEnv()
+        hook = CollectorHook()
         _run_case_rollout(
             env=env,
             model_runtime={
@@ -1372,11 +1467,18 @@ class InteractionHookTest(unittest.TestCase):
                 'agent': FakeAgent(),
             },
             case={'case_id': 'case-0000', 'task_name': 'trace-task', 'group_seed': 7, 'env_id': 0},
-            hook_manager=HookManager(),
+            hook_manager=HookManager([hook]),
             hooks_cfg={'visualization': {'text_max_chars': 6000, 'max_images_per_observation': 4}},
         )
 
         self.assertEqual(env.last_step_info, {'turn_index': 0})
+        request = next(event['payload'] for event in hook.events if event['event'] == 'agent_request')
+        self.assertEqual(request['message_mode'], 'full')
+        self.assertEqual(request['observation_id'], 'reset-observation')
+        self.assertEqual(request['new_message_start_by_agent'], {'1': 0})
+        self.assertNotIn('message_mode', request['obs']['1'])
+        self.assertNotIn('observation_id', request['obs']['1'])
+        self.assertNotIn('new_message_start_by_agent', request['obs']['1'])
 
     def test_run_case_rollout_emits_raw_agent_trace_fields(self):
         class FakeTracingAgent:
@@ -1489,6 +1591,8 @@ class InteractionHookTest(unittest.TestCase):
             'exact request',
         )
         self.assertNotIn('final_obs', rollout)
+        self.assertNotIn('message_mode', request_event['payload'])
+        self.assertNotIn('observation_id', request_event['payload'])
 
     def test_evaluate_case_collects_player_feedback_after_final_observation(self):
         class FakeFeedbackAgent:
@@ -1744,6 +1848,9 @@ class InteractionHookTest(unittest.TestCase):
         self.assertEqual(payload['unity_id'], 7)
         self.assertTrue(payload['done'])
         self.assertEqual(hook.events[1]['payload']['reward'], 0.25)
+        self.assertNotIn('message_mode', hook.events[0]['payload'])
+        self.assertNotIn('observation_id', hook.events[0]['payload'])
+        self.assertNotIn('message_mode', payload)
 
 
 if __name__ == '__main__':

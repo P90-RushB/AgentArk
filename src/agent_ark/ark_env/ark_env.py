@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import os
+import uuid
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
@@ -35,6 +36,8 @@ class ArkRolloutContext:
         self._pending_rollout_end_by_uid: Dict[int, bool] = {}
         self._msg_state_by_uid: Dict[int, dict] = {}
         self._pending_transitions_by_uid: Dict[int, list] = {}
+        self._hook_new_message_start_by_uid: Dict[int, int] = {}
+        self._hook_terminal_step_by_uid: Dict[int, dict] = {}
 
     def configure(self, env_cfg: Optional[dict]):
         wrapper_cfg = (env_cfg or {}).get('env_wrapper_cfg', {}) or {}
@@ -68,6 +71,7 @@ class ArkRolloutContext:
         self._pending_rollout_end_by_uid = {}
         self._msg_state_by_uid = {}
         self._pending_transitions_by_uid = {}
+        self._hook_terminal_step_by_uid = {}
 
         if self.msg_ctx.enabled:
             for unity_id, obs_dict in (obs or {}).items():
@@ -181,6 +185,18 @@ class ArkRolloutContext:
         if self.history_ctx.enabled:
             for unity_id in unity_ids:
                 try:
+                    if self.msg_ctx.enabled and not self.msg_ctx.append_only:
+                        steps = self.history_ctx.current_episode(int(unity_id))
+                        if self.history_ctx.include_terminal and steps and steps[-1].get('done'):
+                            self._hook_terminal_step_by_uid[int(unity_id)] = steps[-1]
+                        else:
+                            self._hook_terminal_step_by_uid.pop(int(unity_id), None)
+                    else:
+                        self._hook_terminal_step_by_uid.pop(int(unity_id), None)
+                except Exception:
+                    # Observer bookkeeping must never prevent finalization.
+                    self._hook_terminal_step_by_uid.pop(int(unity_id), None)
+                try:
                     self.history_ctx.finalize_episode(int(unity_id))
                 except Exception:
                     pass
@@ -198,6 +214,7 @@ class ArkRolloutContext:
         omit_reset_obs_images: bool = False,
         reset_obs_image_omitted_reason: Optional[str] = None,
     ):
+        self._hook_new_message_start_by_uid = {}
         self.configure(env_cfg)
 
         if self.msg_ctx.enabled:
@@ -224,6 +241,10 @@ class ArkRolloutContext:
             self.history_ctx.start_episode(list(obs.keys()), history_snapshot=normalized_snapshot)
             obs = self._attach_history(obs)
 
+        reset_histories = {
+            unity_id: obs_dict.get('history', [])
+            for unity_id, obs_dict in obs.items() if isinstance(obs_dict, dict)
+        }
         raw_snaps = {
             int(unity_id): self._snapshot(obs_dict)
             for unity_id, obs_dict in (obs or {}).items()
@@ -282,7 +303,30 @@ class ArkRolloutContext:
                     obs_dict['messages'] = messages_out
         else:
             obs = self._attach_messages(obs, is_reset=True)
+            if self.msg_ctx.enabled:
+                for unity_id, obs_dict in obs.items():
+                    messages = obs_dict.get('messages') if isinstance(obs_dict, dict) else None
+                    if not messages or obs_dict.get('skip_infer'):
+                        continue
+                    new_count = 1  # The new attempt's initial observation.
+                    histories = reset_histories.get(unity_id, [])
+                    terminal = self._hook_terminal_step_by_uid.get(unity_id)
+                    # ArkEnv appends the just-finalized attempt to the sampled
+                    # history. Only include its terminal pair if it is actually
+                    # present in the final rendered history (include_terminal may
+                    # exclude it). No prose normalization or image matching.
+                    try:
+                        terminal_is_visible = bool(
+                            self.msg_ctx.include_history and terminal and histories and histories[-1]
+                            and self.msg_ctx.build_step_messages(histories[-1][-1]) == self.msg_ctx.build_step_messages(terminal)
+                        )
+                    except Exception:
+                        terminal_is_visible = False
+                    if terminal_is_visible:
+                        new_count += 1 + int(self.msg_ctx._build_assistant_message(terminal) is not None)
+                    self._hook_new_message_start_by_uid[unity_id] = max(0, len(messages) - new_count)
 
+        self._hook_terminal_step_by_uid = {}
         for unity_id in obs.keys():
             self._pending_transitions_by_uid[unity_id] = []
         self._last_obs_by_uid = raw_snaps
@@ -328,6 +372,7 @@ class ArkRolloutContext:
         return obs
 
     def _attach_messages(self, obs: Dict[int, dict], *, is_reset: bool):
+        self._hook_new_message_start_by_uid = {}
         if not self.msg_ctx.enabled:
             return obs
 
@@ -401,6 +446,15 @@ class ArkRolloutContext:
                 fallback_system_prompt=fallback_system,
                 fallback_task_prompt=fallback_task,
             )
+            if not is_reset and messages:
+                # Rebuilt histories can rewrite the initial observation and
+                # renumber sliding windows. The observer needs the actual new
+                # tail, not a content/count guess about the previous snapshot.
+                new_count = 1  # The current observation or transition result.
+                if self.msg_ctx.include_current_attempt_history and current_rollout_steps:
+                    if self.msg_ctx._build_assistant_message(current_rollout_steps[-1]) is not None:
+                        new_count += 1
+                self._hook_new_message_start_by_uid[unity_id] = max(0, len(messages) - new_count)
             if self.msg_ctx.only_return_messages:
                 obs[unity_id] = {'messages': messages, 'skip_infer': obs_dict.get('skip_infer', False)}
             else:
@@ -498,6 +552,23 @@ class ArkEnv(object):
             delivered_uids.add(unity_id)
 
     def _emit_env_event(self, event: str, payload: Dict[str, Any], *, phase: Optional[str] = None):
+        if event in ('env_reset', 'env_step'):
+            msg_ctx = getattr(getattr(self, 'rollout_ctx', None), 'msg_ctx', None)
+            message_mode = 'full'
+            if getattr(msg_ctx, 'enabled', False) and getattr(msg_ctx, 'append_only', False):
+                message_mode = 'delta' if getattr(msg_ctx, 'return_mode', 'full') == 'delta' else 'full'
+            # Mirrors in EnvRuntime and agent_request share this identity. Keep it
+            # outside observations, model inputs, history, and protocol responses.
+            self._hook_observation_metadata = {
+                'message_mode': message_mode,
+                'observation_id': uuid.uuid4().hex,
+            }
+            new_starts = getattr(getattr(self, 'rollout_ctx', None), '_hook_new_message_start_by_uid', {})
+            if event == 'env_step' and message_mode == 'full' and isinstance(new_starts, dict) and new_starts:
+                self._hook_observation_metadata['new_message_start_by_agent'] = {
+                    str(unity_id): start for unity_id, start in new_starts.items()
+                }
+            payload = {**payload, **self._hook_observation_metadata}
         if not getattr(self.hooks, 'enabled', False):
             return
         self.hooks.emit(event, payload, source='ArkEnv', phase=phase)

@@ -84,9 +84,12 @@ const eventCountEl = document.getElementById('eventCount');
 const rawRequestTraceEl = document.getElementById('rawRequestTrace');
 const rawResponseTraceEl = document.getElementById('rawResponseTrace');
 const rawEvents = [];
-let seenEventSeqs = new Set();
+let seenEventSeqs = new Map();
 let lastSeenSeq = 0;
-let renderedMessageCounts = new Map();
+let renderedMessagesByAgent = new Map();
+let renderedMessageCountsByAgent = new Map();
+let renderedObservationsByAgent = new Map();
+let legacyResetByAgent = new Map();
 let pendingAssistantByAgent = new Map();
 function esc(text) { return String(text ?? '').replace(/[&<>]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[s])); }
 function formatJson(value, emptyText) {
@@ -100,13 +103,16 @@ function setTrace(target, value, emptyText) {
 function resetViewerState(options = {}) {
     const clearRawEvents = Boolean(options.clearRawEvents);
     chatEl.innerHTML = '';
-    renderedMessageCounts = new Map();
+    renderedMessagesByAgent = new Map();
+    renderedMessageCountsByAgent = new Map();
+    renderedObservationsByAgent = new Map();
+    legacyResetByAgent = new Map();
     pendingAssistantByAgent = new Map();
     setTrace(rawRequestTraceEl, null, '(waiting for agent_request)');
     setTrace(rawResponseTraceEl, null, '(waiting for agent_response)');
     if (clearRawEvents) {
         rawEvents.length = 0;
-        seenEventSeqs = new Set();
+        seenEventSeqs = new Map();
         lastSeenSeq = 0;
         eventCountEl.textContent = '0 raw events stored';
     }
@@ -174,7 +180,11 @@ function appendSeparator(text, ev) {
     row.className = 'bubble-row separator';
     row.innerHTML = `<div class="bubble">${esc(buildSeparatorText(text, ev))}</div>`;
     chatEl.appendChild(row);
-    renderedMessageCounts = new Map();
+    renderedMessagesByAgent = new Map();
+    renderedMessageCountsByAgent = new Map();
+    renderedObservationsByAgent = new Map();
+    legacyResetByAgent = new Map();
+    pendingAssistantByAgent = new Map();
 }
 function obsFallbackContent(obs) {
     const content = [];
@@ -186,49 +196,107 @@ function obsFallbackContent(obs) {
     }
     return content.length ? content : null;
 }
-function renderObsMessages(obsMap, ev) {
-    if (!obsMap || typeof obsMap !== 'object') return;
-    for (const [agentId, obs] of Object.entries(obsMap)) {
-        if (!obs || typeof obs !== 'object') continue;
-        const messages = Array.isArray(obs.messages) ? obs.messages : [];
-        if (messages.length) {
-            let startIndex = renderedMessageCounts.get(agentId) || 0;
-            if (messages.length < startIndex) startIndex = 0;
-            for (let idx = startIndex; idx < messages.length; idx += 1) {
-                const msg = messages[idx];
-                if (!msg || typeof msg !== 'object') continue;
-                const role = String(msg.role || 'user');
-                const content = msg.content || '';
-                const pendingAssistant = pendingAssistantByAgent.get(agentId);
-                if (role === 'assistant' && pendingAssistant !== undefined && String(content) === pendingAssistant) {
-                    pendingAssistantByAgent.delete(agentId);
-                    continue;
-                }
-                appendBubble(role, content, {meta: buildBubbleMeta(agentId, ev)});
-            }
-            renderedMessageCounts.set(agentId, messages.length);
-            continue;
+function fullMessageStart(previous, current) {
+    // Preserve a stable prompt prefix, then match a sliding history window.
+    // Counts alone cannot distinguish equal-size or shorter replacement windows.
+    let prefix = 0;
+    while (prefix < previous.length && prefix < current.length && previous[prefix] === current[prefix]) prefix += 1;
+    for (let overlap = Math.min(previous.length - prefix, current.length - prefix); overlap > 0; overlap -= 1) {
+        if (current.slice(prefix, prefix + overlap).every((key, idx) => key === previous[previous.length - overlap + idx])) {
+            return prefix + overlap;
         }
-        const fallback = obsFallbackContent(obs);
-        if (fallback) appendBubble('user', fallback, {meta: buildBubbleMeta(agentId, ev)});
     }
+    return prefix;
 }
-function firstActionPayload(actions) {
-    if (!actions || typeof actions !== 'object') return null;
-    const keys = Object.keys(actions).sort((a, b) => Number(a) - Number(b));
-    for (const key of keys) {
-        const payload = actions[key];
-        if (payload && typeof payload === 'object') return {agentId: key, payload};
+function assistantEchoText(content) {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content) && content.every(part => part && part.type === 'text')) {
+        return content.map(part => part.text || '').join('');
     }
     return null;
 }
+function renderObsMessages(obsMap, ev) {
+    if (!obsMap || typeof obsMap !== 'object') return;
+    const payload = ev.payload || {};
+    const mode = payload.message_mode === 'delta' ? 'delta' : (payload.message_mode === 'full' ? 'full' : 'legacy');
+    const observationId = payload.observation_id;
+    for (const [agentId, obs] of Object.entries(obsMap)) {
+        if (!obs || typeof obs !== 'object') continue;
+        if (ev.event === 'env_reset' && observationId == null) {
+            const previousReset = legacyResetByAgent.get(agentId);
+            const resetKey = JSON.stringify(obs);
+            // Older hook streams have no observation IDs. Only coalesce the
+            // adjacent cross-source reset mirror, never a later identical reset.
+            if (previousReset && previousReset.source === 'ArkEnv' && ev.source === 'EnvRuntime' && resetKey === previousReset.key) {
+                legacyResetByAgent.delete(agentId);
+                continue;
+            }
+            legacyResetByAgent.set(agentId, {key: resetKey, source: ev.source});
+        } else {
+            legacyResetByAgent.delete(agentId);
+        }
+        // One observation can be mirrored by ArkEnv, EnvRuntime, and the request
+        // hook. Content is not an identity: identical frames on later steps count.
+        if (observationId !== undefined && observationId !== null) {
+            const seen = renderedObservationsByAgent.get(agentId) || new Set();
+            if (seen.has(String(observationId))) continue;
+            seen.add(String(observationId));
+            renderedObservationsByAgent.set(agentId, seen);
+        }
+        if (ev.event === 'env_reset') {
+            renderedMessagesByAgent.delete(agentId);
+            renderedMessageCountsByAgent.delete(agentId);
+            pendingAssistantByAgent.delete(agentId);
+        }
+        const messages = Array.isArray(obs.messages) ? obs.messages : [];
+        const fallback = messages.length ? null : obsFallbackContent(obs);
+        const visible = messages.length ? messages : (fallback ? [{role: 'user', content: fallback}] : []);
+        const keys = visible.map(msg => JSON.stringify(msg));
+        const previous = renderedMessagesByAgent.get(agentId) || [];
+        const isRequest = ev.event === 'agent_request' || ev.event === 'human_request';
+        // Raw fallback is a current frame, never a full message history. Retain
+        // repeated frames on separate steps; legacy request mirrors still overlap.
+        let startIndex = 0;
+        if (mode !== 'delta' && (messages.length || isRequest)) {
+            // Unmarked archived snapshots retain the original count contract.
+            // New emitters explicitly mark full and can use overlap/boundaries.
+            const previousCount = renderedMessageCountsByAgent.get(agentId) || 0;
+            startIndex = mode === 'legacy' && messages.length
+                ? (messages.length < previousCount ? 0 : previousCount)
+                : fullMessageStart(previous, keys);
+        }
+        const newStarts = payload.new_message_start_by_agent;
+        const authoredStart = newStarts && newStarts[agentId];
+        if (mode !== 'delta' && messages.length && renderedMessageCountsByAgent.has(agentId) && Number.isInteger(authoredStart) && authoredStart >= 0 && authoredStart <= messages.length) {
+            startIndex = authoredStart;
+        }
+        for (let idx = startIndex; idx < visible.length; idx += 1) {
+            const msg = visible[idx];
+            if (!msg || typeof msg !== 'object') continue;
+            const role = String(msg.role || 'user');
+            const content = msg.content || '';
+            const pendingAssistant = pendingAssistantByAgent.get(agentId);
+            if (role === 'assistant' && pendingAssistant !== undefined && assistantEchoText(content) === pendingAssistant) {
+                pendingAssistantByAgent.delete(agentId);
+                continue;
+            }
+            appendBubble(role, content, {meta: buildBubbleMeta(agentId, ev)});
+        }
+        renderedMessagesByAgent.set(agentId, keys);
+        if (messages.length) renderedMessageCountsByAgent.set(agentId, messages.length);
+        // An unreturned echo must not suppress the same text on an unrelated turn.
+        pendingAssistantByAgent.delete(agentId);
+    }
+}
 function renderAssistantResponse(ev) {
-    const item = firstActionPayload(ev.payload && ev.payload.actions);
-    if (!item) return;
-    const text = item.payload.assistant || '';
-    if (text) {
-        pendingAssistantByAgent.set(String(item.agentId), String(text));
-        appendBubble('assistant', text, {meta: buildBubbleMeta(item.agentId, ev)});
+    const actions = ev.payload && ev.payload.actions;
+    if (!actions || typeof actions !== 'object') return;
+    for (const [agentId, action] of Object.entries(actions)) {
+        const text = action && action.assistant;
+        if (text) {
+            pendingAssistantByAgent.set(String(agentId), String(text));
+            appendBubble('assistant', text, {meta: buildBubbleMeta(agentId, ev)});
+        }
     }
 }
 function updateRawTrace(ev) {
@@ -243,14 +311,17 @@ function updateRawTrace(ev) {
 }
 function addEvent(ev) {
     const seq = Number(ev && ev.seq);
+    const eventIdentity = JSON.stringify([ev.time ?? null, ev.event, ev.source ?? null]);
+    // SSE reconnects replay buffered events, including run_start. Check them
+    // before treating a backwards sequence as a fresh stream.
+    if (Number.isFinite(seq) && seq > 0 && seenEventSeqs.get(seq) === eventIdentity) return;
     if (ev && ev.event === 'run_start') {
         resetViewerState({clearRawEvents: true});
     } else if (Number.isFinite(seq) && seq > 0 && lastSeenSeq > 0 && seq <= lastSeenSeq) {
         resetViewerState({clearRawEvents: true});
     }
     if (Number.isFinite(seq) && seq > 0) {
-        if (seenEventSeqs.has(seq)) return;
-        seenEventSeqs.add(seq);
+        seenEventSeqs.set(seq, eventIdentity);
         lastSeenSeq = seq;
     }
     rawEvents.push(ev);
@@ -276,11 +347,14 @@ async function loadState() {
         resetViewerState({clearRawEvents: true});
   for (const ev of data.events || []) addEvent(ev);
 }
-loadState().catch(() => {});
-const es = new EventSource('/events');
-es.onopen = () => statusEl.textContent = 'connected';
-es.onerror = () => statusEl.textContent = 'reconnecting';
-es.onmessage = msg => { try { addEvent(JSON.parse(msg.data)); } catch (e) {} };
+async function connectViewer() {
+    try { await loadState(); } catch (e) {}
+    const es = new EventSource('/events');
+    es.onopen = () => statusEl.textContent = 'connected';
+    es.onerror = () => statusEl.textContent = 'reconnecting';
+    es.onmessage = msg => { try { addEvent(JSON.parse(msg.data)); } catch (e) {} };
+}
+connectViewer();
 document.getElementById('submitAction').onclick = async () => {
   const action = document.getElementById('actionText').value;
   const agent_id = document.getElementById('agentId').value || null;

@@ -15,6 +15,23 @@ except Exception:  # pragma: no cover
 from agent_ark.interaction.hooks import to_jsonable
 
 
+def observation_event_metadata(env: Any) -> Dict[str, Any]:
+    """Copy observer-only metadata; unmarked legacy/custom environments stay unmarked."""
+    metadata = getattr(env, '_hook_observation_metadata', None)
+    if not isinstance(metadata, dict) or metadata.get('message_mode') not in ('full', 'delta'):
+        return {}
+    result = {'message_mode': metadata['message_mode']}
+    if metadata.get('observation_id'):
+        result['observation_id'] = str(metadata['observation_id'])
+    starts = metadata.get('new_message_start_by_agent')
+    if isinstance(starts, dict):
+        result['new_message_start_by_agent'] = {
+            str(agent_id): start for agent_id, start in starts.items()
+            if isinstance(start, int) and not isinstance(start, bool) and start >= 0
+        }
+    return result
+
+
 def truncate_text(value: Any, max_chars: int = 6000) -> str:
     if value is None:
         return ''
