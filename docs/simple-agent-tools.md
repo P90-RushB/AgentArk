@@ -59,3 +59,11 @@ read more. In `messages.json`, image paths are relative to that record's root;
 concatenate any `text_chunks` exactly without a separator. Use `view_image` for
 image bytes. `write_note` creates or fully replaces a note; notes and summaries
 are model interpretations, not new environment facts.
+
+When a host tool's result exceeds its text or image delivery budget, SimpleAgent
+omits the entire result and returns bounded error feedback if the remaining text
+budget can hold it. The handler may already have run, so this feedback does not
+promise rollback or invite an automatic retry. Only the feedback text and the
+call count are charged; omitted images and original result text are not charged.
+The default limit remains four tool images per decision. Call, time, model-round,
+and context limits remain fatal, as does insufficient room for minimum feedback.

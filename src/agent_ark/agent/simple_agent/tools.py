@@ -344,7 +344,26 @@ class ToolRegistry:
                     any(len(p.data) > self.limits.max_image_bytes for p in images) or
                     session.images + len(images) > self.limits.max_images or
                     session.image_bytes + image_bytes > self.limits.max_total_image_bytes):
-                raise AgentLimitError("tool result budget exhausted")
+                # The trusted handler may have committed a side effect already.
+                # Omit its entire result, without charging undelivered payloads.
+                error = "Tool result omitted: result budget exhausted. Operation may already have run; do not retry blindly."
+                feedback = _json({"error": error,
+                                  "remaining_calls": self.limits.max_calls - session.calls,
+                                  "remaining_images": self.limits.max_images - session.images,
+                                  "max_image_bytes": self.limits.max_image_bytes,
+                                  "remaining_image_bytes": self.limits.max_total_image_bytes - session.image_bytes})
+                available = min(self.limits.max_text_bytes, self.limits.max_total_text_bytes - session.text_bytes)
+                if len(feedback.encode("utf-8")) > available:
+                    feedback = _json({"error": error,
+                                      "remaining_calls": self.limits.max_calls - session.calls,
+                                      "remaining_images": self.limits.max_images - session.images})
+                if len(feedback.encode("utf-8")) > available:
+                    feedback = _json({"error": error})
+                text = len(feedback.encode("utf-8"))
+                if text > available:
+                    raise AgentLimitError("tool result budget exhausted")
+                result = ToolResult(call.call_id, (TextPart(feedback),), False)
+                images, image_bytes = [], 0
             session.text_bytes += text
             session.images += len(images)
             session.image_bytes += image_bytes
