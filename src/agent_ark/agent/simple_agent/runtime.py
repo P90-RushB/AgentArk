@@ -393,7 +393,8 @@ class SimpleRuntime:
         # conservative allowance even with a caller-supplied text counter.
         return value + math.ceil(native_bytes / 4)
 
-    def _fits(self, messages: tuple[Message, ...], *, summary: bool = False) -> bool:
+    def _fits(self, messages: tuple[Message, ...], *, summary: bool = False,
+              native_headroom: bool = False) -> bool:
         if self.tools is not None and not summary:
             messages += (self._tool_budget_message(),)
         characters, byte_count, image_count, image_bytes = _metrics(messages)
@@ -402,9 +403,24 @@ class SimpleRuntime:
             return (characters <= cfg.summary_input_characters and byte_count <= cfg.summary_input_bytes
                     and image_count <= cfg.max_images and image_bytes <= cfg.max_image_bytes
                     and self._tokens(messages, byte_count) <= cfg.summary_input_tokens)
-        return (characters <= cfg.max_context_characters and byte_count <= cfg.max_context_bytes
+        character_limit = max(1, cfg.max_context_characters * 3 // 4) if native_headroom else cfg.max_context_characters
+        byte_limit = max(1, cfg.max_context_bytes * 3 // 4) if native_headroom else cfg.max_context_bytes
+        return (characters <= character_limit and byte_count <= byte_limit
                 and image_count <= cfg.max_images and image_bytes <= cfg.max_image_bytes
                 and self._tokens(messages, byte_count) + cfg.output_reserve_tokens <= cfg.max_context_tokens)
+
+    def _fresh_decision_fits(self, messages: tuple[Message, ...]) -> bool:
+        """Reserve 25% of working char/byte caps before a new native tool turn.
+
+        This is a best-effort watermark, not a guarantee for all tool rounds or
+        unbounded batches. Native continuations still use the unchanged hard
+        limits and must never compact their signature-bound prefix. Tools-free
+        runtimes retain their existing hard-fit policy.
+
+        Offline legacy-prefix rehydration may override this method to delegate
+        to ``_fits``; restore the default before the next fresh decision.
+        """
+        return self._fits(messages, native_headroom=self.tools is not None)
 
     def _model_request(self, messages: tuple[Message, ...], purpose: str) -> ModelRequest:
         budget_messages = messages + ((self._tool_budget_message(),) if self.tools is not None and purpose == "action" else ())
@@ -509,7 +525,8 @@ class SimpleRuntime:
                                     if message.native_assistant is not None else message)
         return tuple(messages)
 
-    async def _compact(self, identity: AgentInputIdentity, *, original=None, pinned=None, required_events=None):
+    async def _compact(self, identity: AgentInputIdentity, *, original=None, pinned=None, required_events=None,
+                       fresh_decision: bool = False):
         original = tuple(self._working) if original is None else original
         staged = list(original)
         pinned = (self._pinned or ()) if pinned is None else pinned
@@ -527,6 +544,7 @@ class SimpleRuntime:
                 self._working = [*staged, *self._working[len(original):]]
             return snapshot(), tuple(staged)
 
+        target_fits = self._fresh_decision_fits if fresh_decision else self._fits
         remaining = self.config.max_summary_calls - self._summary_attempts.get(identity, 0)
         retry_instruction = None
         last_failure = None
@@ -540,10 +558,15 @@ class SimpleRuntime:
                 f"summary content must fit {self.config.summary_output_characters} characters and {self.config.summary_output_bytes} UTF-8 bytes.")
 
         for _ in range(remaining):
-            if self._fits(snapshot()):
+            if target_fits(snapshot()):
                 return commit()
             span = self._summary_span(staged, required_events, retry_instruction)
             if not span:
+                # Protected inputs/pins and required feedback can exceed the
+                # soft watermark. A fresh decision may still use a hard-fitting
+                # prefix; do not misreport soft pressure as context overflow.
+                if fresh_decision and self._fits(snapshot()):
+                    return commit()
                 if retry_instruction:
                     raise AgentLimitError("summary retry instructions and a complete source turn cannot fit summary input bounds")
                 raise AgentLimitError("current input, required feedback, or retained turns cannot fit context bounds")
@@ -588,7 +611,11 @@ class SimpleRuntime:
             staged = [replace(entry, messages=tuple(replace(message, native_assistant=None)
                       for message in entry.messages)) for entry in candidate]
             retry_instruction = last_failure = None
-        if not self._fits(snapshot()):
+        if not target_fits(snapshot()):
+            # The watermark is best effort within existing summary budgets.
+            # Actual hard-fit failures retain the original failure semantics.
+            if fresh_decision and self._fits(snapshot()):
+                return commit()
             if last_failure:
                 raise AgentLimitError("summary call bound exhausted: " + last_failure) from None
             raise AgentLimitError("summary call bound exhausted")
@@ -622,7 +649,7 @@ class SimpleRuntime:
     async def _complete_decision(self, request: AgentRequest, session) -> AgentResponse:
         included_events = self._required_events.copy()
         pinned = self._pinned or ()
-        messages, local_working = await self._compact(request.identity)
+        messages, local_working = await self._compact(request.identity, fresh_decision=True)
         self._action_attempted.add(request.identity)
         usages: list[ModelUsage] = []
         native_tool_turn = False
