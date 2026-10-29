@@ -27,7 +27,7 @@ import kaggle_benchmarks as kbench
 
 
 AGENTARK_REPO_URL = "https://github.com/P90-RushB/AgentArk.git"
-AGENTARK_COMMIT = "54ab7cb0adf6539419611b536811b9850e429520"
+AGENTARK_COMMIT = "71a9cc305e3e87c0c5ed416086586e24db35210b"
 ENV_VERSION = "1.0.4"
 HF_REVISION = "0e360716cff54bb759e8d228ded1df967727ccbe"
 HF_BASE_URL = f"https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/{HF_REVISION}"

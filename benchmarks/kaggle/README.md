@@ -3,7 +3,7 @@
 New benchmarks use `agentark_simple_task_template.py` or
 `new-benchmark-task-f8fdd.ipynb`. Both explicitly select **SimpleAgent** with native
 host tools and context compaction. They pin wrapper commit
-`54ab7cb0adf6539419611b536811b9850e429520`, HF revision
+`71a9cc305e3e87c0c5ed416086586e24db35210b`, HF revision
 `0e360716cff54bb759e8d228ded1df967727ccbe`, and the env-1.0.4 Linux starter hash.
 The selected task package is fetched from that immutable registry and its hash
 and minimum wrapper commit are checked. A newer task may need a newer compatible
@@ -14,10 +14,11 @@ historical `agentark_marble_stop_seeds_1_10.py` remain unchanged. An old task's
 immutable wrapper commit continues to select its original harness. Its saved
 actions can still be replayed independently of the model harness.
 
-The pin above already supports SimpleAgent, but predates the new trace/resume
-improvements in this source checkout. After publishing those changes, generate
-with `--wrapper-commit <full-published-commit>` to include them. Never replace a
-formal benchmark pin with `main` or an unpublished local commit.
+The pinned wrapper includes the SimpleAgent defaults, trace/resume and replay
+compatibility improvements, compaction failure handling, and HumanView updates.
+For later wrapper revisions, generate with
+`--wrapper-commit <full-published-commit>`. Never replace a formal benchmark pin
+with `main` or an unpublished local commit.
 
 ## Historical MarbleStop Benchmark
 
