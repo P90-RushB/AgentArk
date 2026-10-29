@@ -1,10 +1,31 @@
 # AgentArk Kaggle Benchmark Tasks
 
+New benchmarks use `agentark_simple_task_template.py` or
+`new-benchmark-task-f8fdd.ipynb`. Both explicitly select **SimpleAgent** with native
+host tools and context compaction. They pin wrapper commit
+`54ab7cb0adf6539419611b536811b9850e429520`, HF revision
+`0e360716cff54bb759e8d228ded1df967727ccbe`, and the env-1.0.4 Linux starter hash.
+The selected task package is fetched from that immutable registry and its hash
+and minimum wrapper commit are checked. A newer task may need a newer compatible
+HF/runtime pin; edit those constants before creating its benchmark.
+
+These are new evaluation conditions. Existing hosted task definitions and the
+historical `agentark_marble_stop_seeds_1_10.py` remain unchanged. An old task's
+immutable wrapper commit continues to select its original harness. Its saved
+actions can still be replayed independently of the model harness.
+
+The pin above already supports SimpleAgent, but predates the new trace/resume
+improvements in this source checkout. After publishing those changes, generate
+with `--wrapper-commit <full-published-commit>` to include them. Never replace a
+formal benchmark pin with `main` or an unpublished local commit.
+
+## Historical MarbleStop Benchmark
+
 This directory contains Kaggle Benchmark task files for AgentArk. The first task,
 `agentark_marble_stop_seeds_1_10.py`, mirrors the online evaluation notebook flow:
 
 - installs Python 3.10 and the AgentArk package in a temporary runtime directory,
-- checks out AgentArk at commit `31a97e7800861e9c1d5b382f323b64392328d042`,
+- checks out AgentArk at commit `3cc987164c591f7548a542de334d1e9dab7de725`,
 - downloads the public `env-1.0.1` Linux Unity runtime from Hugging Face,
 - routes AgentArk's OpenAI-compatible evaluator through Kaggle's Model Proxy,
 - returns `mean_score_reward` across `MarbleStop` seeds 1-10 as the Kaggle
@@ -57,7 +78,7 @@ The Python environments are intentionally split:
 
 ## Adding Another AgentArk Task
 
-Generate a task file from the MarbleStop template, then inspect the generated
+Generate a task file from the modern SimpleAgent template, then inspect the generated
 constants before pushing:
 
 ```bash
@@ -71,12 +92,28 @@ This creates `benchmarks/kaggle/agentark_yourtaskname.py` with a
 matching Kaggle task slug. The generated file follows the same contract:
 
 - fixed AgentArk commit for reproducibility,
+- explicit `agent_type: simple`, with `list_files`, `read_file`, `view_image`,
+  `write_note`, and native `submit_action`,
+- separate SimpleAgent result filenames, so older APIAgent results are not reused,
 - seeds 1-10 by default,
 - `stop_on_error: false`,
-- up to 100 full eval loops while any seed lacks an ok result,
+- up to 3 full eval loops while any seed lacks an ok result,
 - `virtual_display: true` for headless Kaggle execution,
-- `float(mean_score_reward)` returned for the leaderboard,
+- `float(mean_score_reward)` returned for the leaderboard, preserving the
+  generator's raw final-attempt reward metric; normalized diagnostics are retained,
 - JSONL, summary JSON, and AgentArk subprocess log exported as artifacts.
+
+The companion notebook retains its existing `normalized_mean_score_reward`
+leaderboard metric. Choose the intended score definition before creating a new
+benchmark; the harness migration does not change either entry point's metric.
+
+The generator refuses to overwrite existing benchmark files. `--wrapper-commit`
+accepts a full 40-character commit; it must contain SimpleAgent and satisfy the
+task artifact's wrapper requirements. Review the model's context window, output
+budget and native tool support before running. The 262144-token context estimate
+is a local budget, not automatic detection of the selected model's limit.
+If the proxy requires `max_tokens` or `tool_choice: auto`, adjust the generated
+model recipe before publishing; the template does not silently switch harnesses.
 
 For a new formal task, push and run the generated file:
 

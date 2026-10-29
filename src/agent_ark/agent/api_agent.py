@@ -151,10 +151,14 @@ class APIAgent(BaseAgent):
                 "thinking.type=disabled conflicts with reasoning_effort; "
                 "remove reasoning_effort when thinking is disabled"
             )
+        self.last_trace_by_agent: Dict[int, Dict[str, Any]] = {}
+        self._last_model_requests: List[Dict[str, Any]] = []
 
 
     def reset(self) -> None:
         # Intentionally stateless.
+        self.last_trace_by_agent = {}
+        self._last_model_requests = []
         return
 
     def build_request_messages(self, obs: Dict[int, dict]) -> Dict[int, Optional[List[dict]]]:
@@ -172,6 +176,7 @@ class APIAgent(BaseAgent):
     ) -> tuple[Dict[int, Dict[str, Optional[str]]], Dict[int, Dict[str, Any]]]:
         responses: Dict[int, Dict[str, Optional[str]]] = {}
         trace_by_agent: Dict[int, Dict[str, Any]] = {}
+        self.last_trace_by_agent = trace_by_agent
 
         for agent_idx, o in (obs or {}).items():
             if isinstance(o, dict) and o.get("skip_infer"):
@@ -187,7 +192,17 @@ class APIAgent(BaseAgent):
                 continue
 
             messages = self._obs_to_messages(o)
-            response_text, usage = self._call_api_with_usage(messages)
+            self._last_model_requests = []
+            try:
+                response_text, usage = self._call_api_with_usage(messages)
+            except Exception as exc:
+                trace_by_agent[agent_idx] = {
+                    "assistant_raw": None,
+                    "action_extracted": None,
+                    "model_requests": self._last_model_requests,
+                    "error_type": type(exc).__name__,
+                }
+                raise
             action_text = self._extract_action(response_text)
             responses[agent_idx] = {
                 "action": action_text,
@@ -197,6 +212,7 @@ class APIAgent(BaseAgent):
                 "assistant_raw": response_text,
                 "action_extracted": action_text,
                 "usage": usage,
+                "model_requests": self._last_model_requests,
             }
 
         return responses, trace_by_agent
@@ -283,26 +299,51 @@ class APIAgent(BaseAgent):
         return response_text
 
     def _call_api_with_usage(self, messages: List[dict]) -> tuple[str, Optional[Dict[str, Any]]]:
+        self._last_model_requests = []
         extra_body, reasoning_effort = self._request_parameters()
         max_completion_tokens = getattr(self, "max_completion_tokens", 30000)
         empty_choices_retries = max(0, int(os.getenv("AGENTARK_EMPTY_CHOICES_RETRIES", "3") or "0"))
         empty_choices_delay_s = max(0.0, float(os.getenv("AGENTARK_EMPTY_CHOICES_RETRY_DELAY_S", "2") or "0"))
         last_completion: Any = None
         for attempt in range(1, empty_choices_retries + 2):
-            completion = self._run_api_request_with_timeout(
-                messages=messages,
-                temperature=self.temperature,
-                extra_body=extra_body,
-                reasoning_effort=reasoning_effort,
-                max_completion_tokens=max_completion_tokens,
-            )
+            parameters = {"model": getattr(self.client, "model", None), "extra_body": deepcopy(extra_body)}
+            if self.temperature is not None:
+                parameters["temperature"] = self.temperature
+            if reasoning_effort is not None:
+                parameters["reasoning_effort"] = reasoning_effort
+            if max_completion_tokens is not None:
+                parameters["max_completion_tokens"] = max_completion_tokens
+            if getattr(self.client, "timeout_s", None) is not None:
+                parameters["timeout"] = float(self.client.timeout_s)
+            call = {"purpose": "action", "attempt": attempt, "request_messages": deepcopy(messages),
+                    "parameters": parameters, "tools": [], "status": "pending"}
+            self._last_model_requests.append(call)
+            try:
+                completion = self._run_api_request_with_timeout(
+                    messages=messages,
+                    temperature=self.temperature,
+                    extra_body=extra_body,
+                    reasoning_effort=reasoning_effort,
+                    max_completion_tokens=max_completion_tokens,
+                )
+            except Exception as exc:
+                # Provider exception strings can contain URLs, headers or
+                # credentials. Retain the error class, never those strings.
+                call.update(status="failed", error_type=type(exc).__name__)
+                raise
+            usage = self._usage_to_jsonable(getattr(completion, "usage", None))
+            call["usage"] = usage
+            call["response_metadata"] = self._audit_completion(completion)
             choices = getattr(completion, "choices", None)
             if choices:
                 response_msg = choices[0].message
                 content = self._response_text_field(response_msg, "content")
                 reasoning = self._response_text_field(response_msg, "reasoning", "reasoning_content")
                 response_text = self._combine_reasoning_and_content(reasoning=reasoning, content=content)
-                return response_text, self._usage_to_jsonable(getattr(completion, "usage", None))
+                message = call["response_metadata"]["message"]
+                call.update(status="completed", completion=content, tool_calls=message.get("tool_calls", []))
+                return response_text, usage
+            call.update(status="empty_choices", completion=None, tool_calls=[])
             last_completion = completion
             self._record_empty_choices_response(completion=completion, messages=messages, attempt=attempt)
             if attempt <= empty_choices_retries and empty_choices_delay_s > 0:
@@ -313,6 +354,73 @@ class APIAgent(BaseAgent):
             f"{empty_choices_retries + 1} request attempt(s). "
             f"last_response={self._short_json(self._jsonable_value(last_completion), max_chars=4000)}"
         )
+
+    @staticmethod
+    def _audit_completion(completion: Any) -> Dict[str, Any]:
+        """Preserve returned message fields separately from legacy extraction.
+
+        This closed response projection never reads client credentials, HTTP
+        headers or arbitrary SDK object attributes. Null and absent fields stay
+        distinct, including original provider reasoning representations.
+        """
+        def field(value: Any, name: str) -> tuple[bool, Any]:
+            if isinstance(value, dict):
+                return name in value, value.get(name)
+            fields_set = getattr(value, "model_fields_set", None)
+            if fields_set is None:
+                fields_set = getattr(value, "__fields_set__", None)
+            if isinstance(fields_set, (set, frozenset)):
+                if name in fields_set:
+                    return True, getattr(value, name, None)
+            elif hasattr(value, name):
+                return True, getattr(value, name)
+            extra = getattr(value, "model_extra", None)
+            if isinstance(extra, dict) and name in extra:
+                return True, extra[name]
+            return False, None
+
+        def detached(value: Any) -> Any:
+            dump = getattr(value, "model_dump", None)
+            if callable(dump):
+                value = dump(mode="json", exclude_unset=True)
+            if isinstance(value, dict):
+                return {str(key): detached(item) for key, item in value.items()}
+            if isinstance(value, (tuple, list)):
+                return [detached(item) for item in value]
+            return APIAgent._jsonable_value(value)
+
+        def project(value: Any, names: tuple[str, ...]) -> Dict[str, Any]:
+            out = {}
+            for name in names:
+                present, item = field(value, name)
+                if present:
+                    out[name] = detached(item)
+            return out
+
+        metadata = project(completion, ("id", "model", "created", "system_fingerprint", "service_tier"))
+        choices = getattr(completion, "choices", None)
+        saved_choices = []
+        for choice in choices or []:
+            saved = project(choice, ("index", "finish_reason", "logprobs"))
+            message = getattr(choice, "message", None)
+            saved["message"] = project(message, (
+                "role", "content", "refusal", "reasoning", "reasoning_content", "reasoning_details",
+                "encrypted_content", "annotations", "audio", "function_call",
+            ))
+            present, calls = field(message, "tool_calls")
+            if present:
+                saved["message"]["tool_calls"] = None if calls is None else [
+                    {**project(call, ("id", "type")),
+                     "function": project(field(call, "function")[1], ("name", "arguments"))}
+                    for call in calls
+                ]
+            saved_choices.append(saved)
+        metadata["choices"] = saved_choices
+        if saved_choices:
+            metadata["message"] = saved_choices[0]["message"]
+            if "finish_reason" in saved_choices[0]:
+                metadata["finish_reason"] = saved_choices[0]["finish_reason"]
+        return metadata
 
     def _run_api_request_with_timeout(
         self,

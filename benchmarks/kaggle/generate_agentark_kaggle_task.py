@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Generate an AgentArk Kaggle Benchmark task from the MarbleStop template."""
+"""Generate a new SimpleAgent Kaggle task without changing historical tasks."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-TEMPLATE_PATH = ROOT / "agentark_marble_stop_seeds_1_10.py"
+TEMPLATE_PATH = ROOT / "agentark_simple_task_template.py"
+DEFAULT_WRAPPER_COMMIT = "54ab7cb0adf6539419611b536811b9850e429520"
 
 
 def _slugify(value: str) -> str:
@@ -36,25 +38,34 @@ def generate(
     seed_end: int,
     env_id: int,
     output: Path | None,
+    wrapper_commit: str = DEFAULT_WRAPPER_COMMIT,
 ) -> Path:
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", task_name):
+        raise ValueError("task_name must be an AgentArk task identifier")
+    if seed_start < 0 or seed_end < seed_start or env_id < 0:
+        raise ValueError("require 0 <= seed_start <= seed_end and env_id >= 0")
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", wrapper_commit):
+        raise ValueError("wrapper_commit must be a full immutable 40-character Git commit")
     task_slug = _slugify(task_name)
     slug = f"agentark-{task_slug}"
     func_name = _function_name(slug)
     output_path = output or ROOT / f"{func_name}.py"
+    if output_path.exists():
+        raise FileExistsError(f"Refusing to overwrite an existing benchmark: {output_path}")
 
     text = TEMPLATE_PATH.read_text(encoding="utf-8")
-    text = _replace_once(text, "AgentArk MarbleStop seeds 1-10", f"AgentArk {task_name} seeds {seed_start}-{seed_end}")
-    text = text.replace("agentark_marble_stop_seeds_1_10", func_name)
-    text = text.replace("kaggle_agentark_marble_stop_seeds_1_10", f"kaggle_{func_name}")
-    text = _replace_once(text, 'DEFAULT_TASK_NAME = "MarbleStop"', f'DEFAULT_TASK_NAME = "{task_name}"')
+    text = text.replace("agentark_task_seeds_1_10", func_name)
+    text = _replace_once(text,
+        'DEFAULT_TASK_NAME = os.getenv("AGENTARK_KAGGLE_TASK_NAME", "MarbleStop").strip() or "MarbleStop"',
+        f'DEFAULT_TASK_NAME = os.getenv("AGENTARK_KAGGLE_TASK_NAME", {json.dumps(task_name)}).strip() or {json.dumps(task_name)}')
+    text = _replace_once(text, f'AGENTARK_COMMIT = "{DEFAULT_WRAPPER_COMMIT}"',
+                         f'AGENTARK_COMMIT = "{wrapper_commit.lower()}"')
     text = _replace_once(text, "DEFAULT_SEED_START = 1", f"DEFAULT_SEED_START = {int(seed_start)}")
     text = _replace_once(text, "DEFAULT_SEED_END = 10", f"DEFAULT_SEED_END = {int(seed_end)}")
     text = _replace_once(text, "DEFAULT_ENV_ID = 0", f"DEFAULT_ENV_ID = {int(env_id)}")
-    text = text.replace('@kbench.task(name="agentark-marble-stop")', f'@kbench.task(name="{slug}")')
-    text = text.replace(
-        "Evaluate the Kaggle-selected model on AgentArk MarbleStop seeds 1-10.",
-        f"Evaluate the Kaggle-selected model on AgentArk {task_name} seeds {seed_start}-{seed_end}.",
-    )
+    text = _replace_once(text,
+        'DEFAULT_BENCHMARK_TASK_NAME_FALLBACK = f"agentark-{DEFAULT_TASK_SLUG.replace(\'_\', \'-\')}"',
+        f'DEFAULT_BENCHMARK_TASK_NAME_FALLBACK = {json.dumps(slug)}')
 
     output_path.write_text(text, encoding="utf-8")
     return output_path
@@ -67,6 +78,8 @@ def main() -> None:
     parser.add_argument("--seed-end", type=int, default=10)
     parser.add_argument("--env-id", type=int, default=0)
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--wrapper-commit", default=DEFAULT_WRAPPER_COMMIT,
+                        help="Full immutable SimpleAgent-capable wrapper commit; never a moving branch")
     args = parser.parse_args()
 
     output_path = generate(
@@ -75,6 +88,7 @@ def main() -> None:
         seed_end=args.seed_end,
         env_id=args.env_id,
         output=args.output,
+        wrapper_commit=args.wrapper_commit,
     )
     print(output_path)
 

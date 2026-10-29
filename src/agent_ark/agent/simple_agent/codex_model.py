@@ -156,7 +156,8 @@ class CodexModel:
                                 "name": name_schema, "arguments_json": {"type": "string"}}}}}}
 
     @staticmethod
-    def _inputs(request: ModelRequest, sdk) -> list:
+    def _input_items(request: ModelRequest) -> list[dict]:
+        """One neutral encoder for both the SDK turn and its audit record."""
         transport = (
             "You are a stateless model component inside SimpleAgent. The supplied message roles "
             "are the complete conversation selected by that runtime; follow its system/developer "
@@ -177,24 +178,43 @@ class CodexModel:
             "output tokens; this is a requested budget, not a provider hard cap.\n"
             "Declared runtime tools: " + json.dumps(tool_declarations(request.tools), ensure_ascii=False)
         )
-        inputs = [sdk.TextInput(text=transport)]
+        inputs = [{"type": "text", "text": transport}]
         for message_index, message in enumerate(request.messages):
             label = {"message_index": message_index, "role": message.role}
             if message.tool_calls:
                 label["tool_calls"] = [asdict(call) for call in message.tool_calls]
             if message.tool_call_id is not None:
                 label["tool_call_id"] = message.tool_call_id
-            inputs.append(sdk.TextInput(text="BEGIN SUPPLIED MESSAGE " + json.dumps(label, ensure_ascii=False)))
+            inputs.append({"type": "text", "text": "BEGIN SUPPLIED MESSAGE " + json.dumps(label, ensure_ascii=False)})
             for part in message.parts:
                 if isinstance(part, TextPart):
-                    inputs.append(sdk.TextInput(text=part.text))
+                    inputs.append({"type": "text", "text": part.text})
                 elif isinstance(part, ImagePart):
                     if part.origin != "top_left":
                         raise ValueError("Codex input images require normalized top-left origin")
                     encoded = base64.b64encode(part.data).decode("ascii")
-                    inputs.append(sdk.ImageInput(url=f"data:{part.mime_type};base64,{encoded}"))
-            inputs.append(sdk.TextInput(text="END SUPPLIED MESSAGE"))
+                    inputs.append({"type": "image", "url": f"data:{part.mime_type};base64,{encoded}"})
+            inputs.append({"type": "text", "text": "END SUPPLIED MESSAGE"})
         return inputs
+
+    @staticmethod
+    def _inputs(request: ModelRequest, sdk) -> list:
+        return [sdk.TextInput(text=item["text"]) if item["type"] == "text"
+                else sdk.ImageInput(url=item["url"])
+                for item in CodexModel._input_items(request)]
+
+    def request_transport(self, request: ModelRequest) -> dict:
+        """Exact application-authored turn input, excluding SDK internals.
+
+        The CLI can add its own model/system context. This trace deliberately
+        describes only bytes supplied to the SDK, never private credentials or
+        temporary host paths.
+        """
+        return {"transport": "codex_sdk_structured_json", "boundary": "sdk_turn_input",
+                "inputs": self._input_items(request), "output_schema": self._schema(request),
+                "effort": self.reasoning_effort, "thread_base_instructions": "",
+                "thread_developer_instructions": "", "ephemeral": True,
+                "sdk_added_context": "not_exposed_by_sdk"}
 
     def _prepare_auth(self, home: Path) -> None:
         if self._auth_bytes is None:

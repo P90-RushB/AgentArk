@@ -342,6 +342,9 @@ class _TracedModel:
         try:
             encoder = getattr(self.backend, "request_messages", None)
             record["request_messages"] = encoder(request) if callable(encoder) else chat_messages(request.messages)
+            transport = getattr(self.backend, "request_transport", None)
+            if callable(transport):
+                record["request_transport"] = transport(request)
             backend_called = True
             completion = await self.backend.complete(request)
             if not isinstance(completion, ModelCompletion):

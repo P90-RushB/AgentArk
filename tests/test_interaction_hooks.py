@@ -1311,7 +1311,7 @@ class InteractionHookTest(unittest.TestCase):
         self.assertIn('function fullMessageStart(previous, current)', _VIEWER_HTML)
         self.assertIn("payload.message_mode === 'full' ? 'full' : 'legacy'", _VIEWER_HTML)
         self.assertIn('if (seen.has(String(observationId))) continue;', _VIEWER_HTML)
-        self.assertIn("pendingAssistantByAgent.set(String(agentId), String(text));", _VIEWER_HTML)
+        self.assertIn("pendingAssistantByAgent.set(String(agentId), forwarded)", _VIEWER_HTML)
         self.assertIn("pendingAssistantByAgent.delete(agentId);", _VIEWER_HTML)
         self.assertIn('function extractTurnIndex(ev)', _VIEWER_HTML)
         self.assertIn('function buildSeparatorText(text, ev)', _VIEWER_HTML)

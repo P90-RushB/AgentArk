@@ -1,5 +1,6 @@
 import sys
 import unittest
+import json
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,8 @@ sys.path.insert(0, str(ROOT / 'src'))
 from agent_ark.ark_env.ark_env import ArkEnv  # noqa: E402
 from agent_ark.ark_env.ark_sub_env import ArkSubEnv  # noqa: E402
 from agent_ark.ark_eval.run_api_agent import summarize_attempt_rewards  # noqa: E402
+from agent_ark.ark_eval.run_api_agent import collect_step_messages  # noqa: E402
+from agent_ark.ark_eval.trajectory_io import build_eval_trajectory_record  # noqa: E402
 
 
 class FakeSubEnv:
@@ -101,6 +104,48 @@ def make_env(step_results, *, max_attempts=2, current_attempt_index=1):
 
 
 class ArkEnvRolloutSemanticsTest(unittest.TestCase):
+    def test_prefix_audit_omits_post_boundary_auto_reset_observation(self):
+        env = make_env([
+            ({1: {'step_msg': 'attempt-1-terminal'}}, {1: 1.0}, {1: True, '__all__': True}, {}),
+        ], max_attempts=2)
+        obs, reward, done, info = env.step({1: '<tool_call>{}</tool_call>'})
+        # Exercise the actual ArkEnv boundary: index still names attempt 1,
+        # while the returned observation and reset metadata name attempt 2.
+        self.assertEqual(info['attempt']['index'], 1)
+        self.assertEqual(info['attempt']['next_index'], 2)
+        self.assertEqual(obs[1]['step_msg'], 'reset-1')
+        trace = {'1': {'action_extracted': '<tool_call>{}</tool_call>', 'model_requests': [
+            {'purpose': 'action', 'request_messages': [{'role': 'user', 'content': 'before-action'}]}]}}
+        result = {'steps': [{
+            'turn_index': 0, 'reward_total': 1.0, 'reward_by_agent': reward, 'done': done,
+            'info': info, 'raw_response_by_agent': trace, 'step_messages': collect_step_messages(obs),
+        }, {'turn_index': 1, 'info': {'attempt': {'index': 2}},
+            'raw_response_by_agent': {'1': {'assistant_raw': 'LATER_ATTEMPT_DECISION'}}}]}
+        original = deepcopy(result)
+        kwargs = {
+            'result': result, 'case': {'case_id': 'prefix-boundary', 'task_name': 'task-a', 'group_seed': 123},
+            'model_runtime': {'name': 'model'},
+            'history_snapshot': {1: [[{'next_obs': {'step_msg': 'attempt-1-terminal'}}], []]},
+        }
+        record = build_eval_trajectory_record(**kwargs, prefix_attempts=1)
+        saved = record['agent_trace']['steps']
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]['raw_response_by_agent'], trace)
+        self.assertEqual(saved[0]['reward_by_agent'], reward)
+        self.assertEqual(saved[0]['info']['attempt']['index'], 1)
+        self.assertTrue(saved[0]['info']['attempt']['done'])
+        self.assertNotIn('step_messages', saved[0])
+        self.assertNotIn('next_index', saved[0]['info']['attempt'])
+        self.assertNotIn('next_attempt_group_seed', saved[0]['info']['attempt'])
+        self.assertNotIn('rollout', saved[0]['info'])
+        self.assertNotIn('sub_env', saved[0]['info'])
+        self.assertNotIn('reset-1', json.dumps(record['agent_trace']))
+        self.assertNotIn('LATER_ATTEMPT_DECISION', json.dumps(record['agent_trace']))
+        self.assertEqual(result, original)
+        # Full archival traces still retain the exact original action results.
+        full = build_eval_trajectory_record(**kwargs, prefix_attempts=None)
+        self.assertEqual(full['agent_trace']['steps'], original['steps'])
+
     def test_intermediate_success_auto_resets_instead_of_terminating_rollout(self):
         env = make_env([
             ({1: {'step_msg': 'attempt-1-done'}}, {1: 1.0}, {1: True, '__all__': True}, {}),

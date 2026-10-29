@@ -11,7 +11,7 @@ import numpy as np
 
 from agent_ark.ark_env.ark_env import ArkEnv, ArkRolloutContext
 from agent_ark.interaction.hooks import HookManager
-from agent_ark.interaction.local_viewer import _VIEWER_HTML
+from agent_ark.interaction.local_viewer import LocalViewerHook, _VIEWER_HTML
 from agent_ark.interaction.serialization import serialize_obs_map
 
 
@@ -39,11 +39,12 @@ def observation(seq, messages, *, event='env_step', mode=None, observation_id=No
 
 @unittest.skipUnless(NODE, 'Node.js is required to execute viewer JavaScript behavior checks')
 class LocalViewerBehaviorTest(unittest.TestCase):
-    def render(self, events=(), state_events=(), snapshots=False, clear_at=()):
+    def render(self, events=(), state_events=(), snapshots=False, clear_at=(), state_images=None, expand_model_calls=True):
         result = subprocess.run(
             [NODE, str(HARNESS)],
             input=json.dumps({'html': _VIEWER_HTML, 'events': events, 'state_events': state_events,
-                              'snapshots': snapshots, 'clear_at': clear_at}),
+                              'snapshots': snapshots, 'clear_at': clear_at, 'state_images': state_images or {},
+                              'expand_model_calls': expand_model_calls}),
             text=True, encoding='utf-8', capture_output=True, check=True, timeout=15,
         )
         return json.loads(result.stdout)
@@ -428,6 +429,235 @@ class LocalViewerBehaviorTest(unittest.TestCase):
             {'seq': 4, 'event': 'agent_request', 'payload': {'obs': obs}},
         ]
         self.assertEqual(len(self.bubbles(self.render(events))), 2)
+
+    @staticmethod
+    def traced_response(seq, calls=None, *, trace=None, assets=None, turn=0):
+        saved = dict(trace or {})
+        if calls is not None:
+            saved['model_requests'] = calls
+        payload = {'turn_index': turn, 'actions': {'7': {'action': 'selected', 'assistant': 'selected'}},
+                   'raw_trace_by_agent': {'7': saved}}
+        if assets is not None:
+            payload['model_trace_images'] = assets
+        return {'seq': seq, 'event': 'agent_response', 'payload': payload}
+
+    def test_model_calls_preserve_order_context_and_full_tool_exchange(self):
+        calls = [
+            {'purpose': 'summary', 'status': 'completed',
+             'request_messages': [{'role': 'system', 'content': 'Summarize old visible records'},
+                                  {'role': 'user', 'content': 'Prior observations'}],
+             'completion': 'Summary memory', 'tools': [], 'usage': {'total_tokens': 18}},
+            {'purpose': 'action', 'status': 'completed',
+             'request_messages': [{'role': 'system', 'content': 'Harness prompt'},
+                                  {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'call-1', 'function': {'name': 'read_file'}}]},
+                                  {'role': 'tool', 'tool_call_id': 'call-1', 'content': 'earlier note'}],
+             'tools': [{'type': 'function', 'function': {'name': 'submit_action'}}],
+             'parameters': {'tool_choice': 'required'}, 'completion': '',
+             'tool_calls': [{'call_id': 'call-2', 'name': 'submit_action', 'arguments_json': '{}'}],
+             'response_metadata': {'reasoning': 'public provider summary', 'encrypted_content': 'opaque-ciphertext'},
+             'native_assistant': {'message': {'role': 'assistant', 'content': None}},
+             'usage': {'total_tokens': 42},
+             'request_transport': {'transport': 'codex_sdk_structured_json', 'input_text': 'SDK outer wrapper'}},
+        ]
+        events = [{'seq': 1, 'event': 'case_start', 'payload': {'case_id': 'case-A'}},
+                  {'seq': 2, 'event': 'model_start', 'payload': {'model_name': 'simple-model'}},
+                  self.traced_response(3, calls, trace={'agent_events': [{'kind': 'tool_exchange', 'result': 'note result'}],
+                                                        'agent_usage': {'summary_calls': 1}}),
+                  self.traced_response(4, [calls[1]], trace={'replay': True}, turn=1)]
+        result = self.render(events)
+        self.assertEqual(len(result['model_calls']), 2)
+        first, second = [row['html'] for row in result['model_calls']]
+        self.assertIn('case-A · simple-model · 7 · turn 1 · 2 model calls', first)
+        self.assertLess(first.index('Call 1 · summary'), first.index('Call 2 · action'))
+        for expected in ('Harness prompt', 'Summary memory', 'earlier note', 'read_file', 'tool_call_id',
+                         'submit_action', 'required', '(empty assistant content)', 'opaque-ciphertext',
+                         'encrypted fields are opaque', 'note result', 'SDK outer wrapper', 'Decision usage'):
+            self.assertIn(expected, first)
+        self.assertIn('turn 2 · 1 model call · recorded replay', second)
+        self.assertEqual(len(self.bubbles(result, 'assistant')), 2)
+
+    def test_legacy_model_trace_is_unavailable_without_invented_request(self):
+        result = self.render([self.traced_response(1, trace={'assistant_raw': 'legacy combined response'})])
+        self.assertIn('model calls unavailable', result['model_calls'][0]['html'])
+        self.assertIn('did not save actual model calls', result['model_calls'][0]['html'])
+        self.assertNotIn('Actual request messages', result['model_calls'][0]['html'])
+        self.assertEqual(len(self.bubbles(result, 'assistant')), 1)
+        self.assertIn('before compaction', _VIEWER_HTML)
+
+    def test_model_call_identity_uses_each_payload_without_boundary_events(self):
+        events = []
+        for index, (case_id, model_name) in enumerate((('seed-0001', 'model-A'), ('seed-0002', 'model-B')), 1):
+            event = self.traced_response(index, [{'purpose': 'action', 'completion': 'selected'}])
+            event['payload'].update(case_id=case_id, model_name=model_name)
+            events.append(event)
+        for live in (True, False):
+            with self.subTest(live=live):
+                result = self.render(events if live else [], state_events=[] if live else events)
+                first, second = [row['html'] for row in result['model_calls']]
+                self.assertIn('seed-0001 · model-A · 7 · turn 1', first)
+                self.assertIn('seed-0002 · model-B · 7 · turn 1', second)
+                self.assertNotIn('seed-0001', second)
+
+    def test_model_call_payload_identity_overrides_stale_boundary_context(self):
+        response = self.traced_response(3, [{'purpose': 'action'}])
+        response['payload'].update(case_id='current-case', model_name='current-model')
+        result = self.render([
+            {'seq': 1, 'event': 'case_start', 'payload': {'case_id': 'old-case'}},
+            {'seq': 2, 'event': 'model_start', 'payload': {'model_name': 'old-model'}}, response])
+        html = result['model_calls'][0]['html']
+        self.assertIn('current-case · current-model', html)
+        self.assertNotIn('old-case', html)
+        self.assertNotIn('old-model', html)
+
+    def test_skipped_inference_is_distinct_from_missing_historical_trace(self):
+        result = self.render([self.traced_response(1, trace={'skipped': True})])
+        html = result['model_calls'][0]['html']
+        self.assertIn('inference skipped', html)
+        self.assertIn('no model request was made', html)
+        self.assertNotIn('legacy record', html)
+
+    def test_sdk_outer_inputs_and_schema_are_separate_from_portable_messages(self):
+        digest = 'd' * 64
+        result = self.render([self.traced_response(1, [{
+            'purpose': 'action', 'request_messages': [{'role': 'user', 'content': 'portable task input'}],
+            'request_transport': {'boundary': 'sdk_turn_input', 'inputs': [
+                {'type': 'text', 'text': 'Actual SDK outer wrapper'},
+                {'type': 'image', 'url': f'agentark-trace-image:{digest}'}],
+                'output_schema': {'type': 'object'}, 'sdk_added_context': 'not_exposed_by_sdk'},
+        }], assets={digest: {'data_url': 'data:image/png;base64,YWJj'}})])
+        html = result['model_calls'][0]['html']
+        self.assertIn('portable task input', html)
+        self.assertIn('Actual SDK outer wrapper', html)
+        self.assertIn('SDK input 2', html)
+        self.assertEqual(html.count('<img '), 1)
+        self.assertIn('SDK-added context may be unavailable', html)
+        self.assertIn('output_schema', html)
+
+    def test_large_call_bodies_are_lazy_and_old_decisions_have_explicit_view_limit(self):
+        call = {'purpose': 'action', 'request_messages': [{'role': 'system', 'content': 'Large hidden-until-open prompt'}]}
+        lazy = self.render([self.traced_response(1, [call])], expand_model_calls=False)
+        self.assertIn('1 model call', lazy['model_calls'][0]['html'])
+        self.assertNotIn('Large hidden-until-open prompt', lazy['model_calls'][0]['html'])
+        opened = self.render([self.traced_response(1, [call])])
+        self.assertIn('Large hidden-until-open prompt', opened['model_calls'][0]['html'])
+        bounded = self.render([self.traced_response(i + 1, [call], turn=i) for i in range(202)],
+                              expand_model_calls=False)
+        self.assertEqual(len(bounded['model_calls']), 200)
+        self.assertIn('turn 3', bounded['model_calls'][0]['html'])
+        self.assertIn('Older calls are outside this view', bounded['model_call_limit'])
+        self.assertEqual(bounded['raw_count'], '202 raw events stored')
+
+    def test_model_trace_text_and_image_attributes_cannot_inject_html(self):
+        attack = '<img src=x onerror="attack()"><script>bad()</script>'
+        result = self.render([self.traced_response(1, [{
+            'purpose': attack, 'status': 'completed', 'request_messages': [
+                {'role': attack, 'content': [{'type': 'text', 'text': attack},
+                                           {'type': 'image_url', 'image_url': {'url': 'x" onerror="attack()'}}]}],
+            'completion': attack, 'tools': [{'description': attack}], 'parameters': {'key': attack},
+        }])])
+        html = result['model_calls'][0]['html']
+        self.assertNotIn('<script>', html)
+        self.assertNotIn('<img ', html)
+        self.assertIn('&lt;script&gt;', html)
+        self.assertIn('Request image unavailable', html)
+
+    def test_model_trace_images_resolve_only_matching_assets_across_decisions(self):
+        digest, missing = 'a' * 64, 'b' * 64
+        data_url = 'data:image/png;base64,YWJj'
+        call = {'purpose': 'action', 'request_messages': [{'role': 'user', 'content': [
+            {'type': 'image_url', 'image_url': {'url': f'agentark-trace-image:{digest}'}},
+            {'type': 'image_url', 'url': f'agentark-trace-image:{missing}'},
+        ]}]}
+        assets = {digest: {'mime_type': 'image/png', 'data_url': data_url}}
+        result = self.render([self.traced_response(1, [call], assets=assets), self.traced_response(2, [call])])
+        for card in result['model_calls']:
+            self.assertEqual(card['html'].count('<img '), 1)
+            self.assertIn(data_url, card['html'])
+            self.assertIn(f'Request image unavailable · SHA-256 {missing}', card['html'])
+        cleared = self.render([self.traced_response(1, [call], assets=assets), self.traced_response(2, [call])], clear_at=[1])
+        self.assertEqual(len(cleared['model_calls']), 1)
+        self.assertEqual(cleared['model_calls'][0]['html'].count('<img '), 1)
+
+    def test_late_viewer_state_assets_survive_bootstrap_run_start(self):
+        digest = 'c' * 64
+        call = {'request_messages': [{'role': 'user', 'content': [
+            {'type': 'image_url', 'image_url': {'url': f'agentark-trace-image:{digest}'}}]}]}
+        events = [{'seq': 1, 'event': 'run_start', 'payload': {}}, self.traced_response(8, [call])]
+        result = self.render(state_events=events, state_images={digest: {'data_url': 'data:image/png;base64,YWJj'}})
+        self.assertEqual(result['model_calls'][0]['html'].count('<img '), 1)
+        new_run = self.render(events=[{'seq': 1, 'time': 2, 'event': 'run_start', 'payload': {}}, self.traced_response(2, [call])],
+                              state_events=events, state_images={digest: {'data_url': 'data:image/png;base64,YWJj'}})
+        self.assertEqual(new_run['model_calls'][0]['html'].count('<img '), 0)
+        # Replaying buffered events from a previous run must not resurrect its
+        # asset payload after the current run_start during state bootstrap.
+        old_events = [self.traced_response(1, [call], assets={digest: {'data_url': 'data:image/png;base64,YWJj'}}),
+                      {'seq': 2, 'event': 'run_start', 'payload': {}}, self.traced_response(3, [call])]
+        self.assertEqual(self.render(state_events=old_events)['model_calls'][0]['html'].count('<img '), 0)
+
+
+class LocalViewerTraceAssetTest(unittest.TestCase):
+    @staticmethod
+    def scoped_response(seq, call, digest=None):
+        event = LocalViewerBehaviorTest.traced_response(seq, [call], assets=(
+            {digest: {'mime_type': 'image/png', 'data_url': 'data:image/png;base64,YWJj'}} if digest else None))
+        event['payload'].update(case_id='case-A', model_name='model-A')
+        return event
+
+    @staticmethod
+    def request(seq, case_id='case-A', model_name='model-A'):
+        return {'seq': seq, 'event': 'agent_request', 'payload': {'case_id': case_id, 'model_name': model_name}}
+
+    def test_buffer_eviction_keeps_assets_for_later_old_image_reuse(self):
+        viewer = LocalViewerHook(event_buffer_size=1)
+        digest = 'a' * 64
+        asset = {'mime_type': 'image/png', 'data_url': 'data:image/png;base64,YWJj'}
+        call = {'request_messages': [{'role': 'user', 'content': [
+            {'type': 'image_url', 'image_url': {'url': f'agentark-trace-image:{digest}'}}]}]}
+        viewer.handle_event(LocalViewerBehaviorTest.traced_response(1, [call], assets={digest: asset}))
+        viewer.handle_event(LocalViewerBehaviorTest.traced_response(2, [call]))
+        state = viewer._snapshot_state()
+        self.assertEqual([ev['seq'] for ev in state['events']], [2])
+        self.assertEqual(state['model_trace_images'], {digest: asset})
+        viewer.handle_event(LocalViewerBehaviorTest.traced_response(3, []))
+        self.assertEqual(viewer._snapshot_state()['model_trace_images'], {digest: asset})
+        # No second asset payload is emitted when a later tool call reopens it.
+        viewer.handle_event(LocalViewerBehaviorTest.traced_response(4, [call]))
+        self.assertEqual(viewer._snapshot_state()['model_trace_images'], {digest: asset})
+
+    def test_new_run_clears_asset_cache(self):
+        viewer = LocalViewerHook()
+        viewer.handle_event(LocalViewerBehaviorTest.traced_response(1, [], assets={'a' * 64: {'data_url': 'old'}}))
+        viewer.handle_event({'seq': 2, 'event': 'run_start', 'payload': {}})
+        self.assertEqual(viewer._snapshot_state()['model_trace_images'], {})
+
+    def test_active_case_can_reread_after_eviction_then_transition_expires_assets(self):
+        digest = 'b' * 64
+        call = {'request_messages': [{'role': 'user', 'content': [
+            {'type': 'image_url', 'image_url': {'url': f'agentark-trace-image:{digest}'}}]}]}
+        for boundary in (self.request(5, case_id='case-B'), self.request(5, model_name='model-B'),
+                         {'seq': 5, 'event': 'case_start', 'payload': {'case_id': 'case-B'}}):
+            with self.subTest(boundary=boundary):
+                viewer = LocalViewerHook(event_buffer_size=1)
+                viewer.handle_event(self.request(1))
+                viewer.handle_event(self.scoped_response(2, call, digest))
+                viewer.handle_event({'seq': 3, 'event': 'env_step', 'payload': {}})
+                self.assertIn(digest, viewer._snapshot_state()['model_trace_images'])
+                viewer.handle_event(self.scoped_response(4, call))
+                self.assertIn(digest, viewer._snapshot_state()['model_trace_images'])
+                viewer.handle_event(boundary)
+                self.assertEqual(viewer._snapshot_state()['model_trace_images'], {})
+
+    def test_previous_case_buffered_reference_retains_asset_until_evicted(self):
+        digest = 'c' * 64
+        call = {'request_messages': [{'role': 'user', 'content': [
+            {'type': 'image_url', 'image_url': {'url': f'agentark-trace-image:{digest}'}}]}]}
+        viewer = LocalViewerHook(event_buffer_size=2)
+        viewer.handle_event(self.request(1))
+        viewer.handle_event(self.scoped_response(2, call, digest))
+        viewer.handle_event(self.request(3, case_id='case-B'))
+        self.assertIn(digest, viewer._snapshot_state()['model_trace_images'])
+        viewer.handle_event({'seq': 4, 'event': 'env_reset', 'payload': {}})
+        self.assertEqual(viewer._snapshot_state()['model_trace_images'], {})
 
 
 if __name__ == '__main__':

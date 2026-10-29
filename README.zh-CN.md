@@ -117,6 +117,10 @@ export OPENROUTER_API_KEY=...
 `models[*].base_url` 和 `models[*].api_key_env`，或直接在本地私有配置中设置
 `models[*].api_key`。
 
+新评测示例显式使用 `agent_type: simple`，启用上下文压缩、历史查询和私有笔记工具。
+完整预算示例见 [simple_agent.example.yaml](config/ark_env/simple_agent.example.yaml)。
+旧配置省略 `agent_type` 时仍选择原来的 APIAgent/CodexAgent；旧 record 的动作回放不变。
+
 也可以通过 `provider: codex` 使用 Codex SDK 评测。Codex 安装、模型配置和消息上下文
 设置请参阅 [docs/evaluation-guide.zh-CN.md](docs/evaluation-guide.zh-CN.md)。
 

@@ -26,7 +26,7 @@ async function main(input) {
         window: {scrollTo() {}},
         fetch: async () => ({json: async () => {
             stateLoaded = true;
-            return {events: input.state_events || []};
+            return {events: input.state_events || [], model_trace_images: input.state_images || {}};
         }}),
         EventSource: class {
             constructor() { connectedAfterState = stateLoaded; stream = this; }
@@ -50,11 +50,25 @@ async function main(input) {
         stream.onmessage({data: JSON.stringify(event)});
         if (input.snapshots) snapshots.push(snapshot());
     }
+    const modelCards = () => getElement('modelCalls').children.map(row => ({className: row.className, html: row.innerHTML}));
+    const instructionCards = () => getElement('modelInstructions').children.map(row => ({className: row.className, html: row.innerHTML}));
+    const collapsedCalls = modelCards();
+    const collapsedInstructions = instructionCards();
+    if (input.expand_model_calls !== false) {
+        for (const card of [...getElement('modelCalls').children, ...getElement('modelInstructions').children]) {
+            card.open = true;
+            if (card.ontoggle) card.ontoggle();
+        }
+    }
     return {
         rows: snapshot(), snapshots, connectedAfterState,
         raw_count: getElement('eventCount').textContent,
         raw_request: getElement('rawRequestTrace').textContent,
         raw_response: getElement('rawResponseTrace').textContent,
+        model_calls: modelCards(), model_calls_collapsed: collapsedCalls,
+        model_call_limit: getElement('modelCallLimit').textContent,
+        model_instructions: instructionCards(), model_instructions_collapsed: collapsedInstructions,
+        model_instruction_help: getElement('instructionContextHelp').textContent,
     };
 }
 

@@ -525,6 +525,79 @@ class SimpleRuntime:
                                     if message.native_assistant is not None else message)
         return tuple(messages)
 
+    def _monotone_limit_excess(self, messages: tuple[Message, ...], *, summary: bool = False) -> tuple[str, ...]:
+        """Bounds for which adding an earlier note cannot make a prefix fit.
+
+        A caller-supplied token counter need not be additive or monotone. Do
+        not use it to prove compaction impossible; the built-in estimate and
+        the encoded/text/image bounds do support that lower-bound argument.
+        """
+        if self.tools is not None and not summary:
+            messages += (self._tool_budget_message(),)
+        characters, byte_count, images, image_bytes = _metrics(messages)
+        cfg = self.config
+        bounds = (("summary_input_characters" if summary else "max_context_characters", characters),
+                  ("summary_input_bytes" if summary else "max_context_bytes", byte_count),
+                  ("max_images", images), ("max_image_bytes", image_bytes))
+        exceeded = [name for name, actual in bounds if actual > getattr(cfg, name)]
+        if self._token_counter is None:
+            tokens = self._tokens(messages, byte_count) + (0 if summary else cfg.output_reserve_tokens)
+            name = "summary_input_tokens" if summary else "max_context_tokens"
+            if tokens > getattr(cfg, name):
+                exceeded.append(name)
+        return tuple(exceeded)
+
+    def _compaction_obstruction(self, working: list[_WorkingEntry], pinned: tuple[Message, ...],
+                                required_events: frozenset[int]) -> str | None:
+        """Prove a complete old turn blocks every useful prefix compaction.
+
+        Even replacing *all* earlier entries with nothing is optimistic: a
+        real replacement must retain a labelled note. If that suffix still
+        exceeds a hard action bound and its first complete turn cannot enter
+        the summarizer by itself, rewriting older notes cannot unblock it.
+        """
+        inputs = [entry for entry in working if entry.kind == "input"]
+        protected = {entry.sequence for entry in inputs[-max(1, self.config.recent_turns):]}
+        boundary = next((index for index, entry in enumerate(working)
+                         if entry.sequence in protected or entry.sequence in required_events), len(working))
+        for index, entry in enumerate(working[:boundary]):
+            if entry.kind != "input":
+                continue
+            end = next((position for position in range(index + 1, boundary)
+                        if working[position].kind in ("input", "summary")), boundary)
+            # Preserve the same complete-turn contract as _summary_span.
+            # Interleaved late completions need the larger original group;
+            # this conservative check simply leaves them to the usual path.
+            if any(other.kind in ("completion", "tool_exchange") and other.identity == entry.identity
+                   for other in (*working[:index], *working[end:])):
+                continue
+            related = [position for position in range(index + 1, end)
+                       if working[position].kind in ("completion", "tool_exchange")
+                       and working[position].identity == entry.identity]
+            minimum_end = related[-1] if related else index + 1
+            complete_at = next((position for position in range(minimum_end, end)
+                                if working[position].kind == "completion"), None)
+            if complete_at is not None:
+                # A completion is already a legal _summary_span boundary.
+                # Later consumed observer events may remain in the suffix;
+                # they are not an inseparable part of that earlier turn.
+                end = complete_at + 1
+            turn = tuple(working[index:end])
+            summary_bounds = self._monotone_limit_excess(self._summary_messages(turn), summary=True)
+            if not summary_bounds:
+                continue
+            # Successful compaction clears signature-bound replay from the
+            # working projection. Exclude it here too, so removable opaque
+            # bytes cannot cause a false infeasibility diagnosis.
+            suffix = pinned + tuple(replace(message, native_assistant=None)
+                                    for item in working[index:] for message in item.messages)
+            action_bounds = self._monotone_limit_excess(suffix)
+            if action_bounds:
+                return ("compaction cannot fit context bounds: complete earlier turn exceeds summary input bounds ("
+                        + ", ".join(summary_bounds) + "); unchanged suffix exceeds hard action bounds ("
+                        + ", ".join(action_bounds) + ")")
+        return None
+
     async def _compact(self, identity: AgentInputIdentity, *, original=None, pinned=None, required_events=None,
                        fresh_decision: bool = False):
         original = tuple(self._working) if original is None else original
@@ -560,6 +633,9 @@ class SimpleRuntime:
         for _ in range(remaining):
             if target_fits(snapshot()):
                 return commit()
+            obstruction = self._compaction_obstruction(staged, pinned, required_events)
+            if obstruction:
+                raise AgentLimitError(obstruction)
             span = self._summary_span(staged, required_events, retry_instruction)
             if not span:
                 # Protected inputs/pins and required feedback can exceed the

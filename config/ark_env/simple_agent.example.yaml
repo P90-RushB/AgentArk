@@ -1,4 +1,4 @@
-# Optional stateful agent. Existing API/Codex configurations keep their behavior.
+# Recommended stateful evaluation harness. Existing API/Codex configurations keep their behavior.
 env_cfg:
   env_path: "${AGENTARK_ENV_PATH}"
   mod_path: "${AGENTARK_MOD_PATH}"
@@ -26,10 +26,19 @@ eval:
     enabled: true
     condition: all
     include_images: true
+    # Optional audit fields are separate from restored history. Default true.
+    include_agent_trace: true
     output_path: tmp/simple_agent_trajectories.jsonl
 
 models:
   - name: simple-qwen37-plus
+    # agent_type options (harness); provider selects the model backend:
+    # simple: SimpleAgent, recommended; context compaction and optional host tools
+    #         over HTTP or the Codex SDK.
+    # api: APIAgent, the legacy stateless HTTP harness.
+    # codex: CodexAgent, the SDK harness (use provider: codex).
+    # Omitted: provider: codex selects CodexAgent; HTTP providers select APIAgent.
+    # Keep the simple_agent settings below only when agent_type is simple.
     agent_type: simple
     provider: openrouter
     model: qwen/qwen3.7-plus

@@ -46,16 +46,27 @@ eval:
       env_id: 0
 ```
 
-然后选择一种模型 provider。
+然后选择一种模型 provider。新评测替换 provider 字段时，请保留
+`agent_type: simple` 和 `simple_agent` 设置。下方只包含 provider 的片段用于说明
+传输参数；单独复制且不指定 harness 时，仍沿用旧选择规则。
 
 ### OpenAI 兼容 Provider
 
 此方式适用于 OpenAI、OpenRouter、DashScope 兼容端点和其他 OpenAI 兼容的 HTTP
-端点。`APIAgent` 会以 chat-completions 风格请求运行这些配置。
+端点。新评测模板显式选择 `SimpleAgent`，通过 Chat Completions 和原生函数工具运行。
 
 ```yaml
 models:
-  - name: openrouter-model
+  - name: simple-openrouter-model
+    agent_type: simple
+    simple_agent:
+      output_token_parameter: max_tokens
+      context:
+        max_context_tokens: 262144
+        output_reserve_tokens: 30000
+      tools:
+        enabled: true
+        workspace_parent: tmp/simple_agent_workspaces
     provider: openrouter
     model: replace-with-openrouter-model-id
     base_url: https://openrouter.ai/api/v1
@@ -120,7 +131,8 @@ token 与可见输出 token 的总量，`temperature: 1.0` 显式设置采样温
 视觉任务使用 `high` 时可能超过示例的 180 秒超时；如果
 可以接受更长延迟，请相应提高 `timeout_s`。
 
-对于无状态 HTTP provider，建议返回完整消息上下文：
+对于旧的无状态 `agent_type: api` harness，建议返回完整消息上下文；
+SimpleAgent 的评测入口会单独设置 delta 消息契约：
 
 ```yaml
 env_cfg:
@@ -134,12 +146,20 @@ env_cfg:
           return_mode: full
 ```
 
-### 可选 SimpleAgent：上下文压缩与宿主工具
+### 推荐 SimpleAgent：上下文压缩与宿主工具
 
 `APIAgent`、`SimpleAgent`、`CodexAgent` 是独立的 agent。新增的 `agent_type`
 选择 agent，`provider` 继续选择模型后端。不填写 `agent_type` 时沿用原来的行为：
 `provider: codex` 使用 CodexAgent，其他 provider 使用基础 APIAgent。
-已有配置、基础 agent 和 Codex 的上下文管理保持原样。
+已有配置、基础 agent 和 Codex 的上下文管理保持原样。新的单 seed、多 seed、并行
+和 Colab 示例显式选择 SimpleAgent 并启用宿主工具，不改变缺省选择或任务配置。
+需要旧基线时，显式选择 `agent_type: api` 并移除 `simple_agent` 设置。
+
+评测条件包括模型及其 harness 配置。APIAgent 与 SimpleAgent 的成绩应分别标注；
+续跑会检查 harness 身份和配置，缺少身份的旧结果沿用旧 harness 推断。旧 SimpleAgent
+结果若无法确认配置，可能重新运行，不会静默复用；已有动作回放不受影响。新评测条件
+建议使用独立输出路径。动作回放使用 `ReplayAgent` 直接执行保存的最终动作，
+不调用原模型 harness；精确复现仍需要兼容的任务包、运行时、种子和参数。
 
 使用 `config/ark_env/simple_agent.example.yaml`：
 
@@ -238,6 +258,12 @@ JSON schema 子集（对象、数组、字符串、整数、布尔值）；默�
 `eval.stop_on_error: false`，继续其它 case，不会自动重跑失败的 case。
 凭证、参数、拒绝、取消、超时及存档容量错误不会触发自动摘要生成重试。
 摘要失败不消耗环境 step，也不会提交占位动作。
+压缩按完整旧轮次处理。完整旧轮次超过摘要输入预算、且可证明剩余历史仍无法满足
+动作请求硬上限时，会直接报告具体容量限制，避免重复改写同一份摘要。预算不会自动扩大。
+评测异常中止时，错误结果新增 `rollout_complete: false` 和版本化 `partial_rollout`，
+保存已完成的环境步骤、图片资产及失败决策；`env.step` 抛错的动作单独标记为执行状态未知。
+原始初始/当前观测另行编码保存；中间模型可见观测保留在实际请求 trace 与图片资产中。
+不完整 rollout 保存在结果 JSONL，不作为 trajectory bank 的完整 attempt 或训练前缀。
 思考 token 同样消耗每次请求的 completion 上限。摘要继续继承动作的 reasoning/thinking
 参数，Codex SDK 后端同样如此。只有 assistant 正文会进入摘要记忆，推理字段只保留为审计数据。
 分开字段不会为正文预留输出 token，因此独立摘要预算需同时容纳推理和正文。
@@ -249,8 +275,28 @@ JSON schema 子集（对象、数组、字符串、整数、布尔值）；默�
 
 结果步骤的 `raw_response_by_agent` 包含 `model_requests`、`agent_events`、
 `agent_usage` 与 `simple_agent` 配置元数据，区分真实动作模型请求、摘要和宿主工具续轮。
-图像请求在文本 trace 中省略原件；完整模型可见环境图像由开启图片的 trajectory 记录保存。
-实际请求同时记录图像 SHA-256 和字节数，失败结果保留已完成调用与已知用量。
+请求图像使用 `agentark-trace-image:<sha256>` 引用；`result.model_trace_images` 按
+`sha256 -> {mime_type, data_url}` 在每个 case 中去重保存。实际请求同时记录图像
+SHA-256 和字节数，失败结果保留已完成调用与已知用量。
+
+HumanView 保留环境聊天流，另行展示真实模型调用中的 prompt、工具、参数、正文、
+调用及结果、摘要。请求前预览与压缩后的真实调用分开标注。回放透传已保存的调用和事件，
+不执行宿主工具；旧记录缺少相应字段时显示未保存，不伪装成精确的真实请求。
+主聊天将模型公开正文与选定的环境动作分别展示；动作的执行结果以随后环境反馈为准。
+上方 `Model instructions / Harness` 从实际 action 请求显示有效的 system/developer 指令，
+包括已保存的 Codex 外层 JSON 协议；环境原始提示单独标注，可能经过 harness 调整。
+摘要步骤显示实际动作请求使用的笔记，不把一次摘要尝试直接当成新记忆已经提交。
+Codex transport 的审计覆盖应用传入 SDK 的 turn 输入，不代表 SDK 或模型内部的隐藏上下文。
+返回的加密推理只作不透明数据展示。
+
+界面在展开时生成详情，最多展示最近 200 个决策；更早的调用仍保存在 record 中。
+服务端图片缓存保留当前 case 的图像供稍后重新查阅；切换 case 后，旧图像在缓冲调用不再引用时释放。
+
+`eval.trajectory_save.include_agent_trace` 默认 `true`。trajectory 新增可选的
+`agent_trace: {version: 1, steps, model_trace_images}`，独立于 `history_snapshot`，
+绝不会作为历史恢复进模型 prompt；前缀导出会排除后续 attempt。
+`include_images: false` 不保存 trace 图像原件，`include_agent_trace: false` 保留旧的
+trajectory 存储结构。旧记录仍可读取，但无法补回从未保存的信息。
 环境回放继续使用最终动作；它不会重新调用模型或恢复工具/笔记状态。
 RL rollout 接入保持独立，新增评测 agent 不自动修改 Swift 或 VERL 的训练轨迹。
 
@@ -587,6 +633,21 @@ replay:
 
 常用 selector 包括 `record_index`、`record_indices`、`record_lines`、`case_id`、
 `model_name`、`task_name`、`group_seed`、`env_id` 和 `limit`。
+
+默认只回放 `status: ok`。调试新格式的异常记录时，显式设置：
+
+```yaml
+replay:
+  records_path: tmp/results.jsonl
+  status: error
+  allow_partial: true
+  require_match: true
+```
+
+部分回放只执行已完成的环境步骤，逐步核对动作、奖励、done 和 attempt/rollout 元数据；
+不执行失败决策或执行状态未知的动作，也不重跑模型或宿主工具。结果仍标记 `status: error`、
+`rollout_complete: false`，没有完整评测分数。旧错误记录未保存的步骤无法补回；
+正常旧记录继续沿用原有回放路径。
 
 启用浏览器 viewer 时回放最有价值，因为图像会由运行时重新生成，而不是从原评测记录
 读取。

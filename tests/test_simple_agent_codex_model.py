@@ -235,6 +235,54 @@ def test_summary_uses_final_text_only_and_reasoning_stays_in_audit(fake_sdk):
     assert "audit-only-reasoning" in str(backend.last_response_metadata["sdk_items"])
 
 
+def test_codex_transport_audit_matches_ordered_actual_sdk_turn_inputs(fake_sdk):
+    from agent_ark.agent.simple_agent.types import ToolCall
+
+    tools = (ToolSpec('lookup', 'Read visible information.', '{"type":"object","properties":{}}'),)
+    image_request = request(tools=tools, image=True)
+    model_request = ModelRequest(image_request.messages + (
+        Message('assistant', (TextPart('Inspect the record.'),),
+                tool_calls=(ToolCall('lookup-1', 'lookup', '{}'),)),
+        Message('tool', (TextPart('Record result.'),), tool_call_id='lookup-1'),
+    ), tools=tools, max_output_tokens=128)
+    backend = CodexModel(reasoning_effort='high')
+    audit = backend.request_transport(model_request)
+    fake_sdk.scripts = [successful(envelope('Final action'))]
+    asyncio.run(backend.complete(model_request))
+
+    actual_inputs, turn = fake_sdk.requests[0]
+    assert audit['inputs'] == actual_inputs
+    assert audit['output_schema'] == turn['output_schema']
+    assert audit['effort'] == turn['effort'] == 'high'
+    assert audit['boundary'] == 'sdk_turn_input'
+    assert audit['sdk_added_context'] == 'not_exposed_by_sdk'
+    assert audit['inputs'][0]['text'].startswith('You are a stateless model component inside SimpleAgent.')
+    assert 'Declared runtime tools: ' in audit['inputs'][0]['text']
+    assert audit['inputs'][1]['text'] == 'BEGIN SUPPLIED MESSAGE {"message_index": 0, "role": "user"}'
+    assert audit['inputs'][2]['text'] == 'Visible task observation'
+    assert audit['inputs'][3]['type'] == 'image'
+    assert audit['inputs'][4]['text'] == 'END SUPPLIED MESSAGE'
+    assert '"tool_calls": [{"call_id": "lookup-1", "name": "lookup", "arguments_json": "{}"}]' in audit['inputs'][5]['text']
+    assert '"tool_call_id": "lookup-1"' in audit['inputs'][8]['text']
+    assert 'auth.json' not in str(audit)
+
+
+def test_simple_codex_trace_includes_outer_transport_without_changing_completion(fake_sdk):
+    fake_sdk.scripts = [successful(envelope('ordinary action content'))]
+    agent = SimpleAgent(provider='codex', reasoning_effort='low')
+    try:
+        responses, traces = agent.forward_with_trace({0: {'messages': [{
+            'role': 'user', 'content': 'Visible task',
+        }]}})
+        call_record = traces[0]['model_requests'][0]
+        assert call_record['request_transport']['inputs'] == fake_sdk.requests[0][0]
+        assert call_record['request_transport']['output_schema'] == fake_sdk.requests[0][1]['output_schema']
+        assert responses[0] == {'action': 'ordinary action content', 'assistant': 'ordinary action content'}
+        assert 'BEGIN SUPPLIED MESSAGE' not in call_record['request_messages'][0]['content'][0]['text']
+    finally:
+        agent.close()
+
+
 @pytest.mark.parametrize("effort", [None, "high", "max"])
 def test_codex_summary_preserves_action_effort_in_actual_turn_and_audit(fake_sdk, effort):
     fake_sdk.scripts = [successful(envelope("action")), successful(envelope("concise notes"))]

@@ -49,17 +49,29 @@ eval:
       env_id: 0
 ```
 
-Then choose one model provider style below.
+Then choose one model provider style below. Keep `agent_type: simple` and its
+`simple_agent` settings when replacing the provider fields in a new evaluation.
+Provider-only snippets below describe transport settings and retain legacy
+selection when copied without an explicit harness.
 
 ### OpenAI-Compatible Providers
 
 Use this path for OpenAI, OpenRouter, DashScope-compatible, or other
-OpenAI-compatible HTTP endpoints. These entries are run by `APIAgent` through
-chat-completions style requests.
+OpenAI-compatible HTTP endpoints. New evaluation templates explicitly select
+`SimpleAgent`, which uses Chat Completions with native function tools.
 
 ```yaml
 models:
-  - name: openrouter-model
+  - name: simple-openrouter-model
+    agent_type: simple
+    simple_agent:
+      output_token_parameter: max_tokens
+      context:
+        max_context_tokens: 262144
+        output_reserve_tokens: 30000
+      tools:
+        enabled: true
+        workspace_parent: tmp/simple_agent_workspaces
     provider: openrouter
     model: replace-with-openrouter-model-id
     base_url: https://openrouter.ai/api/v1
@@ -130,7 +142,8 @@ Completions API. `thinking.type: enabled` explicitly enables deep thinking,
 `high` can exceed the example's 180-second timeout; increase `timeout_s` when
 that latency is acceptable.
 
-For stateless HTTP providers, prefer full message context:
+For the legacy stateless `agent_type: api` harness, prefer full message context
+(the SimpleAgent evaluator sets its own delta contract):
 
 ```yaml
 env_cfg:
@@ -144,13 +157,25 @@ env_cfg:
           return_mode: full
 ```
 
-### Optional SimpleAgent: Context Compaction and Host Tools
+### Recommended SimpleAgent: Context Compaction and Host Tools
 
 `APIAgent`, `SimpleAgent`, and `CodexAgent` are separate agents. The optional
 `models[*].agent_type` selects `api`, `simple`, or `codex`; `provider` continues
 to select the model backend. Without `agent_type`, the existing behavior is
 unchanged: `provider: codex` selects CodexAgent, other providers select APIAgent.
-The existing agents retain their implementation and configuration defaults.
+The existing agents retain their implementation and configuration defaults. New
+seed, parallel and Colab examples explicitly choose SimpleAgent with host tools
+enabled; no global missing-key default or task configuration is rewritten. To
+retain the baseline, explicitly select `agent_type: api` and omit `simple_agent`.
+
+Evaluation results describe the model plus its harness configuration. Keep APIAgent
+and SimpleAgent scores as separate conditions. Resume checks distinguish harness
+identity/configuration; historical records without identity retain legacy inference.
+An older SimpleAgent result whose configuration cannot be established may be
+rerun instead of silently reused; its saved action playback is unaffected.
+Use a new output path for a new evaluation condition. Action playback uses
+`ReplayAgent`, consumes saved final actions, and does not call either model harness.
+Exact replay still requires compatible task/runtime artifacts, seeds and parameters.
 
 Run [simple_agent.example.yaml](../config/ark_env/simple_agent.example.yaml):
 
@@ -285,6 +310,17 @@ continue other cases; it does not replay the failed case. Authentication,
 parameter, refusal, cancellation, timeout and archive-capacity failures do not
 receive automatic summary-generation retries. An unsuccessful summary does not
 allocate an environment step or submit a placeholder action.
+Compaction summarizes complete older turns. If a complete turn exceeds the
+summary input bounds and the remaining suffix provably exceeds action hard
+bounds, it reports the limiting capacities immediately instead of repeatedly
+rewriting the same notes. Configured budgets are not increased automatically.
+On rollout exceptions, error results add `rollout_complete: false` and a
+versioned `partial_rollout`, preserving completed environment steps, image
+assets and the failed decision. An action whose `env.step` raised has unknown
+execution status and is stored separately. Raw initial/current observations
+are encoded separately; intermediate model-visible observations remain in the
+actual request traces and image assets. Incomplete rollouts stay in result
+JSONL, outside the trajectory bank's completed attempts and training prefixes.
 Reasoning tokens share each request's completion cap. Summary requests keep
 the same reasoning/thinking parameters as action requests, including the Codex
 SDK backend. Only final assistant content becomes summary memory; reasoning
@@ -302,10 +338,37 @@ defaults. Direct construction keeps file tools opt-in and requires a writable
 
 Each step's `raw_response_by_agent` retains `model_requests`, `agent_events`,
 `agent_usage`, and safe `simple_agent` configuration metadata. These distinguish
-actual action/summary requests and tool continuations. Text traces omit image
-payloads; image-enabled trajectories retain the original environment observations.
-Actual request image hashes/byte sizes and known usage from failed calls are
-retained, including preceding successful summary and tool work.
+actual action/summary requests and tool continuations. Request images use
+`agentark-trace-image:<sha256>` references; `result.model_trace_images` stores each
+referenced image once per case as `sha256 -> {mime_type, data_url}`. Image hashes,
+byte sizes and known usage from failed calls are retained, including preceding
+successful summary and tool work.
+
+HumanView keeps the environment chat and separately displays actual model calls,
+including prompts, tools, parameters, assistant text, calls, results and summaries.
+Request previews are labelled separately from post-compaction calls. Replay
+passes through saved calls/events without executing host tools; an older record
+without those fields is labelled unavailable, not reconstructed as an exact request.
+The Codex transport audit captures application-provided SDK turn inputs, not
+hidden SDK or model-internal context. Returned opaque reasoning remains opaque.
+The viewer builds details when expanded and shows the latest 200 decisions;
+older calls remain in saved records. The viewer server's image cache preserves the active case's
+images for later tool rereads and expires prior-case images when buffered calls
+no longer reference them.
+
+`eval.trajectory_save.include_agent_trace` defaults to `true`. Saved trajectories
+add optional `agent_trace: {version: 1, steps, model_trace_images}` outside
+`history_snapshot`; it is never restored into the model prompt. A prefix export
+filters out later attempts. `include_images: false` omits trace image assets, and
+`include_agent_trace: false` retains the legacy trajectory storage shape. Historical
+records remain readable; information that was never saved cannot be recovered.
+The main conversation separates public assistant content from the selected
+environment action; subsequent environment feedback reports execution. The
+`Model instructions / Harness` panel shows system/developer messages from actual
+action requests, including the saved Codex outer JSON protocol. Original
+environment prompts are labelled separately because the harness may adapt them.
+Summary steps show notes actually used by the action request; an attempted
+summary alone is not presented as committed new memory.
 Environment replay still replays final actions without re-running models or
 restoring tools/notes. RL rollout integration is separate: selecting this agent
 does not change Swift/VERL training trajectories.
@@ -675,6 +738,25 @@ replay:
 
 Common selectors include `record_index`, `record_indices`, `record_lines`,
 `case_id`, `model_name`, `task_name`, `group_seed`, `env_id`, and `limit`.
+
+Replay selects `status: ok` by default. To debug a new partial error record,
+explicitly configure:
+
+```yaml
+replay:
+  records_path: tmp/results.jsonl
+  status: error
+  allow_partial: true
+  require_match: true
+```
+
+Partial replay executes only completed environment steps and compares their
+actions, rewards, done flags and attempt/rollout metadata. It does not execute
+the failed decision or an action with unknown execution status, and does not
+rerun models or host tools. Its result remains `status: error` with
+`rollout_complete: false` and no complete evaluation score. Missing steps in
+older error records cannot be recovered. Existing complete records retain the
+normal replay path.
 
 Replay is most useful with the browser viewer enabled because images are
 regenerated from the runtime instead of stored in the original eval record.

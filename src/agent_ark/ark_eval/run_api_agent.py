@@ -26,6 +26,10 @@ from agent_ark.ark_env.ark_sub_env import _normalize_optional_path, _resolve_cli
 from agent_ark.ark_env.direct_env import EnvInfoManager
 from agent_ark.interaction import HookManager, HumanActionBroker, HumanInteractiveAgent, LocalViewerHook
 from agent_ark.interaction.serialization import observation_event_metadata, serialize_action_details, serialize_obs_map
+from .model_trace import capture_image_reference, referenced_image_assets
+from .evaluation_identity import (
+    build_evaluation_identity, identity_suffix, matching_resume_key, resolved_agent_name,
+)
 
 
 _trajectory_io = importlib.import_module('agent_ark.ark_eval.trajectory_io')
@@ -39,7 +43,7 @@ target_attempt_index_from_record = _trajectory_io.target_attempt_index_from_reco
 
 _MAX_GROUP_SEED = 2**31 - 2
 _DEFAULT_CODEX_DISABLED_MCP_SERVERS = ('node_repl', 'unityMCP')
-ResumeKey = Tuple[str, str, str, str]
+ResumeKey = Tuple[str, ...]
 
 
 def _coerce_bool(value: Any, default: bool = False) -> bool:
@@ -816,6 +820,8 @@ def build_model_runtimes(
             'agent': agent,
             **({'agent_type': agent_spec.name} if agent_spec.name != 'api' or 'agent_type' in model_cfg else {}),
         })
+    for runtime, model_cfg in zip(runtimes, model_cfgs):
+        runtime['evaluation_identity'] = build_evaluation_identity(model_cfg)
     if not runtimes:
         raise ValueError('No models configured. Add at least one item under models.')
     return runtimes
@@ -863,9 +869,9 @@ def _summarize_raw_trace_image_value(value: Any) -> str:
     return f'[{type(value).__name__} image payload omitted]'
 
 
-def _sanitize_raw_trace_message_part(part: Any) -> Any:
+def _sanitize_raw_trace_message_part(part: Any, *, image_assets: dict | None = None) -> Any:
     if isinstance(part, list):
-        return [_sanitize_raw_trace_message_part(item) for item in part]
+        return [_sanitize_raw_trace_message_part(item, image_assets=image_assets) for item in part]
 
     if not isinstance(part, dict):
         return part
@@ -876,17 +882,19 @@ def _sanitize_raw_trace_message_part(part: Any) -> Any:
         if isinstance(image_url, dict):
             out = dict(part)
             out['image_url'] = dict(image_url)
-            out['image_url']['url'] = _summarize_raw_trace_image_value(image_url.get('url', ''))
+            value = image_url.get('url', '')
+            out['image_url']['url'] = capture_image_reference(value, image_assets) or _summarize_raw_trace_image_value(value)
             return out
 
         out = dict(part)
-        out['image_url'] = _summarize_raw_trace_image_value(image_url)
+        out['image_url'] = capture_image_reference(image_url, image_assets) or _summarize_raw_trace_image_value(image_url)
         return out
 
     if part_type == 'image':
         out = dict(part)
         if 'url' in out:
-            out['url'] = _summarize_raw_trace_image_value(out.get('url'))
+            value = out.get('url')
+            out['url'] = capture_image_reference(value, image_assets) or _summarize_raw_trace_image_value(value)
         if 'image_base64' in out:
             out['image_base64'] = _summarize_raw_trace_image_value(out.get('image_base64'))
         if 'image' in out:
@@ -894,7 +902,7 @@ def _sanitize_raw_trace_message_part(part: Any) -> Any:
         return out
 
     return {
-        key: _sanitize_raw_trace_message_part(value)
+        key: _sanitize_raw_trace_message_part(value, image_assets=image_assets)
         for key, value in part.items()
     }
 
@@ -922,7 +930,7 @@ def collect_raw_request_messages(agent: Any, obs: Dict[int, Dict[str, Any]]) -> 
     return out
 
 
-def normalize_response_trace(trace_by_agent: Any) -> Dict[str, Dict[str, Any]]:
+def normalize_response_trace(trace_by_agent: Any, *, image_assets: dict | None = None) -> Dict[str, Dict[str, Any]]:
     if not isinstance(trace_by_agent, dict):
         return {}
 
@@ -942,9 +950,10 @@ def normalize_response_trace(trace_by_agent: Any) -> Dict[str, Dict[str, Any]]:
             item['skipped'] = bool(trace.get('skipped', False))
         # New agents can make multiple actual model requests inside one
         # environment decision. Preserve those events alongside legacy fields.
-        for key in ('agent_events', 'model_requests', 'agent_usage', 'context_summary', 'simple_agent', 'error_type'):
+        for key in ('agent_events', 'model_requests', 'agent_usage', 'context_summary', 'simple_agent', 'error_type',
+                    'replay', 'source_turn_index'):
             if key in trace:
-                item[key] = _to_jsonable(sanitize_raw_request_messages(deepcopy(trace[key])))
+                item[key] = _to_jsonable(_sanitize_raw_trace_message_part(trace[key], image_assets=image_assets))
         if item:
             out[str(agent_id)] = item
     return out
@@ -953,11 +962,13 @@ def normalize_response_trace(trace_by_agent: Any) -> Dict[str, Dict[str, Any]]:
 def forward_agent_with_trace(
     agent: Any,
     obs: Dict[int, Dict[str, Any]],
+    *,
+    image_assets: dict | None = None,
 ) -> tuple[Dict[int, Any], Dict[str, Dict[str, Any]]]:
     forward_with_trace = getattr(agent, 'forward_with_trace', None)
     if callable(forward_with_trace):
         code_act, trace_by_agent = forward_with_trace(obs)
-        return code_act, normalize_response_trace(trace_by_agent)
+        return code_act, normalize_response_trace(trace_by_agent, image_assets=image_assets)
 
     return agent.forward_with_details(obs), {}
 
@@ -1049,6 +1060,12 @@ def summarize_attempt_rewards(step_records: List[Dict[str, Any]], reset_info: Di
     }
 
 
+def _exact_action_details(code_act: Dict[int, Any]) -> Dict[str, Any]:
+    """JSON-safe submitted payloads, without presentation truncation."""
+    return {str(uid): _to_jsonable(payload if isinstance(payload, dict) else {'action': payload})
+            for uid, payload in code_act.items()}
+
+
 def _run_case_rollout(
     env: ArkEnv,
     model_runtime: Dict[str, Any],
@@ -1059,6 +1076,7 @@ def _run_case_rollout(
     hooks_cfg: Dict[str, Any] | None = None,
     phase: str = 'eval',
     include_final_obs: bool = False,
+    _completed_steps_limit: int | None = None,
 ) -> Dict[str, Any]:
     agent = model_runtime['agent']
     hooks = hook_manager or HookManager()
@@ -1091,74 +1109,166 @@ def _run_case_rollout(
     )
 
     step_records: List[Dict[str, Any]] = []
+    # Image bytes are saved once per case, outside repeated request histories.
+    # Replay exposes the original assets; no images are inferred from new renders.
+    model_trace_images: dict = dict(getattr(agent, 'model_trace_images', {}) or {})
+    emitted_trace_images: set = set()
     total_reward = 0.0
     rollout_success = False
     rollout_truncated = False
     rollout_budget_exhausted = False
 
-    for turn_idx in range(rollout_step_budget):
-        request_messages = collect_step_messages(obs)
-        raw_request_by_agent = collect_raw_request_messages(agent, obs)
-        hooks.emit(
-            'agent_request',
-            {
-                'case_id': case['case_id'],
-                'model_name': model_runtime['name'],
+    completed_actions: list = []
+    failed_turn: dict = {}
+    failure_trace: dict = {}
+    initial_attempt_index = int(start_attempt_index or (info.get('attempt', {}) or {}).get('index', 1))
+    try:
+        for turn_idx in range(rollout_step_budget if _completed_steps_limit is None else min(rollout_step_budget, _completed_steps_limit)):
+            failed_turn = {'turn_index': int(turn_idx), 'phase': 'prepare_request', 'env_action_status': 'not_submitted'}
+            failure_trace = {}
+            request_messages = collect_step_messages(obs)
+            raw_request_by_agent = collect_raw_request_messages(agent, obs)
+            hooks.emit(
+                'agent_request',
+                {
+                    'case_id': case['case_id'],
+                    'model_name': model_runtime['name'],
+                    'turn_index': int(turn_idx),
+                    **observation_event_metadata(env),
+                    'obs': serialize_obs_map(
+                        obs,
+                        text_max_chars=limits['text_max_chars'],
+                        max_images_per_observation=limits['max_images_per_observation'],
+                    ),
+                    'request_messages': request_messages,
+                    'raw_trace_by_agent': raw_request_by_agent,
+                },
+                source='run_api_agent',
+                phase=phase,
+            )
+            failed_turn.update(phase='agent_forward', request_messages=request_messages,
+                               raw_request_by_agent=raw_request_by_agent)
+            # last_trace is presentation state, not context. Clear it before this
+            # decision so preparation failures cannot claim the preceding turn.
+            previous_trace = getattr(agent, 'last_trace_by_agent', None)
+            trace_cleared = False
+            if previous_trace is not None:
+                try:
+                    agent.last_trace_by_agent = {}
+                    trace_cleared = True
+                except (AttributeError, TypeError):
+                    pass
+            try:
+                code_act, raw_response_by_agent = forward_agent_with_trace(agent, obs, image_assets=model_trace_images)
+            except Exception:
+                # Failed calls have useful audit input/output too. Publish only the
+                # recorded trace, never provider exception text or a guessed action.
+                current_trace = getattr(agent, 'last_trace_by_agent', {})
+                failure_trace = normalize_response_trace(
+                    current_trace if trace_cleared or current_trace is not previous_trace else {},
+                    image_assets=model_trace_images)
+                failed_turn['raw_response_by_agent'] = failure_trace
+                failure_assets = referenced_image_assets(failure_trace, model_trace_images)
+                hooks.emit('agent_response', {
+                    'case_id': case['case_id'], 'model_name': model_runtime['name'],
+                    'turn_index': int(turn_idx), 'status': 'error', 'actions': {},
+                    'raw_trace_by_agent': failure_trace,
+                    **({'model_trace_images': {key: value for key, value in failure_assets.items()
+                                               if key not in emitted_trace_images}} if failure_assets else {}),
+                }, source='run_api_agent', phase=phase)
+                raise
+            failed_turn.update(phase='agent_response_hook', actions=_exact_action_details(code_act),
+                               raw_response_by_agent=raw_response_by_agent)
+            referenced = referenced_image_assets(raw_response_by_agent, model_trace_images)
+            new_images = {key: value for key, value in referenced.items() if key not in emitted_trace_images}
+            emitted_trace_images.update(new_images)
+            hooks.emit(
+                'agent_response',
+                {
+                    'case_id': case['case_id'],
+                    'model_name': model_runtime['name'],
+                    'turn_index': int(turn_idx),
+                    'actions': serialize_action_details(code_act),
+                    'action_preview': preview_action(code_act),
+                    'assistant_preview': preview_assistant(code_act),
+                    'raw_trace_by_agent': raw_response_by_agent,
+                    **({'model_trace_images': new_images} if new_images else {}),
+                },
+                source='run_api_agent',
+                phase=phase,
+            )
+            failed_turn.update(phase='env_step', env_action_status='unknown')
+            next_obs, reward, done, step_info = env.step(code_act, info={'turn_index': int(turn_idx)})
+            failed_turn.update(phase='env_result', env_action_status='returned')
+            rollout_info = step_info.get('rollout', {}) if isinstance(step_info, dict) else {}
+
+            reward_total = float(sum(float(v) for v in (reward or {}).values()))
+            total_reward += reward_total
+            step_records.append({
                 'turn_index': int(turn_idx),
-                **observation_event_metadata(env),
-                'obs': serialize_obs_map(
-                    obs,
-                    text_max_chars=limits['text_max_chars'],
-                    max_images_per_observation=limits['max_images_per_observation'],
-                ),
-                'request_messages': request_messages,
-                'raw_trace_by_agent': raw_request_by_agent,
-            },
-            source='run_api_agent',
-            phase=phase,
-        )
-        code_act, raw_response_by_agent = forward_agent_with_trace(agent, obs)
-        hooks.emit(
-            'agent_response',
-            {
-                'case_id': case['case_id'],
-                'model_name': model_runtime['name'],
-                'turn_index': int(turn_idx),
-                'actions': serialize_action_details(code_act),
                 'action_preview': preview_action(code_act),
                 'assistant_preview': preview_assistant(code_act),
-                'raw_trace_by_agent': raw_response_by_agent,
-            },
-            source='run_api_agent',
-            phase=phase,
-        )
-        next_obs, reward, done, step_info = env.step(code_act, info={'turn_index': int(turn_idx)})
-        rollout_info = step_info.get('rollout', {}) if isinstance(step_info, dict) else {}
+                'reward_total': reward_total,
+                'reward_by_agent': _to_jsonable(reward or {}),
+                'done': _to_jsonable(done or {}),
+                'info': _to_jsonable(step_info or {}),
+                'request_messages': request_messages,
+                'raw_request_by_agent': raw_request_by_agent,
+                'raw_response_by_agent': raw_response_by_agent,
+                'step_messages': collect_step_messages(next_obs),
+            })
 
-        reward_total = float(sum(float(v) for v in (reward or {}).values()))
-        total_reward += reward_total
-        step_records.append({
-            'turn_index': int(turn_idx),
-            'action_preview': preview_action(code_act),
-            'assistant_preview': preview_assistant(code_act),
-            'reward_total': reward_total,
-            'reward_by_agent': _to_jsonable(reward or {}),
-            'done': _to_jsonable(done or {}),
-            'info': _to_jsonable(step_info or {}),
-            'request_messages': request_messages,
-            'raw_request_by_agent': raw_request_by_agent,
-            'raw_response_by_agent': raw_response_by_agent,
-            'step_messages': collect_step_messages(next_obs),
-        })
-
-        rollout_success = bool(rollout_info.get('success', False))
-        rollout_truncated = bool(rollout_info.get('truncated', False))
-        if rollout_success or rollout_truncated:
+            completed_actions.append(failed_turn['actions'])
+            failed_turn = {}
+            rollout_success = bool(rollout_info.get('success', False))
+            rollout_truncated = bool(rollout_info.get('truncated', False))
+            if rollout_success or rollout_truncated:
+                obs = next_obs
+                break
             obs = next_obs
-            break
-        obs = next_obs
+    except Exception as exc:
+        # Attach evidence to the original exception; callers still receive the
+        # original type and stop-on-error behavior. No runtime/model retry occurs.
+        partial = {
+            'version': 1, 'complete': False,
+            'failed_turn': failed_turn,
+            'steps': [{**step, 'actions': actions, 'partial_step_version': 1}
+                      for step, actions in zip(step_records, completed_actions)],
+            'turns': len(step_records), 'total_reward': total_reward,
+            'model_trace_images': referenced_image_assets(
+                [step_records, failed_turn, failure_trace], model_trace_images),
+            'reset_info': _to_jsonable(info or {}),
+            'max_attempts': resolved_max_attempts,
+            'max_steps_per_attempt': max_steps_per_attempt,
+            'rollout_step_budget': rollout_step_budget,
+            'start_attempt_index': initial_attempt_index,
+            'initial_env_cfg': _to_jsonable(initial_env_cfg),
+            'final_env_cfg': _to_jsonable(getattr(env, '_selected_env_cfg', None) or initial_env_cfg),
+            'duration_s': round(time.time() - started_at, 4),
+            'agent_failure_trace': (failure_trace if failed_turn.get('phase') == 'agent_forward' else {}),
+        }
+        # Raw snapshots are encoded only on failure. Middle model-visible
+        # observations remain in each saved model request and its image assets;
+        # never claim these are all raw environment frames for arbitrary agents.
+        partial['observation_coverage'] = {
+            'raw_observations': ['initial', 'current'],
+            'completed_model_requests': all(
+                trace.get('model_requests') for step in step_records
+                for trace in step.get('raw_response_by_agent', {}).values())
+                and all(step.get('raw_response_by_agent') for step in step_records),
+            'all_intermediate_raw_observations': False,
+        }
+        try:
+            partial['initial_observation'] = _trajectory_io.encode_trajectory_value({unity_id: initial_obs})
+            partial['current_observation'] = _trajectory_io.encode_trajectory_value(obs)
+            if isinstance(history_snapshot, dict):
+                partial['reset_history_snapshot'] = _trajectory_io.encode_history_snapshot(history_snapshot)
+        except Exception as capture_error:
+            partial['observation_capture_error_type'] = type(capture_error).__name__
+        setattr(exc, '_agentark_partial_rollout', partial)
+        raise
 
-    if not rollout_success and not rollout_truncated:
+    if _completed_steps_limit is None and not rollout_success and not rollout_truncated:
         rollout_truncated = True
         rollout_budget_exhausted = True
 
@@ -1187,7 +1297,10 @@ def _run_case_rollout(
         'rollout_success': rollout_success,
         'rollout_truncated': rollout_truncated,
         'step_records': step_records,
+        **({'model_trace_images': referenced_image_assets(step_records, model_trace_images)} if model_trace_images else {}),
         'duration_s': round(time.time() - started_at, 4),
+        **({'rollout_complete': False, '_completed_actions': completed_actions}
+           if _completed_steps_limit is not None else {}),
     }
 
 
@@ -1198,9 +1311,10 @@ def evaluate_case(
     *,
     hook_manager: HookManager | None = None,
     hooks_cfg: Dict[str, Any] | None = None,
+    _completed_steps_limit: int | None = None,
 ) -> Dict[str, Any]:
     player_feedback_cfg = _normalize_player_feedback_cfg(model_runtime.get('player_feedback', None))
-    player_feedback_enabled = bool(player_feedback_cfg.get('enabled', False))
+    player_feedback_enabled = bool(player_feedback_cfg.get('enabled', False)) and _completed_steps_limit is None
     rollout = _run_case_rollout(
         env=env,
         model_runtime=model_runtime,
@@ -1210,6 +1324,7 @@ def evaluate_case(
         hooks_cfg=hooks_cfg,
         phase='eval',
         include_final_obs=player_feedback_enabled,
+        _completed_steps_limit=_completed_steps_limit,
     )
     attempt_summary = summarize_attempt_rewards(rollout['step_records'], rollout['reset_info'])
     seed_summary = summarize_seed_fields(
@@ -1256,7 +1371,7 @@ def evaluate_case(
         or (isinstance(player_feedback, dict) and player_feedback.get('status') == 'ok')
     )
 
-    return {
+    result = {
         # A configured feedback stage is part of the evaluation contract. Keep
         # the rollout/trajectory evidence, but mark the result retryable when
         # the terminal report failed or could not be parsed.
@@ -1269,7 +1384,9 @@ def evaluate_case(
         'model_name': model_runtime['name'],
         'model': model_runtime['model'],
         'provider': model_runtime.get('provider'),
-        **({'agent_type': model_runtime['agent_type']} if 'agent_type' in model_runtime else {}),
+        'agent_type': resolved_agent_name(model_runtime),
+        **({'evaluation_identity': deepcopy(model_runtime['evaluation_identity'])}
+           if 'evaluation_identity' in model_runtime else {}),
         'base_url': model_runtime['base_url'],
         'api_key_env': model_runtime['api_key_env'],
         'thinking': _to_jsonable(model_runtime.get('thinking')),
@@ -1319,20 +1436,34 @@ def evaluate_case(
         **({'player_feedback': _to_jsonable(player_feedback)} if player_feedback_enabled else {}),
         'duration_s': rollout['duration_s'],
         'steps': rollout['step_records'],
+        **({'model_trace_images': rollout['model_trace_images']} if rollout.get('model_trace_images') else {}),
     }
+
+    if _completed_steps_limit is not None:
+        for step, actions in zip(result['steps'], rollout['_completed_actions']):
+            step.update(actions=actions, partial_step_version=1)
+        result.update(status='error', error_type='PartialRolloutReplay',
+                      error='Replay of an incomplete rollout; no complete evaluation score',
+                      rollout_complete=False, score_reward=None)
+    return result
 
 
 def build_error_result(model_runtime: Dict[str, Any], case: Dict[str, Any], error: Exception) -> Dict[str, Any]:
-    failure_trace = {}
-    if model_runtime.get('agent_type') == 'simple':
-        failure_trace = normalize_response_trace(getattr(model_runtime.get('agent'), 'last_trace_by_agent', {}))
-    return {
+    partial = getattr(error, '_agentark_partial_rollout', None)
+    partial = partial if isinstance(partial, dict) and partial.get('version') == 1 else None
+    failure_trace = deepcopy(partial.get('agent_failure_trace', {})) if partial else {}
+    failure_images: dict = dict(partial.get('model_trace_images', {})) if partial else {}
+    if partial is None and getattr(model_runtime.get('agent'), 'last_trace_by_agent', None):
+        failure_trace = normalize_response_trace(model_runtime['agent'].last_trace_by_agent, image_assets=failure_images)
+    result = {
         'status': 'error',
         'case_id': case['case_id'],
         'model_name': model_runtime['name'],
         'model': model_runtime['model'],
         'provider': model_runtime.get('provider'),
-        **({'agent_type': model_runtime['agent_type']} if 'agent_type' in model_runtime else {}),
+        'agent_type': resolved_agent_name(model_runtime),
+        **({'evaluation_identity': deepcopy(model_runtime['evaluation_identity'])}
+           if 'evaluation_identity' in model_runtime else {}),
         'base_url': model_runtime['base_url'],
         'api_key_env': model_runtime['api_key_env'],
         'thinking': _to_jsonable(model_runtime.get('thinking')),
@@ -1347,7 +1478,23 @@ def build_error_result(model_runtime: Dict[str, Any], case: Dict[str, Any], erro
         'error': str(error),
         'traceback': traceback.format_exc(limit=8),
         **({'agent_failure_trace': failure_trace} if failure_trace else {}),
+        **({'model_trace_images': failure_images} if failure_images else {}),
     }
+
+    if partial is not None:
+        snapshot = {key: deepcopy(value) for key, value in partial.items() if key not in (
+            'steps', 'turns', 'total_reward', 'model_trace_images', 'agent_failure_trace',
+            'initial_env_cfg', 'final_env_cfg', 'reset_info', 'max_attempts',
+            'max_steps_per_attempt', 'rollout_step_budget', 'start_attempt_index', 'duration_s')}
+        result.update({key: deepcopy(partial[key]) for key in (
+            'steps', 'turns', 'total_reward', 'reset_info', 'max_attempts',
+            'max_steps_per_attempt', 'rollout_step_budget', 'start_attempt_index', 'duration_s')})
+        result.update(rollout_complete=False, partial_rollout=snapshot)
+        initial_cfg, final_cfg = partial['initial_env_cfg'], partial['final_env_cfg']
+        result['actual_task_name'] = final_cfg.get('task_name', initial_cfg.get('task_name'))
+        result['actual_env_id'] = final_cfg.get('env_id', initial_cfg.get('env_id'))
+        result.update(summarize_seed_fields(initial_cfg, final_cfg, int(case['group_seed'])))
+    return result
 
 
 class JsonlWriter:
@@ -1371,13 +1518,14 @@ def _stable_resume_value(value: Any) -> str:
         return str(value)
 
 
-def _eval_case_model_resume_key(case: Dict[str, Any], model_name: str) -> ResumeKey:
+def _eval_case_model_resume_key(case: Dict[str, Any], model_name: str | Dict[str, Any]) -> ResumeKey:
+    runtime = model_name if isinstance(model_name, dict) else {'name': model_name}
     return (
         str(case.get('task_name', '') or ''),
         _stable_resume_value(case.get('group_seed', '')),
         _stable_resume_value(case.get('env_id', '')),
-        str(model_name or ''),
-    )
+        str(runtime.get('name', '') or ''),
+    ) + identity_suffix(runtime)
 
 
 def _eval_result_resume_key(record: Dict[str, Any]) -> ResumeKey | None:
@@ -1392,12 +1540,12 @@ def _eval_result_resume_key(record: Dict[str, Any]) -> ResumeKey | None:
         _stable_resume_value(group_seed),
         _stable_resume_value(env_id),
         model_name,
-    )
+    ) + identity_suffix(record)
 
 
 def _expected_eval_resume_keys(cases: List[Dict[str, Any]], model_runtimes: List[Dict[str, Any]]) -> set[ResumeKey]:
     return {
-        _eval_case_model_resume_key(case, str(model_runtime.get('name', '') or ''))
+        _eval_case_model_resume_key(case, model_runtime)
         for case in cases
         for model_runtime in model_runtimes
     }
@@ -1412,7 +1560,10 @@ def load_existing_eval_results(
     if not path.exists():
         return {}
 
-    expected_keys = _expected_eval_resume_keys(cases, model_runtimes)
+    expected_models = {
+        _eval_case_model_resume_key(case, model_runtime): model_runtime
+        for case in cases for model_runtime in model_runtimes
+    }
     existing: Dict[ResumeKey, Dict[str, Any]] = {}
     with path.open('r', encoding='utf-8') as f:
         for line_no, line in enumerate(f, start=1):
@@ -1426,8 +1577,8 @@ def load_existing_eval_results(
                 continue
             if not isinstance(record, dict) or record.get('status') != 'ok':
                 continue
-            key = _eval_result_resume_key(record)
-            if key is None or key not in expected_keys:
+            key = matching_resume_key(record, _eval_result_resume_key(record), expected_models)
+            if key is None:
                 continue
             existing[key] = record
     return existing
@@ -1442,7 +1593,11 @@ def compact_eval_results_file(
     if not path.exists():
         return 0
 
-    expected_keys = _expected_eval_resume_keys(cases, model_runtimes)
+    expected_models = {
+        _eval_case_model_resume_key(case, model_runtime): model_runtime
+        for case in cases for model_runtime in model_runtimes
+    }
+    expected_keys = set(expected_models)
     entries: List[Dict[str, Any]] = []
     selected_by_key: Dict[ResumeKey, int] = {}
 
@@ -1457,7 +1612,8 @@ def compact_eval_results_file(
                 entries.append({'kind': 'raw', 'line': line.rstrip('\n'), 'key': None})
                 continue
 
-            key = _eval_result_resume_key(record) if isinstance(record, dict) else None
+            key = (matching_resume_key(record, _eval_result_resume_key(record), expected_models)
+                   if isinstance(record, dict) else None)
             entry_index = len(entries)
             entries.append({'kind': 'record', 'record': record, 'key': key})
             if key is None or key not in expected_keys:
@@ -1572,7 +1728,7 @@ def maybe_save_eval_trajectory(
     eval_cfg: Dict[str, Any],
     writer: TrajectoryJsonlWriter | None,
 ) -> Dict[str, Any] | None:
-    if writer is None:
+    if writer is None or isinstance(result.get('partial_rollout'), dict):
         return None
     save_cfg = _trajectory_cfg(eval_cfg, 'trajectory_save')
     if not _trajectory_result_matches_condition(result, save_cfg):
@@ -1591,6 +1747,7 @@ def maybe_save_eval_trajectory(
         history_snapshot=history_snapshot,
         prefix_attempts=prefix_attempts,
         include_images=include_images,
+        include_agent_trace=_coerce_bool(save_cfg.get('include_agent_trace', True), default=True),
     )
     writer.write(record)
     result['trajectory'] = {
@@ -1664,6 +1821,8 @@ def apply_trajectory_load_to_cases(cases: List[Dict[str, Any]], eval_cfg: Dict[s
         prefix_attempts = ref_cfg.get('prefix_attempts', None)
         if prefix_attempts is not None:
             prefix_attempts = max(0, int(prefix_attempts))
+        if isinstance(record.get('partial_rollout'), dict):
+            raise ValueError('Partial rollout evidence cannot be loaded as a finalized trajectory prefix')
         history_snapshot = history_snapshot_from_record(record, prefix_attempts=prefix_attempts)
         target_attempt_index = ref_cfg.get('start_attempt_index', None)
         if target_attempt_index is None:
@@ -1821,7 +1980,7 @@ def main(args):
             )
             hook_manager.emit('case_start', case, source='run_api_agent')
             for model_runtime in model_runtimes:
-                resume_key = _eval_case_model_resume_key(case, str(model_runtime.get('name', '') or ''))
+                resume_key = _eval_case_model_resume_key(case, model_runtime)
                 if skip_existing_results and resume_key in existing_results_by_key:
                     print(
                         f"[model {model_runtime['name']}] skip existing ok result "

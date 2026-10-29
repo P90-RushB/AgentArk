@@ -1,3 +1,5 @@
+# New evaluations explicitly select SimpleAgent. Missing agent_type retains legacy selection.
+# Change the active model provider fields as needed; commented API/Codex entries are legacy baselines.
 env_cfg:
   env_path: "${AGENTARK_ENV_PATH}"
   mod_path: "${AGENTARK_MOD_PATH}"
@@ -42,10 +44,10 @@ env_cfg:
 
 # Parallel API eval runs one task only, but can fan out many model/seed jobs.
 eval:
-  output_path: tmp/marble_stop_parallel_seed1_5.jsonl
+  output_path: tmp/marble_stop_simple_parallel_seed1_5.jsonl
   stop_on_error: false
   # When rerunning after an interruption, keep the existing output file and
-  # skip jobs whose task/seed/env/model result is already present with status=ok.
+  # skip only compatible task/seed/env/model/harness results with status=ok.
   skip_existing_results: true
   # Maximum number of independent ArkEnv instances running at the same time.
   max_parallel_envs: 8
@@ -78,7 +80,25 @@ hooks:
 models:
   # Add more entries to compare multiple models. The Cartesian product of
   # selected seeds/cases and models becomes the parallel job list.
-  - name: openrouter-model
+  - name: openrouter-model-simple
+    # agent_type options (harness); provider selects the model backend:
+    # simple: SimpleAgent, recommended; context compaction and optional host tools
+    #         over HTTP or the Codex SDK.
+    # api: APIAgent, the legacy stateless HTTP harness.
+    # codex: CodexAgent, the SDK harness (use provider: codex).
+    # Omitted: provider: codex selects CodexAgent; HTTP providers select APIAgent.
+    # Keep the simple_agent settings below only when agent_type is simple.
+    agent_type: simple
+    simple_agent:
+      tool_choice: required
+      output_token_parameter: max_tokens
+      context:
+        # Local estimate, including output reserve; tune to the selected model.
+        max_context_tokens: 262144
+        output_reserve_tokens: 30000
+      tools:
+        enabled: true
+        workspace_parent: tmp/simple_agent_workspaces
     provider: openrouter
     model: replace-with-openrouter-model-id
     base_url: https://openrouter.ai/api/v1
@@ -89,6 +109,7 @@ models:
     max_retries: 0
 
   # - name: local-openai-compatible
+  #   agent_type: api
   #   provider: openai
   #   model: replace-with-local-model-id
   #   base_url: http://127.0.0.1:8081/v1
@@ -105,6 +126,7 @@ models:
   # Codex adds its own runtime/system/tool context around AgentArk messages;
   # keeping one thread lets later turns reuse/cache that setup and receive only deltas.
   # - name: codex-gpt55-per-agent-delta
+  #   agent_type: codex
   #   provider: codex
   #   model: gpt-5.5
   #   sandbox: read_only
@@ -121,6 +143,7 @@ models:
   # Fresh-thread compatibility mode. Pair with messages.return_mode: full above.
   # This restarts the Codex-side context every turn, so it is usually more expensive.
   # - name: codex-gpt55-per-turn-full
+  #   agent_type: codex
   #   provider: codex
   #   model: gpt-5.5
   #   sandbox: read_only

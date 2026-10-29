@@ -13,10 +13,15 @@ from typing import Any, Callable, Dict, List, Tuple
 from agent_ark.ark_env import ArkEnv, ensure_runtime_pool_range, resolve_runtime_sandbox_cfg
 from agent_ark.interaction import HookManager
 from agent_ark.agent.agent_registry import configure_agent_environment
+from agent_ark.agent.api_agent import APIAgent
 from agent_ark.ark_eval.run_api_agent import (
     JsonlWriter,
     _coerce_bool,
     _hook_keep_open_on_end,
+    _normalize_codex_context_mode,
+    _normalize_codex_disabled_mcp_servers,
+    _normalize_codex_reasoning_effort,
+    _normalize_codex_thread_mode,
     _to_jsonable,
     apply_trajectory_load_to_cases,
     build_error_result,
@@ -31,11 +36,14 @@ from agent_ark.ark_eval.run_api_agent import (
     validate_player_feedback_eval_contract,
 )
 from .trajectory_io import TrajectoryJsonlWriter
+from .evaluation_identity import (
+    build_evaluation_identity, identity_suffix, matching_resume_key, resolved_agent_name,
+)
 
 
 JobRunner = Callable[[Dict[str, Any], int, int], Dict[str, Any]]
 ResultHandler = Callable[[Dict[str, Any]], None]
-ResumeKey = Tuple[str, str, str, str]
+ResumeKey = Tuple[str, ...]
 
 
 def _coerce_positive_int(value: Any, *, context: str) -> int:
@@ -64,17 +72,65 @@ def resolve_max_parallel_envs(eval_cfg: Dict[str, Any], *, job_count: int) -> in
 
 
 def _model_stub(model_cfg: Dict[str, Any], model_index: int) -> Dict[str, Any]:
-    return {
+    """Project the effective serial runtime metadata without creating an agent.
+
+    Known historical fields must be compared against the values the serial
+    evaluator actually uses, rather than raw YAML or unrelated HTTP defaults.
+    Invalid settings stay representable for the worker's error-result path;
+    agent construction remains responsible for rejecting them.
+    """
+    def normalized(function, value):
+        try:
+            return function(value)
+        except (TypeError, ValueError):
+            return value
+
+    agent_type = resolved_agent_name(model_cfg)
+    provider = str(model_cfg.get('provider', 'auto')).strip().lower() or 'auto'
+    if agent_type == 'codex':
+        provider = 'codex'
+    codex = provider == 'codex'
+    model_id = str(model_cfg.get('model', '')).strip()
+    if not model_id and codex:
+        model_id = 'gpt-6.1-sol'
+    thinking_type = (None if codex else
+                     normalized(APIAgent._normalize_thinking_type, model_cfg.get('thinking')))
+    reasoning_effort = (
+        normalized(_normalize_codex_reasoning_effort,
+                   model_cfg.get('reasoning_effort', model_cfg.get('effort', 'medium')))
+        if codex else normalized(APIAgent._normalize_reasoning_effort, model_cfg.get('reasoning_effort'))
+    )
+    raw_temperature = model_cfg.get('temperature', 0.2)
+    out = {
         'name': str(model_cfg.get('name', f'model-{model_index:02d}')).strip() or f'model-{model_index:02d}',
-        'model': str(model_cfg.get('model', '')).strip(),
-        'provider': str(model_cfg.get('provider', 'auto')).strip().lower() or 'auto',
-        'base_url': model_cfg.get('base_url', None),
-        'api_key_env': str(model_cfg.get('api_key_env', '')).strip() or None,
-        'thinking': _to_jsonable(model_cfg.get('thinking', None)),
-        'reasoning_effort': model_cfg.get('reasoning_effort', None),
-        'max_completion_tokens': model_cfg.get('max_completion_tokens', 30000),
-        **({'agent_type': model_cfg['agent_type']} if 'agent_type' in model_cfg else {}),
+        'model': model_id,
+        'provider': provider,
+        'base_url': None if codex else model_cfg.get('base_url', None),
+        'api_key_env': None if codex else str(model_cfg.get('api_key_env', '')).strip() or None,
+        'temperature': None if codex or raw_temperature is None else normalized(float, raw_temperature),
+        'thinking': {'type': thinking_type} if thinking_type is not None else None,
+        'reasoning_effort': reasoning_effort,
+        # CodexAgent has no output cap; the SimpleAgent Codex transport retains
+        # its own configured budget, exactly as build_model_runtimes does.
+        'max_completion_tokens': (
+            None if codex and agent_type != 'simple' else
+            normalized(APIAgent._normalize_max_completion_tokens, model_cfg.get('max_completion_tokens', 30000))
+        ),
+        'agent_type': agent_type,
+        'evaluation_identity': build_evaluation_identity(model_cfg),
     }
+    if codex:
+        if agent_type == 'simple':
+            out.update(thread_mode='per_model_request', codex_context_mode='isolated')
+        else:
+            context_mode = normalized(_normalize_codex_context_mode, model_cfg.get('codex_context_mode'))
+            disabled = normalized(_normalize_codex_disabled_mcp_servers, model_cfg.get('codex_disabled_mcp_servers'))
+            out.update({
+                'thread_mode': normalized(_normalize_codex_thread_mode, model_cfg.get('thread_mode')),
+                'codex_context_mode': context_mode,
+                'codex_disabled_mcp_servers': disabled if context_mode == 'lean' else [],
+            })
+    return out
 
 
 def build_parallel_eval_jobs(cases: List[Dict[str, Any]], model_cfgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -97,6 +153,8 @@ def build_parallel_eval_jobs(cases: List[Dict[str, Any]], model_cfgs: List[Dict[
                 'case': deepcopy(case),
                 'model_cfg': deepcopy(model_cfg),
                 'model_name': model_stub['name'],
+                'agent_type': model_stub['agent_type'],
+                'evaluation_identity': model_stub['evaluation_identity'],
             })
     return jobs
 
@@ -117,7 +175,7 @@ def _parallel_job_resume_key(job: Dict[str, Any]) -> ResumeKey:
         _stable_resume_value(case.get('group_seed', '')),
         _stable_resume_value(case.get('env_id', '')),
         str(job.get('model_name', '') or ''),
-    )
+    ) + identity_suffix(job)
 
 
 def _parallel_result_resume_key(record: Dict[str, Any]) -> ResumeKey | None:
@@ -132,7 +190,7 @@ def _parallel_result_resume_key(record: Dict[str, Any]) -> ResumeKey | None:
         _stable_resume_value(group_seed),
         _stable_resume_value(env_id),
         model_name,
-    )
+    ) + identity_suffix(record)
 
 
 def load_existing_parallel_results(
@@ -143,7 +201,10 @@ def load_existing_parallel_results(
     if not path.exists():
         return {}
 
-    expected_keys = {_parallel_job_resume_key(job) for job in jobs}
+    expected_models = {
+        _parallel_job_resume_key(job): _model_stub(job.get('model_cfg', {}), int(job.get('model_index', 0)))
+        for job in jobs
+    }
     existing: Dict[ResumeKey, Dict[str, Any]] = {}
     with path.open('r', encoding='utf-8') as f:
         for line_no, line in enumerate(f, start=1):
@@ -159,8 +220,8 @@ def load_existing_parallel_results(
                 continue
             if record.get('status') != 'ok':
                 continue
-            key = _parallel_result_resume_key(record)
-            if key is None or key not in expected_keys:
+            key = matching_resume_key(record, _parallel_result_resume_key(record), expected_models)
+            if key is None:
                 continue
             existing[key] = record
     return existing
@@ -191,7 +252,11 @@ def compact_parallel_results_file(output_path: str, jobs: List[Dict[str, Any]]) 
     if not path.exists():
         return 0
 
-    expected_keys = {_parallel_job_resume_key(job) for job in jobs}
+    expected_models = {
+        _parallel_job_resume_key(job): _model_stub(job.get('model_cfg', {}), int(job.get('model_index', 0)))
+        for job in jobs
+    }
+    expected_keys = set(expected_models)
     entries: List[Dict[str, Any]] = []
     selected_by_key: Dict[ResumeKey, int] = {}
 
@@ -206,7 +271,8 @@ def compact_parallel_results_file(output_path: str, jobs: List[Dict[str, Any]]) 
                 entries.append({'kind': 'raw', 'line': line.rstrip('\n'), 'key': None})
                 continue
 
-            key = _parallel_result_resume_key(record) if isinstance(record, dict) else None
+            key = (matching_resume_key(record, _parallel_result_resume_key(record), expected_models)
+                   if isinstance(record, dict) else None)
             entry_index = len(entries)
             entries.append({'kind': 'record', 'record': record, 'key': key})
             if key is None or key not in expected_keys:
@@ -251,7 +317,10 @@ def _attach_job_metadata(
     slot_index: int,
 ) -> Dict[str, Any]:
     out = dict(result or {})
+    model_stub = _model_stub(job.get('model_cfg', {}) or {}, int(job.get('model_index', 0) or 0))
     out.update({
+        'agent_type': model_stub['agent_type'],
+        'evaluation_identity': model_stub['evaluation_identity'],
         'job_id': job['job_id'],
         'job_index': int(job['job_index']),
         'case_index': int(job['case_index']),

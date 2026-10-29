@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent_ark.agent.base_agent import BaseAgent
 from agent_ark.ark_env import ArkEnv, ensure_runtime_pool_range, resolve_runtime_sandbox_cfg
+from .model_trace import validated_image_assets
 
 from .run_api_agent import (
     JsonlWriter,
@@ -19,6 +20,7 @@ from .run_api_agent import (
     print_summary,
     write_eval_result,
     _hook_keep_open_on_end,
+    _trajectory_io,
 )
 
 
@@ -130,6 +132,13 @@ def _saved_agent_payload(step: Dict[str, Any], key: str, agent_id: Any) -> Dict[
 
 
 def extract_replay_action(step: Dict[str, Any], agent_id: Any = 0) -> Optional[str]:
+    if isinstance(step, dict) and step.get('partial_step_version') == 1:
+        # Submitted actions are authoritative, including an explicit no-op
+        # (None or empty text). Assistant prose is never a replacement action.
+        payload = _saved_agent_payload(step, 'actions', agent_id)
+        if 'action' not in payload or (payload['action'] is not None and not isinstance(payload['action'], str)):
+            raise ValueError('Partial rollout is missing an exact submitted action')
+        return payload['action']
     response_payload = _saved_agent_payload(step, 'raw_response_by_agent', agent_id)
     for key in ('action_extracted', 'action', 'assistant_raw'):
         value = response_payload.get(key)
@@ -137,6 +146,33 @@ def extract_replay_action(step: Dict[str, Any], agent_id: Any = 0) -> Optional[s
             return value
     preview = step.get('action_preview') if isinstance(step, dict) else None
     return preview if isinstance(preview, str) and preview else None
+
+
+def _partial_replay_requested(record: Dict[str, Any], replay_cfg: Dict[str, Any]) -> bool:
+    partial = record.get('partial_rollout')
+    if not isinstance(partial, dict):
+        if record.get('status') == 'error' and not record.get('steps'):
+            raise ValueError('Error record has no supported partial rollout evidence to replay')
+        return False
+    if (partial.get('version') != 1 or partial.get('complete') is not False
+            or record.get('rollout_complete') is not False or record.get('status') != 'error'):
+        raise ValueError('Unsupported or inconsistent partial rollout evidence')
+    if not _coerce_bool(replay_cfg.get('allow_partial', False), default=False):
+        raise ValueError('Partial rollout replay requires replay.allow_partial=true and explicit error-record selection')
+    steps = record.get('steps')
+    if not isinstance(steps, list) or record.get('turns') != len(steps):
+        raise ValueError('Partial rollout steps/turns are inconsistent')
+    for index, step in enumerate(steps):
+        if (not isinstance(step, dict) or step.get('turn_index') != index
+                or step.get('partial_step_version') != 1 or not isinstance(step.get('actions'), dict)):
+            raise ValueError('Partial rollout is missing complete ordered action evidence')
+        if len(step['actions']) != 1:
+            raise ValueError('Partial replay supports exactly one submitted agent action per completed step')
+        for payload in step['actions'].values():
+            if (not isinstance(payload, dict) or 'action' not in payload
+                    or (payload['action'] is not None and not isinstance(payload['action'], str))):
+                raise ValueError('Partial rollout is missing an exact submitted action')
+    return True
 
 
 def replay_case_from_record(record: Dict[str, Any], replay_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -148,6 +184,7 @@ def replay_case_from_record(record: Dict[str, Any], replay_cfg: Optional[Dict[st
     if group_seed in (None, ''):
         raise ValueError('Replay record is missing requested_group_seed/actual_group_seed')
 
+    partial = _partial_replay_requested(record, cfg)
     case = {
         'case_id': str(record.get('case_id') or f"replay-{int(record.get('_replay_record_index', 0)):04d}"),
         'task_name': str(task_name),
@@ -160,6 +197,13 @@ def replay_case_from_record(record: Dict[str, Any], replay_cfg: Optional[Dict[st
     use_record_max_attempts = _coerce_bool(cfg.get('use_record_max_attempts', True), default=True)
     if use_record_max_attempts and record.get('max_attempts') is not None:
         case['max_attempts'] = int(record.get('max_attempts'))
+
+    if partial:
+        if record.get('start_attempt_index') is not None:
+            case['start_attempt_index'] = int(record['start_attempt_index'])
+        reset_history = record['partial_rollout'].get('reset_history_snapshot')
+        if isinstance(reset_history, dict):
+            case['history_snapshot'] = _trajectory_io.decode_history_snapshot(reset_history)
 
     return case
 
@@ -175,6 +219,7 @@ class ReplayAgent(BaseAgent):
         super().__init__(name or str(record.get('model_name') or 'replay-agent'))
         self.record = deepcopy(record)
         self.steps = list(record.get('steps', []) or [])
+        self.model_trace_images = validated_image_assets(self.record.get('model_trace_images'))
         self.step_delay_s = max(0.0, float(step_delay_s or 0.0))
         self.turn_index = 0
 
@@ -209,7 +254,7 @@ class ReplayAgent(BaseAgent):
 
             response_payload = _saved_agent_payload(step, 'raw_response_by_agent', agent_idx)
             action_text = extract_replay_action(step, agent_idx)
-            if action_text is None:
+            if action_text is None and step.get('partial_step_version') != 1:
                 raise RuntimeError(
                     f"Replay record has no saved action for turn_index={self.turn_index} agent_id={agent_idx}"
                 )
@@ -218,7 +263,12 @@ class ReplayAgent(BaseAgent):
                 assistant_raw = action_text
 
             responses[int(agent_idx)] = {'action': action_text, 'assistant': assistant_raw}
+            # The saved model-call audit is presentation data. Preserve it
+            # without invoking any model, host tool or submission translator.
             trace_by_agent[int(agent_idx)] = {
+                **{key: deepcopy(response_payload[key]) for key in (
+                    'model_requests', 'agent_events', 'agent_usage', 'context_summary',
+                    'simple_agent', 'usage', 'error_type') if key in response_payload},
                 'assistant_raw': assistant_raw,
                 'action_extracted': action_text,
                 'replay': True,
@@ -297,6 +347,31 @@ def compare_replay_result(source_record: Dict[str, Any], replay_result: Dict[str
     }
 
 
+def compare_partial_replay_result(source_record: Dict[str, Any], replay_result: Dict[str, Any]) -> Dict[str, Any]:
+    saved, actual = source_record['steps'], replay_result['steps']
+    checks = {'turns_match': len(saved) == len(actual),
+              'total_reward_match': abs(float(source_record['total_reward']) - float(replay_result['total_reward'])) <= 1e-6}
+    stepwise = len(saved) == len(actual)
+    for left, right in zip(saved, actual):
+        # Compare submitted payloads captured from the actual replay env.step;
+        # never compare two projections through the same action extractor.
+        expected_actions = {aid: payload['action'] for aid, payload in left['actions'].items()}
+        actual_actions = {aid: payload['action'] for aid, payload in right.get('actions', {}).items()}
+        stepwise = stepwise and expected_actions == actual_actions
+        for key in ('reward_total', 'reward_by_agent', 'done'):
+            stepwise = stepwise and left.get(key) == right.get(key)
+        for key in ('attempt', 'rollout', 'truncated'):
+            stepwise = stepwise and left.get('info', {}).get(key) == right.get('info', {}).get(key)
+    checks['completed_steps_match'] = stepwise
+    return {'partial': True, 'scope': 'completed_steps_only',
+            'source_path': source_record.get('_replay_source_path'),
+            'source_line': source_record.get('_replay_source_line'),
+            'record_index': source_record.get('_replay_record_index'),
+            'source_model_name': source_record.get('model_name'),
+            'source_case_id': source_record.get('case_id'),
+            'source_turns': len(saved), 'checks': checks, 'match': all(checks.values())}
+
+
 def replay_record(
     *,
     env: Any,
@@ -305,6 +380,7 @@ def replay_record(
     hook_manager: Any = None,
     hooks_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    partial = _partial_replay_requested(record, replay_cfg)
     case = replay_case_from_record(record, replay_cfg)
     model_runtime = build_replay_model_runtime(record, replay_cfg)
     result = evaluate_case(
@@ -313,10 +389,17 @@ def replay_record(
         case=case,
         hook_manager=hook_manager,
         hooks_cfg=hooks_cfg,
+        **({'_completed_steps_limit': len(record['steps'])} if partial else {}),
     )
+    if partial:
+        result['partial_rollout'] = deepcopy(record['partial_rollout'])
+        result['agent_failure_trace'] = deepcopy(record.get('agent_failure_trace', {}))
+        # Failed-turn calls are audit data only. No action beyond the confirmed
+        # completed prefix is executed and no host tool/model is invoked.
+        result['model_trace_images'] = deepcopy(model_runtime['agent'].model_trace_images)
     result['provider'] = 'replay'
     result['source_model_name'] = record.get('model_name')
-    result['replay'] = compare_replay_result(record, result)
+    result['replay'] = (compare_partial_replay_result(record, result) if partial else compare_replay_result(record, result))
     if _coerce_bool(replay_cfg.get('require_match', False), default=False) and not result['replay']['match']:
         raise RuntimeError(f"Replay result mismatch for case_id={case['case_id']}: {result['replay']['checks']}")
     return result

@@ -21,6 +21,7 @@ except Exception:  # pragma: no cover
     Image = None
 
 from agent_ark.utils.image_utils import env_arr_to_pil_image, pil_image_to_base64
+from .model_trace import referenced_image_assets
 
 
 TRAJECTORY_FORMAT_VERSION = 1
@@ -173,6 +174,31 @@ def _stable_record_hash(parts: Iterable[Any]) -> str:
     return hashlib.sha1(material.encode('utf-8')).hexdigest()[:12]
 
 
+def _prefix_agent_trace_steps(steps: list, attempt_count: int) -> list:
+    selected = []
+    for source in steps:
+        info = source.get('info') if isinstance(source, dict) else None
+        attempt = info.get('attempt') if isinstance(info, dict) else None
+        index = attempt.get('index') if isinstance(attempt, dict) else None
+        if type(index) is not int or not 1 <= index <= attempt_count:
+            continue
+        step = deepcopy(source)
+        if index == attempt_count and attempt.get('auto_reset'):
+            # ArkEnv reports the completed attempt's index, but step_messages
+            # and reset/rollout metadata already describe the next attempt.
+            # Keep only pre-action audit and the completed action's outcome;
+            # its terminal observation remains in history_snapshot.
+            fields = ('turn_index', 'action_preview', 'assistant_preview',
+                      'reward_total', 'reward_by_agent', 'done', 'request_messages',
+                      'raw_request_by_agent', 'raw_response_by_agent')
+            step = {key: step[key] for key in fields if key in step}
+            step['info'] = {'attempt': {key: deepcopy(attempt[key]) for key in (
+                'index', 'group_seed', 'attempt_group_seed', 'max_attempts',
+                'max_steps_per_attempt', 'done', 'success') if key in attempt}}
+        selected.append(step)
+    return selected
+
+
 def build_eval_trajectory_record(
     *,
     result: Dict[str, Any],
@@ -181,6 +207,7 @@ def build_eval_trajectory_record(
     history_snapshot: Dict[int, list],
     prefix_attempts: Optional[int],
     include_images: bool = True,
+    include_agent_trace: bool = True,
 ) -> Dict[str, Any]:
     prefix_snapshot = slice_history_snapshot(history_snapshot, prefix_attempts)
     prefix_attempt_count = count_history_prefix_attempts(prefix_snapshot)
@@ -210,6 +237,8 @@ def build_eval_trajectory_record(
             'provider': result.get('provider', model_runtime.get('provider')),
             **({'agent_type': result.get('agent_type', model_runtime.get('agent_type'))}
                if result.get('agent_type', model_runtime.get('agent_type')) is not None else {}),
+            **({'evaluation_identity': deepcopy(result['evaluation_identity'])}
+               if isinstance(result.get('evaluation_identity'), dict) else {}),
         },
         'task': {
             'task_name': result.get('actual_task_name', result.get('requested_task_name', case.get('task_name'))),
@@ -240,6 +269,18 @@ def build_eval_trajectory_record(
         },
         'history_snapshot': encode_history_snapshot(prefix_snapshot, include_images=include_images),
     }
+    # Audit only: never merge this into history_snapshot or a resumed prompt.
+    # Old v1 readers ignore the optional field. Prefix exports must not carry
+    # decisions from later attempts, even as out-of-band audit information.
+    if include_agent_trace and isinstance(result.get('steps'), list):
+        steps = (_prefix_agent_trace_steps(result['steps'], prefix_attempt_count)
+                 if prefix_attempts is not None else deepcopy(result['steps']))
+        record['agent_trace'] = {
+            'version': 1,
+            'steps': steps,
+            'model_trace_images': (referenced_image_assets(steps, result.get('model_trace_images', {}) or {})
+                                   if include_images else {}),
+        }
     return record
 
 

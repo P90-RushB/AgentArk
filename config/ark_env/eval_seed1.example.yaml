@@ -1,3 +1,5 @@
+# New evaluations explicitly select SimpleAgent. Missing agent_type retains legacy selection.
+# Change the active model provider fields as needed; commented API/Codex entries are legacy baselines.
 env_cfg:
   env_path: "${AGENTARK_ENV_PATH}"
   mod_path: "${AGENTARK_MOD_PATH}"
@@ -46,7 +48,7 @@ env_cfg:
     #       # Same-seed ArkEnv auto-reset initial images are omitted automatically with a text note.
 
 eval:
-  output_path: tmp/marble_stop_seed1.jsonl
+  output_path: tmp/marble_stop_simple_seed1.jsonl
   stop_on_error: true
 
   # Keep env_id fixed when exact replay depends on runtime-side env_id.
@@ -78,7 +80,25 @@ hooks:
 models:
   # Volcengine Ark online inference. The versioned model ID and /api/v3 base URL
   # are for pay-as-you-go online inference, not the separate Coding Plan API.
-  - name: doubao-seed-2-1-pro-260628
+  - name: doubao-seed-2-1-pro-260628-simple
+    # agent_type options (harness); provider selects the model backend:
+    # simple: SimpleAgent, recommended; context compaction and optional host tools
+    #         over HTTP or the Codex SDK.
+    # api: APIAgent, the legacy stateless HTTP harness.
+    # codex: CodexAgent, the SDK harness (use provider: codex).
+    # Omitted: provider: codex selects CodexAgent; HTTP providers select APIAgent.
+    # Keep the simple_agent settings below only when agent_type is simple.
+    agent_type: simple
+    simple_agent:
+      tool_choice: required
+      output_token_parameter: max_completion_tokens
+      context:
+        # Local estimate, including output reserve; tune to the selected model.
+        max_context_tokens: 262144
+        output_reserve_tokens: 30000
+      tools:
+        enabled: true
+        workspace_parent: tmp/simple_agent_workspaces
     provider: volcengine
     model: doubao-seed-2-1-pro-260628
     base_url: https://ark.cn-beijing.volces.com/api/v3
@@ -91,6 +111,7 @@ models:
     temperature: 1.0
 
   # - name: openrouter-qwen38-max
+  #   agent_type: api
   #   provider: openrouter
   #   model: qwen/qwen3.8-max
   #   base_url: https://openrouter.ai/api/v1
@@ -100,6 +121,7 @@ models:
   #   temperature: 1.0
 
   # - name: openrouter-gpt-5.5
+  #   agent_type: api
   #   provider: openrouter
   #   model: openai/gpt-5.5
   #   base_url: https://openrouter.ai/api/v1
@@ -107,6 +129,7 @@ models:
   #   temperature: 0.0
 
   # - name: openrouter-gemini3.5-flash
+  #   agent_type: api
   #   provider: openrouter
   #   model: google/gemini-3.5-flash
   #   base_url: https://openrouter.ai/api/v1
@@ -114,6 +137,7 @@ models:
   #   temperature: 0.0
 
   # - name: claude-opus-4.8
+  #   agent_type: api
   #   provider: openrouter
   #   model: anthropic/claude-opus-4.8
   #   base_url: https://openrouter.ai/api/v1
@@ -121,6 +145,7 @@ models:
   #   temperature: 0.0
 
   # - name: grok-4.20
+  #   agent_type: api
   #   provider: openrouter
   #   model: x-ai/grok-4.20
   #   base_url: https://openrouter.ai/api/v1
@@ -130,6 +155,7 @@ models:
   # Generic OpenAI-compatible endpoint. Use provider: openai to avoid
   # OpenRouter/DashScope-specific extra_body fields.
   # - name: local-openai-compatible
+  #   agent_type: api
   #   provider: openai
   #   model: replace-with-local-model-id
   #   base_url: http://127.0.0.1:8081/v1
@@ -145,6 +171,7 @@ models:
   # Codex adds its own runtime/system/tool context around AgentArk messages;
   # keeping one thread lets later turns reuse/cache that setup and receive only deltas.
   # - name: codex-gpt55-per-agent-delta
+  #   agent_type: codex
   #   provider: codex
   #   model: gpt-5.5
   #   sandbox: read_only
@@ -162,6 +189,7 @@ models:
   # Fresh-thread compatibility mode. Pair with messages.return_mode: full above.
   # This restarts the Codex-side context every turn, so it is usually more expensive.
   # - name: codex-gpt55-per-turn-full
+  #   agent_type: codex
   #   provider: codex
   #   model: gpt-5.5
   #   sandbox: read_only
@@ -171,6 +199,7 @@ models:
   #   codex_context_mode: default
 
   # - name: dashscope-qwen3-vl-plus
+  #   agent_type: api
   #   provider: dashscope
   #   model: qwen3-vl-plus
   #   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
