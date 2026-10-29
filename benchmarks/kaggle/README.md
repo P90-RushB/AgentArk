@@ -4,10 +4,17 @@ New benchmarks use `agentark_simple_task_template.py` or
 `new-benchmark-task-f8fdd.ipynb`. Both explicitly select **SimpleAgent** with native
 host tools and context compaction. They pin wrapper commit
 `71a9cc305e3e87c0c5ed416086586e24db35210b`, HF revision
-`0e360716cff54bb759e8d228ded1df967727ccbe`, and the env-1.0.4 Linux starter hash.
+`fe2f916c538ef402f44ae64c51cecb4595e9bd15` (`env-1.0.5`), and the env-1.0.5 Linux starter hash.
 The selected task package is fetched from that immutable registry and its hash
 and minimum wrapper commit are checked. A newer task may need a newer compatible
 HF/runtime pin; edit those constants before creating its benchmark.
+
+The 1.0.5 starter is named `AgentArk-env-1.0.5-linux.zip` and contains an
+`AgentArk-env-1.0.5-linux/` top-level directory. Its SHA-256 is
+`3a894106d2d3982290341e9bfa5d359b4c49dbf1515cb3e7fe9599e4d308f42c`.
+The notebook handles that layout. This release hides the legacy environment
+task-selection menu while preserving task-owned UI and configuration-driven
+task loading; changing the new template does not update existing hosted tasks.
 
 These are new evaluation conditions. Existing hosted task definitions and the
 historical `agentark_marble_stop_seeds_1_10.py` remain unchanged. An old task's

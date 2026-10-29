@@ -28,11 +28,11 @@ import kaggle_benchmarks as kbench
 
 AGENTARK_REPO_URL = "https://github.com/P90-RushB/AgentArk.git"
 AGENTARK_COMMIT = "71a9cc305e3e87c0c5ed416086586e24db35210b"
-ENV_VERSION = "1.0.4"
-HF_REVISION = "0e360716cff54bb759e8d228ded1df967727ccbe"
+ENV_VERSION = "1.0.5"
+HF_REVISION = "fe2f916c538ef402f44ae64c51cecb4595e9bd15"
 HF_BASE_URL = f"https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/{HF_REVISION}"
-ENV_ZIP_URL = f"{HF_BASE_URL}/artifacts/envs/{ENV_VERSION}/linux/AgentArk-env-{ENV_VERSION}-linux-starter.zip"
-ENV_ZIP_SHA256 = "4e73fa80560a2efa8bda05f303598392c95663f9179e65b3802da75a2bf51591"
+ENV_ZIP_URL = f"{HF_BASE_URL}/artifacts/envs/{ENV_VERSION}/linux/AgentArk-env-{ENV_VERSION}-linux.zip"
+ENV_ZIP_SHA256 = "3a894106d2d3982290341e9bfa5d359b4c49dbf1515cb3e7fe9599e4d308f42c"
 TASK_ARTIFACT = None
 
 
@@ -64,7 +64,7 @@ WORK_ROOT = Path(os.getenv("AGENTARK_KAGGLE_WORK_ROOT", "/tmp/agentark_kaggle_wo
 AGENTARK_ROOT = WORK_ROOT / "AgentArk"
 VENV_DIR = WORK_ROOT / "agentark_py310"
 VENV_PY = VENV_DIR / "bin" / "python"
-ENV_ZIP = WORK_ROOT / f"AgentArk-env-{ENV_VERSION}-linux-starter.zip"
+ENV_ZIP = WORK_ROOT / f"AgentArk-env-{ENV_VERSION}-linux.zip"
 ENV_ROOT = WORK_ROOT / f"AgentArk-env-{ENV_VERSION}-linux"
 MOD_PATH = ENV_ROOT / "AgentArk_Data" / "Resources" / "Mods"
 TASK_STORE_PATH = MOD_PATH / "all_tasks"
@@ -276,8 +276,8 @@ def _download_runtime() -> None:
     if (ENV_ROOT / "AgentArk.x86_64").exists():
         return
     _download_verified(ENV_ZIP_URL, ENV_ZIP, ENV_ZIP_SHA256)
-    # The 1.0.4 starter zip has no enclosing directory.
-    _extract_archive(ENV_ZIP, ENV_ROOT)
+    # The 1.0.5 starter ZIP contains the enclosing ENV_ROOT directory.
+    _extract_archive(ENV_ZIP, ENV_ROOT.parent)
     exe = ENV_ROOT / "AgentArk.x86_64"
     if not exe.is_file():
         raise FileNotFoundError(f"Expected Unity executable at {exe}")

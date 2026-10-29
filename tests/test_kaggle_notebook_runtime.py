@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import threading
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -116,6 +117,30 @@ def test_config_accepts_proxy_url_forms(notebook, suffix, expected):
     assert model["base_url"] == "https://proxy.example" + expected
     assert model["agent_type"] == "simple" and model["simple_agent"]["tools"]["enabled"]
     assert config["eval"]["group_seeds"] == {"start": 1, "end": 2}
+
+
+def test_env105_wrapped_archive_extracts_without_an_extra_directory(notebook, tmp_path):
+    archive = tmp_path / "published-layout-fixture.zip"
+    root = notebook["ENV_ROOT"]
+    with zipfile.ZipFile(archive, "w") as stream:
+        stream.writestr(root.name + "/AgentArk.x86_64", b"fixture executable")
+        stream.writestr(root.name + "/AgentArk_Data/Resources/Mods/config.yaml.bak", b"baseline")
+    downloads = []
+
+    def download(url, target, digest):
+        assert url.endswith("/artifacts/envs/1.0.5/linux/AgentArk-env-1.0.5-linux.zip")
+        assert digest == "3a894106d2d3982290341e9bfa5d359b4c49dbf1515cb3e7fe9599e4d308f42c"
+        downloads.append(url)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        notebook["shutil"].copyfile(archive, target)
+
+    notebook["_download_verified"] = download
+    notebook["_download_runtime"]()
+    assert (root / "AgentArk.x86_64").read_bytes() == b"fixture executable"
+    assert (root / "AgentArk_Data/Resources/Mods/config.yaml.bak").read_bytes() == b"baseline"
+    assert not (root / root.name).exists()
+    notebook["_download_runtime"]()
+    assert len(downloads) == 1
 
 
 def test_xvfb_executable_is_distinct_from_package(notebook, monkeypatch):

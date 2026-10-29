@@ -59,8 +59,9 @@ def test_generated_task_uses_generic_simple_template_and_immutable_pin(tmp_path)
     assert 'agentark_robotpainting.run(kbench.llm)' in source
     assert '"agentark-robotpainting"' in source
     assert 'agent_type: simple' in source
-    assert 'HF_REVISION = "0e360716cff54bb759e8d228ded1df967727ccbe"' in source
-    assert 'ENV_ZIP_SHA256' in source
+    assert 'ENV_VERSION = "1.0.5"' in source
+    assert 'HF_REVISION = "fe2f916c538ef402f44ae64c51cecb4595e9bd15"' in source
+    assert 'ENV_ZIP_SHA256 = "3a894106d2d3982290341e9bfa5d359b4c49dbf1515cb3e7fe9599e4d308f42c"' in source
 
     # Execute only the real config author, with no Kaggle import, downloads,
     # subprocesses, environment creation or model calls.
@@ -135,7 +136,7 @@ def test_kaggle_entry_points_preserve_their_score_metrics(tmp_path, monkeypatch,
     def assert_in(expected, actual, **kwargs):
         assert expected in actual
     namespace = {"Any": Any, "Dict": Dict, "List": List, "os": os, "time": __import__("time"),
-                 "AGENTARK_COMMIT": "a" * 40, "ENV_VERSION": "1.0.4", "HF_REVISION": "b" * 40,
+                 "AGENTARK_COMMIT": "a" * 40, "ENV_VERSION": "1.0.5", "HF_REVISION": "b" * 40,
                  "TASK_ARTIFACT": {}, "RESULT_PATH": tmp_path / "results.jsonl", "EXPORTED_AGENTARK_LOG_PATH": tmp_path / "agent.log",
                  "EXPORTED_SUMMARY_PATH": tmp_path / "summary.json", "DEFAULT_TASK_NAME": "Task", "DEFAULT_TASK_SCORE_SCALE_MIN": 0,
                  "DEFAULT_TASK_SCORE_SCALE_MAX": 100, "DEFAULT_SEED_START": 1, "DEFAULT_SEED_END": 2,
