@@ -20,6 +20,47 @@ For later wrapper revisions, generate with
 `--wrapper-commit <full-published-commit>`. Never replace a formal benchmark pin
 with `main` or an unpublished local commit.
 
+## Importing the Notebook to Create a New Task
+
+Import `new-benchmark-task-f8fdd.ipynb` into the Kaggle Benchmark task editor.
+Its first Markdown cell explains the setup. Before running its configuration
+cell, edit the defaults for the new task:
+
+| Setting | Snake smoke example | Purpose |
+| --- | --- | --- |
+| `DEFAULT_TASK_NAME` | `Snake` | Selects the AgentArk task package |
+| `DEFAULT_BENCHMARK_TASK_NAME_FALLBACK` | `agentark-snake-simple` | Gives the new evaluation conditions their own benchmark name |
+| `DEFAULT_SEED_START` / `DEFAULT_SEED_END` | `1` / `2` | Keeps the first real test short; restore the formal range afterward |
+| `DEFAULT_TASK_SCORE_SCALE_MIN` / `DEFAULT_TASK_SCORE_SCALE_MAX` | `0` / `6` | Normalizes Snake's final-attempt reward for the notebook leaderboard |
+
+The task and benchmark names serve different purposes. A new benchmark name
+avoids replacing the existing APIAgent task. Environment variables with the
+matching `AGENTARK_KAGGLE_` names can override these defaults.
+
+Creation checks intentionally return `evaluation_status: creation_smoke` without
+starting Unity or calling a model. They validate notebook creation, rather than
+the SimpleAgent integration. A formal Kaggle `RUN` or `TRIAL` executes the real
+evaluation. To test from an interactive notebook instead, set
+`os.environ["AGENTARK_KAGGLE_FULL_EVAL"] = "1"` before the final run cell; remove
+that temporary override before saving the formal task.
+
+For a real test, inspect the exported summary, results JSONL, and AgentArk log:
+
+- `evaluation_status` must be `complete`, with `error_count: 0` and an `ok` row
+  for every requested seed. A valid zero reward remains a valid model result.
+- `total_turns` and each seed's `turns` show that environment decisions ran.
+  The JSONL records `agent_type: simple` and the actual requests, including
+  native `submit_action` calls; host-tool calls and summaries appear when used.
+- A failed seed makes the run fail after exporting its diagnostics. Failed
+  requests are not silently returned as a zero leaderboard score. If a model
+  rejects temperature, earlier results are archived as
+  `*_before_temperature_retry.jsonl`, and all seeds rerun with the new setting.
+
+The notebook still returns `normalized_mean_score_reward`; the generated Python
+template still returns raw `mean_score_reward`. Neither score formula has changed.
+The selected Model Proxy model must support the declared native tools. Tool
+errors remain visible rather than silently changing to another harness.
+
 ## Historical MarbleStop Benchmark
 
 This directory contains Kaggle Benchmark task files for AgentArk. The first task,
@@ -156,13 +197,15 @@ The `kaggle b t run ... -m ...` command selects the remote model. The
 temperature retry behavior above runs inside the remote task, so all models use
 the same pushed task file and leaderboard definition.
 
-During `push`, Kaggle runs a creation check with its default model environment.
-The task maps Kaggle's current default `gemini-3-flash-preview` to
+For the historical MarbleStop Python task, the model selector maps
+`gemini-3-flash-preview` to
 `gemini-3.5-flash` for AgentArk evaluation. Override this with
 `AGENTARK_KAGGLE_CREATION_MODEL` if Kaggle's default changes or if a cheaper
 creation-check model is preferred. Formal `run -m ...` selections still take
 priority unless the chosen model is exactly Kaggle's push-default alias; use
 `AGENTARK_KAGGLE_MODEL` for an explicit override.
+The modern SimpleAgent notebook/template uses the selected model unchanged and
+does not implement that historical creation-model alias.
 
 Push and run, one checkpoint at a time:
 
@@ -179,19 +222,22 @@ Publish after the task and at least one model run are satisfactory:
 kaggle b t publish agentark-marble-stop
 ```
 
-Useful environment overrides while developing copies of the task:
+Useful environment overrides for the modern SimpleAgent notebook/template:
 
 - `AGENTARK_KAGGLE_TASK_NAME`, default `MarbleStop`
 - `AGENTARK_KAGGLE_SEED_START`, default `1`
 - `AGENTARK_KAGGLE_SEED_END`, default `10`
-- `AGENTARK_KAGGLE_EVAL_ATTEMPTS`, default `100`; reruns the full AgentArk eval loop while any requested seed lacks an ok result, then stops when all seeds are ok or the loop limit is reached
+- `AGENTARK_KAGGLE_TASK_SLUG`, optional artifact filename slug
+- `AGENTARK_KAGGLE_BENCHMARK_NAME`, optional benchmark name override
+- `AGENTARK_KAGGLE_TASK_SCORE_SCALE_MIN` / `AGENTARK_KAGGLE_TASK_SCORE_SCALE_MAX`, default `0.0` / `1.0`; set the task's score range for notebook normalization
+- `AGENTARK_KAGGLE_EVAL_ATTEMPTS`, default `3`; reruns the full AgentArk eval loop while any requested seed lacks an ok result, then stops when all seeds are ok or the loop limit is reached
 - `AGENTARK_KAGGLE_ENV_ID`, default `0`
 - `AGENTARK_KAGGLE_MODEL`, explicit model override for local or remote runs
-- `AGENTARK_KAGGLE_CREATION_MODEL`, default `gemini-3.5-flash`; used when
-  Kaggle's push creation check exposes `gemini-3-flash-preview`
+- `AGENTARK_KAGGLE_MAX_COMPLETION_TOKENS`, default `30000`
+- `AGENTARK_KAGGLE_REQUEST_TIMEOUT_S`, default `600`
 - `AGENTARK_KAGGLE_FULL_EVAL=1`, force a full AgentArk evaluation outside
   Kaggle `BENCHMARK_MODE=RUN`
-- `AGENTARK_KAGGLE_PYTHON_VERSION`, default `3.10.12`
-- `AGENTARK_KAGGLE_PYTHON_BIN`, optional explicit Python 3.10 executable
+- `AGENTARK_KAGGLE_PYTHON_VERSION`, default `3.10.12`; must satisfy the pinned wrapper's `>=3.10.1,<3.10.13` requirement
+- `AGENTARK_KAGGLE_PYTHON_BIN`, optional explicit compatible Python executable
 - `AGENTARK_KAGGLE_WORK_ROOT`, default `/tmp/agentark_kaggle_work`
 - `AGENTARK_KAGGLE_SKIP_APT=1`, for images that already contain Python 3.10, git, and Xvfb

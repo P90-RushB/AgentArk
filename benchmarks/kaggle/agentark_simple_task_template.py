@@ -42,16 +42,21 @@ def _task_slug(task_name: str) -> str:
     return normalized or "task"
 
 
+# Edit the task name when importing this notebook to create another benchmark.
 DEFAULT_TASK_NAME = os.getenv("AGENTARK_KAGGLE_TASK_NAME", "MarbleStop").strip() or "MarbleStop"
 DEFAULT_TASK_SLUG = os.getenv("AGENTARK_KAGGLE_TASK_SLUG", _task_slug(DEFAULT_TASK_NAME)).strip() or _task_slug(DEFAULT_TASK_NAME)
+# Set the task's actual score range: MarbleStop 0..1; Snake 0..6.
+# The notebook leaderboard normalizes with this range; the Python generator keeps raw scores.
 DEFAULT_TASK_SCORE_SCALE_MIN = float(os.getenv("AGENTARK_KAGGLE_TASK_SCORE_SCALE_MIN", "0.0"))
 DEFAULT_TASK_SCORE_SCALE_MAX = float(os.getenv("AGENTARK_KAGGLE_TASK_SCORE_SCALE_MAX", "1.0"))
+# For a quick real test, use seeds 1..2; restore the intended range before publishing.
 DEFAULT_SEED_START = 1
 DEFAULT_SEED_END = 10
 DEFAULT_EVAL_ATTEMPTS = 3
 DEFAULT_MAX_COMPLETION_TOKENS = 30000
 DEFAULT_ENV_ID = 0
 DEFAULT_PYTHON_VERSION = "3.10.12"
+# Use a new benchmark name for new evaluation conditions, preserving existing tasks.
 DEFAULT_BENCHMARK_TASK_NAME_FALLBACK = f"agentark-{DEFAULT_TASK_SLUG.replace('_', '-')}"
 DEFAULT_BENCHMARK_TASK_NAME = os.getenv("AGENTARK_KAGGLE_BENCHMARK_NAME", DEFAULT_BENCHMARK_TASK_NAME_FALLBACK).strip() or DEFAULT_BENCHMARK_TASK_NAME_FALLBACK
 
@@ -112,7 +117,8 @@ def _bool_env(name: str, default: bool = False) -> bool:
 def _ensure_os_packages() -> None:
     if _bool_env("AGENTARK_KAGGLE_SKIP_APT", default=False):
         return
-    missing = [name for name in ("git", "xvfb") if shutil.which(name) is None]
+    missing = [package for package, executable in (("git", "git"), ("xvfb", "Xvfb"))
+               if shutil.which(executable) is None]
     if not missing:
         return
     env = os.environ.copy()
@@ -121,16 +127,40 @@ def _ensure_os_packages() -> None:
     _run(["apt-get", "install", "-y", "-qq", *missing], env=env)
 
 
+def _python_version(command: Union[str, Path]) -> Tuple[int, ...]:
+    try:
+        text = subprocess.check_output(
+            [str(command), "-c", "import sys; print('.'.join(map(str, sys.version_info[:3])))"],
+            text=True,
+            stderr=subprocess.PIPE,
+        ).strip()
+        version = tuple(int(part) for part in text.split("."))
+        if len(version) != 3:
+            raise ValueError("expected a three-part Python version")
+        return version
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        raise RuntimeError(f"Cannot determine Python version for {command}") from exc
+
+
 def _python310_command() -> Optional[str]:
     explicit = os.getenv("AGENTARK_KAGGLE_PYTHON_BIN", "").strip()
     if explicit:
+        version = _python_version(explicit)
+        if not (3, 10, 1) <= version < (3, 10, 13):
+            raise RuntimeError(
+                "AGENTARK_KAGGLE_PYTHON_BIN must select Python >=3.10.1,<3.10.13; "
+                f"got {'.'.join(map(str, version))}. Use Python {DEFAULT_PYTHON_VERSION}."
+            )
         return explicit
     for name in ("python3.10", "python3"):
         found = shutil.which(name)
         if not found:
             continue
-        version = subprocess.check_output([found, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"], text=True).strip()
-        if version == "3.10":
+        try:
+            version = _python_version(found)
+        except RuntimeError:
+            continue
+        if (3, 10, 1) <= version < (3, 10, 13):
             probe = subprocess.run(
                 [found, "-m", "venv", "--help"],
                 stdout=subprocess.DEVNULL,
@@ -182,10 +212,26 @@ def _ensure_python_env() -> None:
         if python_cmd:
             _run([python_cmd, "-m", "venv", VENV_DIR])
         else:
-            python_version = os.getenv("AGENTARK_KAGGLE_PYTHON_VERSION", DEFAULT_PYTHON_VERSION)
+            python_version = os.getenv("AGENTARK_KAGGLE_PYTHON_VERSION", DEFAULT_PYTHON_VERSION).strip()
+            try:
+                requested_version = tuple(int(part) for part in python_version.split("."))
+            except ValueError:
+                requested_version = ()
+            if len(requested_version) != 3 or not (3, 10, 1) <= requested_version < (3, 10, 13):
+                raise RuntimeError(
+                    "AGENTARK_KAGGLE_PYTHON_VERSION must name a Python >=3.10.1,<3.10.13 patch; "
+                    f"use {DEFAULT_PYTHON_VERSION}."
+                )
             _ensure_uv()
             _run([sys.executable, "-m", "uv", "python", "install", python_version])
             _run([sys.executable, "-m", "uv", "venv", "--seed", "--python", python_version, VENV_DIR])
+    version = _python_version(VENV_PY)
+    if not (3, 10, 1) <= version < (3, 10, 13):
+        raise RuntimeError(
+            f"Cached AgentArk environment {VENV_DIR} uses Python {'.'.join(map(str, version))}; "
+            "the pinned wrapper requires >=3.10.1,<3.10.13. "
+            f"Choose a fresh AGENTARK_KAGGLE_WORK_ROOT and Python {DEFAULT_PYTHON_VERSION}."
+        )
     _ensure_venv_pip()
     _run([VENV_PY, "-m", "pip", "install", "-q", "-e", AGENTARK_ROOT])
 
@@ -360,7 +406,7 @@ def _write_eval_config(
     openai_base_url = base_url.rstrip("/")
     if openai_base_url.endswith("/genai"):
         openai_base_url = openai_base_url[: -len("/genai")]
-    if not openai_base_url.endswith("/openapi"):
+    if not openai_base_url.endswith(("/openapi", "/openapi/v1")):
         openai_base_url = openai_base_url + "/openapi"
     temperature_yaml = "null" if temperature is None else f"{float(temperature):g}"
     config = f"""
@@ -631,11 +677,19 @@ def _run_agentark_eval(
                 or _results_have_temperature_unsupported_error(results)
             )
         ):
+            if RESULT_PATH.exists():
+                diagnostic_path = EXPORTED_RESULT_PATH.with_name(
+                    EXPORTED_RESULT_PATH.stem + "_before_temperature_retry.jsonl"
+                )
+                diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(RESULT_PATH, diagnostic_path)
+                RESULT_PATH.unlink()
+                print(f"Saved pre-retry results to {diagnostic_path}", flush=True)
             temperature = None
             retried_without_temperature = True
             print(
                 "Model rejected the temperature parameter; retrying remaining AgentArk "
-                "eval attempts without temperature.",
+                "eval attempts without temperature. All seeds will use the new configuration.",
                 flush=True,
             )
             _write_eval_config(
@@ -703,6 +757,9 @@ def _results_summary(
     results = _dedupe_results_by_seed(results)
     if len(results) != expected_count:
         raise AssertionError(f"Expected {expected_count} AgentArk result records, got {len(results)}")
+    expected_seeds = set(range(min(int(seed_start), int(seed_end)), max(int(seed_start), int(seed_end)) + 1))
+    if {_result_seed(result) for result in results} != expected_seeds:
+        raise AssertionError("AgentArk result seeds do not match the requested seed range")
 
     sorted_results = sorted(results, key=_result_seed)
     scores = [_score_value(result) for result in sorted_results]
@@ -730,13 +787,14 @@ def _results_summary(
     ]
 
     first = sorted_results[0]
+    error_count = sum(1 for result in sorted_results if result.get("status") != "ok")
     return {
         "agentark_commit": AGENTARK_COMMIT,
         "agent_type": "simple",
         "env_version": ENV_VERSION,
         "hf_revision": HF_REVISION,
         "task_artifact": TASK_ARTIFACT,
-        "evaluation_status": "complete",
+        "evaluation_status": "complete" if error_count == 0 else "failed",
         "task_name": first.get("actual_task_name", first.get("requested_task_name")),
         "seed_start": int(seed_start),
         "seed_end": int(seed_end),
@@ -755,7 +813,7 @@ def _results_summary(
         "max_score_reward": max(scores) if scores else 0.0,
         "min_normalized_score_reward": min(normalized_scores) if normalized_scores else 0.0,
         "max_normalized_score_reward": max(normalized_scores) if normalized_scores else 0.0,
-        "error_count": sum(1 for result in sorted_results if result.get("status") != "ok"),
+        "error_count": error_count,
         "final_success_count": sum(1 for result in sorted_results if result.get("rollout_success")),
         "ever_success_count": sum(1 for result in sorted_results if result.get("ever_attempt_success", False)),
         "total_turns": sum(int(result.get("turns", 0) or 0) for result in sorted_results),
@@ -876,6 +934,20 @@ def agentark_task_seeds_1_10(llm) -> float:
     summary["wall_time_s"] = round(time.time() - started, 3)
     summary["exported_summary_path"] = str(EXPORTED_SUMMARY_PATH)
     _export_summary_json(summary)
+
+    print(
+        f"AgentArk evaluation_status={summary['evaluation_status']} "
+        f"error_count={summary['error_count']} total_turns={summary['total_turns']}; "
+        f"summary={EXPORTED_SUMMARY_PATH} log={EXPORTED_AGENTARK_LOG_PATH}",
+        flush=True,
+    )
+    if summary["evaluation_status"] != "complete":
+        failed_seeds = [row["seed"] for row in summary["per_seed"] if row["status"] != "ok"]
+        raise RuntimeError(
+            f"AgentArk evaluation failed for seeds {failed_seeds}; "
+            "no leaderboard score was returned. "
+            f"Inspect {EXPORTED_SUMMARY_PATH} and {EXPORTED_AGENTARK_LOG_PATH}."
+        )
 
     kbench.assertions.assert_in(
         "complete",
