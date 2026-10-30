@@ -3,7 +3,7 @@
 New benchmarks use `agentark_simple_task_template.py` or
 `new-benchmark-task-f8fdd.ipynb`. Both explicitly select **SimpleAgent** with native
 host tools and context compaction. They pin wrapper commit
-`71a9cc305e3e87c0c5ed416086586e24db35210b`, HF revision
+`a76159828fca187e4cacb98dc0f934e803d0f67f`, HF revision
 `6a16c98e262abd760b09ef007a49118d0b1b0cb9` (`env-1.0.6`), and the env-1.0.6 Linux starter hash.
 The selected task package is fetched from that immutable registry and its hash
 and minimum wrapper commit are checked. A newer task may need a newer compatible
@@ -25,6 +25,8 @@ actions can still be replayed independently of the model harness.
 
 The pinned wrapper includes the SimpleAgent defaults, trace/resume and replay
 compatibility improvements, compaction failure handling, and HumanView updates.
+It also accepts opaque provider tool-call IDs up to 64 KiB of UTF-8 without
+rewriting them, fixing the prior 256-character rejection on Kaggle Gemini calls.
 For later wrapper revisions, generate with
 `--wrapper-commit <full-published-commit>`. Never replace a formal benchmark pin
 with `main` or an unpublished local commit.
@@ -46,10 +48,12 @@ The task and benchmark names serve different purposes. A new benchmark name
 avoids replacing the existing APIAgent task. Environment variables with the
 matching `AGENTARK_KAGGLE_` names can override these defaults.
 
-Creation checks intentionally return `evaluation_status: creation_smoke` without
-starting Unity or calling a model. They validate notebook creation, rather than
-the SimpleAgent integration. A formal Kaggle `RUN` or `TRIAL` executes the real
-evaluation. To test from an interactive notebook instead, set
+With `BENCHMARK_MODE=CREATE` or another mode outside `RUN`/`TRIAL`, and full
+evaluation disabled, the notebook returns `evaluation_status: creation_smoke`
+without starting Unity or calling a model. That checks notebook import and output
+generation. `RUN` or `TRIAL` executes the real evaluation, including when Kaggle
+injects `RUN` during a task `push`; pushing does not guarantee a lightweight run.
+To test from an interactive notebook, set
 `os.environ["AGENTARK_KAGGLE_FULL_EVAL"] = "1"` before the final run cell; remove
 that temporary override before saving the formal task.
 
@@ -69,6 +73,10 @@ The notebook still returns `normalized_mean_score_reward`; the generated Python
 template still returns raw `mean_score_reward`. Neither score formula has changed.
 The selected Model Proxy model must support the declared native tools. Tool
 errors remain visible rather than silently changing to another harness.
+Kaggle's Gemini `/openapi` route supports native tools. Its tool-call IDs can
+contain opaque thought signatures such as a `__mpthought__` suffix; the entire
+original ID must be returned unchanged in both the assistant tool call and its
+matching tool result. The new wrapper pin preserves that continuation state.
 
 ## Historical MarbleStop Benchmark
 
@@ -123,9 +131,9 @@ The Python environments are intentionally split:
   `[ArkSubEnv]` startup logs, is saved as
   `agentark_marble_stop_seeds_1_10_agentark.log` in the Kaggle run output.
 - Kaggle task creation (`push`) runs the notebook once to verify that it emits a
-  run output. To keep that creation step within Kaggle's time window, non-`RUN`
-  modes return a lightweight `creation_smoke` result. Formal benchmark runs use
-  `BENCHMARK_MODE=RUN`/`TRIAL` and execute the full AgentArk evaluation.
+  run output. With full evaluation disabled, modes outside `RUN`/`TRIAL` return
+  a lightweight `creation_smoke` result. `BENCHMARK_MODE=RUN`/`TRIAL` executes
+  the full AgentArk evaluation, even when Kaggle injects that mode during `push`.
 
 ## Adding Another AgentArk Task
 

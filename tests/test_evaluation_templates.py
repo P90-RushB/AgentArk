@@ -101,6 +101,7 @@ def test_generator_protects_existing_benchmark_and_validates_identifiers(tmp_pat
 
 
 def test_kaggle_notebook_and_generic_template_stay_in_sync():
+    assert generator().DEFAULT_WRAPPER_COMMIT == "a76159828fca187e4cacb98dc0f934e803d0f67f"
     notebook = json.loads((KAGGLE / "new-benchmark-task-f8fdd.ipynb").read_text(encoding="utf-8"))
     expected = "\n\n".join("# %%\n" + "".join(cell["source"]).rstrip()
                               for cell in notebook["cells"] if cell["cell_type"] == "code") + "\n"
@@ -113,6 +114,7 @@ def test_kaggle_notebook_and_generic_template_stay_in_sync():
                                 'Mean of per-seed AgentArk final-attempt score_reward; normalized values are diagnostics only.')
     expected = expected.replace('Formal benchmark runs normalize each AgentArk score_reward from the configured task score min/max range to 0-1, then average across seeds.',
                                 'Formal benchmark runs average raw per-seed AgentArk final-attempt score_reward; normalized values are diagnostics only.')
+    assert 'AGENTARK_COMMIT = "a76159828fca187e4cacb98dc0f934e803d0f67f"' in expected
     assert (KAGGLE / "agentark_simple_task_template.py").read_text(encoding="utf-8") == expected
     ast.parse(expected)
 

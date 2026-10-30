@@ -55,6 +55,7 @@ def notebook(tmp_path, monkeypatch):
         if cell["cell_type"] == "code":
             assert not cell.get("outputs") and cell.get("execution_count") is None
             exec(compile("".join(cell["source"]), f"{NOTEBOOK}:cell{index}", "exec"), namespace)
+    assert namespace["AGENTARK_COMMIT"] == "a76159828fca187e4cacb98dc0f934e803d0f67f"
     assert creation_returns == [0.0]
     assert json.loads(namespace["EXPORTED_SUMMARY_PATH"].read_text())["evaluation_status"] == "creation_smoke"
     return namespace
