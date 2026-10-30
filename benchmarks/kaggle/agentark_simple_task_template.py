@@ -461,6 +461,11 @@ models:
         # Tune this estimate for the selected proxy model before publishing.
         max_context_tokens: 262144
         output_reserve_tokens: {int(max_completion_tokens)}
+        # A complete video turn can exceed the runtime's default 48k summary input.
+        # Budget summary input + output within the same authored context cap.
+        summary_input_tokens: 229376
+        summary_output_tokens: 32768
+        summary_input_characters: 524288
       tools:
         enabled: true
         workspace_parent: tmp/kaggle_simple_agent_workspaces

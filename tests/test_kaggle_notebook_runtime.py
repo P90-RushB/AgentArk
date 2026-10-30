@@ -16,7 +16,8 @@ import pytest
 import yaml
 from PIL import Image
 
-from agent_ark.agent.simple_agent import SimpleAgent
+from agent_ark.agent.simple_agent import SimpleAgent, SimpleRuntimeConfig
+from agent_ark.agent.simple_agent.types import AgentLimitError, ImagePart, ModelCompletion, ToolCall
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -292,3 +293,59 @@ def test_generated_model_recipe_makes_real_sdk_function_requests(notebook):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("legacy_summary_budget", [False, True])
+def test_notebook_compacts_complete_video_turns_within_its_context_budget(notebook, legacy_summary_budget):
+    """Replay the hosted failure's frame counts through the actual native runtime."""
+    notebook["_write_eval_config"](task_name="DoorSpin3Turns", seed_start=1, seed_end=2, env_id=0,
+                                    model="selected-model", base_url="https://proxy.example",
+                                    max_completion_tokens=30000)
+    recipe = yaml.safe_load(notebook["CONFIG_PATH"].read_text())["models"][0]["simple_agent"]
+    if legacy_summary_budget:
+        # The former notebook inherited these generic runtime defaults.
+        for key in ("summary_input_tokens", "summary_output_tokens", "summary_input_characters"):
+            recipe["context"].pop(key)
+    budget = SimpleRuntimeConfig(**recipe["context"])
+
+    class Model:
+        def __init__(self):
+            self.requests = []
+
+        async def complete(self, request):
+            self.requests.append(request)
+            if request.purpose == "summary":
+                return ModelCompletion("Earlier complete observations and actions retained as notes.")
+            action = json.dumps({"name": "Wait", "arguments": {"seconds": 1}})
+            return ModelCompletion("Observe the door.", tool_calls=(ToolCall(
+                f"call-{len(self.requests)}__mpthought__" + "x" * 400, "submit_action",
+                json.dumps({"format": "tool_call", "content": action})),))
+
+    import base64
+    image = io.BytesIO()
+    Image.new("RGB", (8, 8), "green").save(image, format="PNG")
+    url = "data:image/png;base64," + base64.b64encode(image.getvalue()).decode()
+    model = Model()
+    agent = SimpleAgent(provider="openai", model_backend=model, simple_agent_config=recipe)
+    try:
+        for step, frames in enumerate((1, 82, 79, 79)):
+            parts = [{"type": "text", "text": f"Observation {step}."}] + [
+                {"type": "image_url", "image_url": {"url": url}} for _ in range(frames)]
+            observation = {0: {"messages": [{"role": "system", "content": "Control the door."},
+                                            {"role": "user", "content": parts}]}}
+            if legacy_summary_budget and step == 3:
+                with pytest.raises(AgentLimitError, match="complete earlier turn exceeds summary input bounds"):
+                    agent.forward_with_trace(observation)
+                assert [request.purpose for request in model.requests] == ["action"] * 3
+                return
+            agent.forward_with_trace(observation)
+
+        assert [request.purpose for request in model.requests] == ["action"] * 3 + ["summary", "action"]
+        image_count = lambda messages: sum(isinstance(part, ImagePart) for message in messages for part in message.parts)
+        assert image_count(model.requests[-2].messages) == 83  # Two complete earlier turns.
+        assert image_count(model.requests[-1].messages) == 158  # Both recent observations remain intact.
+        runtime = agent._states[0].runtime
+        assert sum(image_count(entry.messages) for entry in runtime.history_snapshot if entry.kind == "input") == 241
+        assert budget.summary_input_tokens + budget.summary_output_tokens <= budget.max_context_tokens
+    finally:
+        agent.close()

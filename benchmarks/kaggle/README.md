@@ -171,6 +171,13 @@ accepts a full 40-character commit; it must contain SimpleAgent and satisfy the
 task artifact's wrapper requirements. Review the model's context window, output
 budget and native tool support before running. The 262144-token context estimate
 is a local budget, not automatic detection of the selected model's limit.
+The template explicitly allows 229376 estimated summary-input tokens plus
+32768 summary-output tokens within that same 262144-token budget. Its 524288
+summary-input character cap matches the working-context cap. This lets a complete
+video turn enter compaction instead of hitting the runtime's generic 48000-token
+summary-input default. Whole-turn compaction and all image, byte, and request
+limits remain enforced. Tune both action and summary budgets for the selected
+model; token estimates do not guarantee the provider's actual context limit.
 If the proxy requires `max_tokens` or `tool_choice: auto`, adjust the generated
 model recipe before publishing; the template does not silently switch harnesses.
 

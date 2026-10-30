@@ -79,6 +79,9 @@ def test_generated_task_uses_generic_simple_template_and_immutable_pin(tmp_path)
     assert model["base_url"] == "https://proxy.example/openapi"
     assert model["simple_agent"]["tools"]["enabled"] is True
     assert model["simple_agent"]["context"]["output_reserve_tokens"] == 30000
+    budget = SimpleRuntimeConfig(**model["simple_agent"]["context"])
+    assert budget.summary_input_tokens + budget.summary_output_tokens <= budget.max_context_tokens
+    assert budget.summary_input_characters == budget.max_context_characters
     assert cfg["eval"]["group_seeds"] == {"start": 2, "end": 4}
 
 
