@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 TEMPLATE_PATH = ROOT / "agentark_simple_task_template.py"
-DEFAULT_WRAPPER_COMMIT = "a76159828fca187e4cacb98dc0f934e803d0f67f"
+DEFAULT_WRAPPER_COMMIT = "b37efe0b692b29a16c42e31b19aecbd3472271cf"
 
 
 def _slugify(value: str) -> str:

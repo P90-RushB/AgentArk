@@ -27,7 +27,7 @@ import kaggle_benchmarks as kbench
 
 
 AGENTARK_REPO_URL = "https://github.com/P90-RushB/AgentArk.git"
-AGENTARK_COMMIT = "a76159828fca187e4cacb98dc0f934e803d0f67f"
+AGENTARK_COMMIT = "b37efe0b692b29a16c42e31b19aecbd3472271cf"
 ENV_VERSION = "1.0.6"
 HF_REVISION = "6a16c98e262abd760b09ef007a49118d0b1b0cb9"
 HF_BASE_URL = f"https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/{HF_REVISION}"
@@ -458,6 +458,9 @@ models:
       tool_choice: required
       output_token_parameter: max_completion_tokens
       context:
+        # message_chunks_v1: bounded message chunks (default).
+        # whole_turn_v1: legacy complete-turn compaction.
+        compaction_policy: message_chunks_v1
         # Tune this estimate for the selected proxy model before publishing.
         max_context_tokens: 262144
         output_reserve_tokens: {int(max_completion_tokens)}

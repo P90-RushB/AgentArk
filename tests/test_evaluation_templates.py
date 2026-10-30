@@ -79,6 +79,7 @@ def test_generated_task_uses_generic_simple_template_and_immutable_pin(tmp_path)
     assert model["base_url"] == "https://proxy.example/openapi"
     assert model["simple_agent"]["tools"]["enabled"] is True
     assert model["simple_agent"]["context"]["output_reserve_tokens"] == 30000
+    assert model["simple_agent"]["context"]["compaction_policy"] == "message_chunks_v1"
     budget = SimpleRuntimeConfig(**model["simple_agent"]["context"])
     assert budget.summary_input_tokens + budget.summary_output_tokens <= budget.max_context_tokens
     assert budget.summary_input_characters == budget.max_context_characters
@@ -104,7 +105,7 @@ def test_generator_protects_existing_benchmark_and_validates_identifiers(tmp_pat
 
 
 def test_kaggle_notebook_and_generic_template_stay_in_sync():
-    assert generator().DEFAULT_WRAPPER_COMMIT == "a76159828fca187e4cacb98dc0f934e803d0f67f"
+    assert generator().DEFAULT_WRAPPER_COMMIT == "b37efe0b692b29a16c42e31b19aecbd3472271cf"
     notebook = json.loads((KAGGLE / "new-benchmark-task-f8fdd.ipynb").read_text(encoding="utf-8"))
     expected = "\n\n".join("# %%\n" + "".join(cell["source"]).rstrip()
                               for cell in notebook["cells"] if cell["cell_type"] == "code") + "\n"
@@ -117,7 +118,7 @@ def test_kaggle_notebook_and_generic_template_stay_in_sync():
                                 'Mean of per-seed AgentArk final-attempt score_reward; normalized values are diagnostics only.')
     expected = expected.replace('Formal benchmark runs normalize each AgentArk score_reward from the configured task score min/max range to 0-1, then average across seeds.',
                                 'Formal benchmark runs average raw per-seed AgentArk final-attempt score_reward; normalized values are diagnostics only.')
-    assert 'AGENTARK_COMMIT = "a76159828fca187e4cacb98dc0f934e803d0f67f"' in expected
+    assert 'AGENTARK_COMMIT = "b37efe0b692b29a16c42e31b19aecbd3472271cf"' in expected
     assert (KAGGLE / "agentark_simple_task_template.py").read_text(encoding="utf-8") == expected
     ast.parse(expected)
 

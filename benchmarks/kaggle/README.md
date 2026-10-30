@@ -3,7 +3,7 @@
 New benchmarks use `agentark_simple_task_template.py` or
 `new-benchmark-task-f8fdd.ipynb`. Both explicitly select **SimpleAgent** with native
 host tools and context compaction. They pin wrapper commit
-`a76159828fca187e4cacb98dc0f934e803d0f67f`, HF revision
+`b37efe0b692b29a16c42e31b19aecbd3472271cf`, HF revision
 `6a16c98e262abd760b09ef007a49118d0b1b0cb9` (`env-1.0.6`), and the env-1.0.6 Linux starter hash.
 The selected task package is fetched from that immutable registry and its hash
 and minimum wrapper commit are checked. A newer task may need a newer compatible
@@ -27,6 +27,13 @@ The pinned wrapper includes the SimpleAgent defaults, trace/resume and replay
 compatibility improvements, compaction failure handling, and HumanView updates.
 It also accepts opaque provider tool-call IDs up to 64 KiB of UTF-8 without
 rewriting them, fixing the prior 256-character rejection on Kaggle Gemini calls.
+The notebook and generated tasks explicitly use
+`compaction_policy: message_chunks_v1`. Oversized old ordinary text/multi-image messages can be
+summarized in bounded pieces and their notes merged; tool-call batches and all
+their results remain intact. Leaves, merges, and retries share the configured
+summary-call budget. `whole_turn_v1` selects the legacy strategy and preserves
+its historical evaluation fingerprint. Change the strategy and budgets in
+`_write_eval_config` before creating a new benchmark version.
 For later wrapper revisions, generate with
 `--wrapper-commit <full-published-commit>`. Never replace a formal benchmark pin
 with `main` or an unpublished local commit.
@@ -173,9 +180,10 @@ budget and native tool support before running. The 262144-token context estimate
 is a local budget, not automatic detection of the selected model's limit.
 The template explicitly allows 229376 estimated summary-input tokens plus
 32768 summary-output tokens within that same 262144-token budget. Its 524288
-summary-input character cap matches the working-context cap. This lets a complete
-video turn enter compaction instead of hitting the runtime's generic 48000-token
-summary-input default. Whole-turn compaction and all image, byte, and request
+summary-input character cap matches the working-context cap. This Kaggle override
+can reduce summary requests for video history; the core's default remains 48000
+estimated input tokens. The message policy can split eligible old messages when
+needed. Protected inputs, complete tool groups, and all image, byte, and request
 limits remain enforced. Tune both action and summary budgets for the selected
 model; token estimates do not guarantee the provider's actual context limit.
 If the proxy requires `max_tokens` or `tool_choice: auto`, adjust the generated
