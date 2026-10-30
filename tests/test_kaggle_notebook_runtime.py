@@ -306,6 +306,7 @@ def test_notebook_compacts_complete_video_turns_within_its_context_budget(notebo
         # The former notebook inherited these generic runtime defaults.
         for key in ("summary_input_tokens", "summary_output_tokens", "summary_input_characters"):
             recipe["context"].pop(key)
+        recipe["context"]["compaction_policy"] = "whole_turn_v1"
     budget = SimpleRuntimeConfig(**recipe["context"])
 
     class Model:

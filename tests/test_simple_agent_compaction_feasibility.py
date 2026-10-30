@@ -1,4 +1,4 @@
-"""Compaction infeasibility proofs; no SDK, HTTP, Player or task assets."""
+"""Legacy whole-turn infeasibility proofs; no SDK, HTTP, Player or task assets."""
 from __future__ import annotations
 
 import asyncio
@@ -14,6 +14,10 @@ from agent_ark.agent.simple_agent.runtime import _WorkingEntry
 from agent_ark.agent.simple_agent.types import ArchiveEntry, NativeAssistantState
 
 
+def legacy_config(**kwargs):
+    return SimpleRuntimeConfig(compaction_policy="whole_turn_v1", **kwargs)
+
+
 def request(number, images=0, text="observation"):
     return AgentRequest(AgentInputIdentity("run", "session", "episode", "agent", 0, str(number)),
                         (Message.text("system", "Keep the task instructions."),
@@ -24,7 +28,7 @@ def text(messages):
     return "\n".join(part.text for message in messages for part in message.parts if isinstance(part, TextPart))
 
 
-def test_default_video_turn_fails_without_any_useless_summary_and_keeps_archive_and_working_state():
+def test_legacy_video_turn_fails_without_any_useless_summary_and_keeps_archive_and_working_state():
     async def run():
         calls = []
 
@@ -32,7 +36,7 @@ def test_default_video_turn_fails_without_any_useless_summary_and_keeps_archive_
             calls.append(value)
             return ModelCompletion("Earlier facts." if value.purpose == "summary" else "action")
 
-        runtime = SimpleRuntime(CallableModel(model))
+        runtime = SimpleRuntime(CallableModel(model), legacy_config())
         for number, images in enumerate((1, 83, 81)):
             await runtime.complete(request(number, images))
         current = request(3, 77)
@@ -60,7 +64,7 @@ def test_infeasibility_identifies_static_bounds_without_sending_a_summary(bound)
             seen.append(value)
             return ModelCompletion("action")
 
-        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(recent_turns=1))
+        runtime = SimpleRuntime(CallableModel(model), legacy_config(recent_turns=1))
         await runtime.complete(request(1, images=3, text="old-observation " * 100))
         runtime.accept_input(request(2, images=3, text="current-observation " * 100))
         cfg = {"summary_input_characters": 100} if bound == "characters" else {"summary_input_bytes": 100} if bound == "bytes" else {"summary_input_tokens": 1}
@@ -85,7 +89,7 @@ def test_larger_explicit_summary_budget_keeps_the_successful_video_path():
             seen.append(value)
             return ModelCompletion("Earlier facts." if value.purpose == "summary" else "action")
 
-        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(summary_input_tokens=196608, recent_turns=1))
+        runtime = SimpleRuntime(CallableModel(model), legacy_config(summary_input_tokens=196608, recent_turns=1))
         for number, images in enumerate((1, 83, 81, 77)):
             await runtime.complete(request(number, images))
         assert [call.purpose for call in seen] == ["action", "action", "action", "summary", "action"]
@@ -104,7 +108,7 @@ def test_summary_only_can_shrink_large_notes_then_include_the_next_complete_turn
             calls.append(value)
             return ModelCompletion("Short memory." if value.purpose == "summary" else "action")
 
-        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
+        runtime = SimpleRuntime(CallableModel(model), legacy_config(
             recent_turns=1, max_context_characters=1000, summary_input_characters=1800))
         current = request(3, text="current " * 60)
         runtime.accept_input(current)
@@ -135,7 +139,7 @@ def test_notes_only_context_can_still_be_summarized():
             calls.append(value)
             return ModelCompletion("Short facts." if value.purpose == "summary" else "action")
 
-        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(recent_turns=1, max_context_characters=500))
+        runtime = SimpleRuntime(CallableModel(model), legacy_config(recent_turns=1, max_context_characters=500))
         current = request(2)
         runtime.accept_input(current)
         runtime._working.insert(0, _WorkingEntry(0, "summary", request(1).identity,
@@ -147,7 +151,7 @@ def test_notes_only_context_can_still_be_summarized():
 
 
 def test_removable_native_replay_is_not_treated_as_an_uncompressible_suffix():
-    runtime = SimpleRuntime(CallableModel(lambda _: None), SimpleRuntimeConfig(
+    runtime = SimpleRuntime(CallableModel(lambda _: None), legacy_config(
         recent_turns=1, max_context_bytes=5000, summary_input_tokens=1000))
     first, current = request(1, images=2), request(2)
     runtime.accept_input(first)
@@ -160,14 +164,14 @@ def test_removable_native_replay_is_not_treated_as_an_uncompressible_suffix():
 
 
 def test_arbitrary_custom_token_counter_is_not_used_as_a_monotone_impossibility_proof():
-    runtime = SimpleRuntime(CallableModel(lambda _: None), SimpleRuntimeConfig(), token_counter=lambda _: 999999)
+    runtime = SimpleRuntime(CallableModel(lambda _: None), legacy_config(), token_counter=lambda _: 999999)
     for number in range(4):
         runtime.accept_input(request(number, images=(1, 83, 81, 77)[number]))
     assert runtime._compaction_obstruction(runtime._working, runtime._pinned, frozenset()) is None
 
 
 def test_soft_watermark_does_not_become_an_early_hard_failure():
-    runtime = SimpleRuntime(CallableModel(lambda _: None), SimpleRuntimeConfig(
+    runtime = SimpleRuntime(CallableModel(lambda _: None), legacy_config(
         recent_turns=1, max_context_characters=3000, summary_input_tokens=1000))
     runtime.accept_input(request(1, images=2))
     runtime.accept_input(request(2, text="current " * 300))
@@ -188,7 +192,7 @@ def test_consumed_event_after_a_completion_can_stay_outside_its_summary_span():
             calls.append(value)
             return ModelCompletion("Short facts." if value.purpose == "summary" else "A" * 350)
 
-        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
+        runtime = SimpleRuntime(CallableModel(model), legacy_config(
             recent_turns=1, max_context_characters=1600, summary_input_characters=1300))
         await runtime.complete(source(1, 300))
         runtime.observe_result(AgentEvent(source(1, 300).identity, "ev1", "action.result", "E" * 200))
@@ -213,7 +217,7 @@ def test_coalesced_input_can_close_at_an_earlier_inputs_late_completion():
             calls.append(value)
             return ModelCompletion("Short facts." if value.purpose == "summary" else "action")
 
-        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
+        runtime = SimpleRuntime(CallableModel(model), legacy_config(
             recent_turns=1, max_context_characters=1600, summary_input_characters=1300))
         first = request(1, text="x" * 10)
         runtime.accept_input(first)

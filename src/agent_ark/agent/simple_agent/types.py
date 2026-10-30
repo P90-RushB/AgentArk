@@ -12,6 +12,22 @@ from typing import Literal, Protocol, runtime_checkable
 _MAX_TOOL_CALL_ID_BYTES = 64 * 1024
 
 
+def _compaction_metadata(value: str | None) -> None:
+    if value is None:
+        return
+    if not isinstance(value, str) or len(value.encode("utf-8")) > 64 * 1024:
+        raise ValueError("compaction metadata exceeds its bound")
+    try:
+        def constant(_):
+            raise ValueError("nonfinite compaction metadata")
+        parsed = json.loads(value, parse_constant=constant)
+        json.dumps(parsed, allow_nan=False)
+    except (ValueError, TypeError, RecursionError, OverflowError) as error:
+        raise ValueError("invalid compaction metadata") from error
+    if not isinstance(parsed, dict):
+        raise ValueError("compaction metadata must be a JSON object")
+
+
 class AgentError(RuntimeError):
     """A bounded, local runtime failure; it grants no action authority."""
 
@@ -318,6 +334,8 @@ class ModelRequest:
     input_tokens: int | None = None
     token_count_is_estimate: bool = True
     tools: tuple[ToolSpec, ...] = ()
+    # Local audit only; encoders and provider adapters never send this field.
+    compaction_json: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.messages, tuple) or any(not isinstance(m, Message) for m in self.messages):
@@ -334,6 +352,7 @@ class ModelRequest:
             raise ValueError("tool declarations must be bounded and unique")
         if self.purpose == "summary" and self.tools:
             raise ValueError("summary calls cannot expose tools")
+        _compaction_metadata(self.compaction_json)
 
 
 @dataclass(frozen=True, slots=True)
@@ -400,6 +419,10 @@ class ArchiveEntry:
     text: str = ""
     event_id: str | None = None
     usage: ModelUsage = ModelUsage()
+    compaction_json: str | None = None
+
+    def __post_init__(self) -> None:
+        _compaction_metadata(self.compaction_json)
 
 
 @dataclass(frozen=True, slots=True)

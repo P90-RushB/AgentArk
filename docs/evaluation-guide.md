@@ -211,6 +211,26 @@ summary-length target.
 These are configurable upper bounds, not a fixed compression ratio or a guarantee
 that a model's native context window is large enough.
 
+`context.compaction_policy` selects `message_chunks_v1` (new-run default) or
+`whole_turn_v1` (legacy). The new policy keeps normal complete-turn summaries
+when they fit, and can split an oversized old ordinary text/multi-image message
+into bounded summary requests before merging the notes. Whole images retain
+their bytes and order; text fragments carry source ranges. Closed tool-call
+batches and their results remain indivisible, and an oversized tool group fails
+explicitly. Current/protected inputs and in-progress native tool prefixes are
+never split. Leaves, merges and invalid-output retries all share the existing
+four-call default; a larger history is not guaranteed to fit that finite budget.
+Working history changes only after the complete plan succeeds, while original
+archives remain immutable. Summary request/event traces include the policy,
+stage and fragment provenance. All numeric defaults above are unchanged.
+
+The new policy is a distinct evaluation condition and gets a new fingerprint.
+Set `compaction_policy: whole_turn_v1` to retain the historical SimpleAgent
+fingerprint and completed-case resume behavior. Saved-action replay does not
+run compaction. Loading a trajectory history prefix is not restoration of the
+private model working context or its compaction state. Existing Kaggle tasks
+keep their immutable wrapper pin and evaluation conditions.
+
 SimpleAgent's HTTP backend preserves the supported OpenRouter reasoning fields
 and Volcengine's original `reasoning_content` / `encrypted_content` pair in
 Chat Completions history. Response content and native reasoning are stored

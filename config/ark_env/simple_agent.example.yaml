@@ -59,6 +59,8 @@ models:
       # max_completion_tokens (the default).
       output_token_parameter: max_tokens
       context:
+        # message_chunks_v1: bounded message chunks; whole_turn_v1: legacy behavior.
+        compaction_policy: message_chunks_v1
         # Total local estimate (256 * 1024), including the output reserve; not a model limit.
         max_context_tokens: 262144
         output_reserve_tokens: 20480

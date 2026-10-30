@@ -93,6 +93,8 @@ models:
       tool_choice: required
       output_token_parameter: max_tokens
       context:
+        # message_chunks_v1: bounded message chunks; whole_turn_v1: legacy behavior.
+        compaction_policy: message_chunks_v1
         # Local estimate, including output reserve; tune to the selected model.
         max_context_tokens: 262144
         output_reserve_tokens: 30000

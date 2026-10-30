@@ -91,6 +91,11 @@ def build_evaluation_identity(config: Mapping[str, Any]) -> dict[str, Any]:
         context = context if isinstance(context, Mapping) else {}
         defaults = asdict(SimpleRuntimeConfig())
         fields['context'] = {key: context.get(key, value) for key, value in defaults.items()}
+        # Explicit legacy policy must keep the exact identity of pre-policy
+        # SimpleAgent records. New policies identify different evaluation
+        # conditions and must never reuse those completed results.
+        if fields['context'].get('compaction_policy') == 'whole_turn_v1':
+            fields['context'].pop('compaction_policy')
         tools = options.get('tools', {})
         tools = tools if isinstance(tools, Mapping) else {}
         limits = tools.get('limits', {})

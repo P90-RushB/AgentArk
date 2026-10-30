@@ -328,6 +328,8 @@ class _TracedModel:
                   "max_output_tokens": request.max_output_tokens, "input_tokens": request.input_tokens,
                   "token_count_is_estimate": request.token_count_is_estimate,
                   "tools": tool_declarations(request.tools), "status": "pending"}
+        if getattr(request, "compaction_json", None) is not None:
+            record["compaction"] = json.loads(request.compaction_json)
         record["request_images"] = [
             {"message_index": message_index, "part_index": part_index, "role": message.role,
              "sha256": sha256(part.data).hexdigest(), "bytes": len(part.data),
@@ -725,6 +727,8 @@ class SimpleAgent(BaseAgent):
             if entry.kind in ("tool_exchange", "summary_completion", "event"):
                 event = {"kind": entry.kind, "sequence": entry.sequence, "text": entry.text,
                          "messages": chat_messages(entry.messages), "usage": _usage_dict(entry.usage)}
+                if getattr(entry, "compaction_json", None) is not None:
+                    event["compaction"] = json.loads(entry.compaction_json)
                 native_messages = [{"message_index": index, "scope": message.native_assistant.scope,
                                     "message": message.native_assistant.message}
                                    for index, message in enumerate(entry.messages) if message.native_assistant is not None]

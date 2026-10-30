@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from .encoding import encoded_messages, tool_declarations
+from .compaction import SourceReference, SummaryAtom, image_atom, metadata as compaction_metadata, pack_atoms, text_atom
 from .models import SubmissionResponseError, SummaryResponseError
 from .tools import FileWorkspace, ToolRegistry
 from .types import (
@@ -96,10 +97,15 @@ class SimpleRuntimeConfig:
     max_action_output_bytes: int = 512_000
     max_model_calls: int = 4_096
     timeout_seconds: float = 1800.0
+    compaction_policy: str = "message_chunks_v1"
 
     def __post_init__(self) -> None:
         for name in self.__dataclass_fields__:
             value = getattr(self, name)
+            if name == "compaction_policy":
+                if value not in ("whole_turn_v1", "message_chunks_v1"):
+                    raise ValueError("unsupported compaction_policy")
+                continue
             if name == "timeout_seconds":
                 if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                     raise ValueError("timeout_seconds has an invalid bound")
@@ -118,6 +124,8 @@ class _WorkingEntry:
     identity: AgentInputIdentity
     messages: tuple[Message, ...]
     source_sequences: tuple[int, ...]
+    # Generated notes refer to their actual summary_completion archive text.
+    origin_sequence: int | None = None
 
 
 def _scope(identity: AgentInputIdentity) -> tuple[str, int]:
@@ -247,6 +255,9 @@ class SimpleRuntime:
             "usage": [entry.usage.input_tokens, entry.usage.output_tokens, entry.usage.total_tokens],
         }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         byte_count = message_bytes + len(metadata)
+        if entry.compaction_json is not None:
+            characters += len(entry.compaction_json)
+            byte_count += len(entry.compaction_json.encode("utf-8"))
         return characters, byte_count, image_bytes
 
     def _check_archive_capacity(self, entry: ArchiveEntry) -> tuple[int, int, int]:
@@ -598,7 +609,7 @@ class SimpleRuntime:
                         + ", ".join(action_bounds) + ")")
         return None
 
-    async def _compact(self, identity: AgentInputIdentity, *, original=None, pinned=None, required_events=None,
+    async def _compact_whole_turn(self, identity: AgentInputIdentity, *, original=None, pinned=None, required_events=None,
                        fresh_decision: bool = False):
         original = tuple(self._working) if original is None else original
         staged = list(original)
@@ -695,6 +706,345 @@ class SimpleRuntime:
             if last_failure:
                 raise AgentLimitError("summary call bound exhausted: " + last_failure) from None
             raise AgentLimitError("summary call bound exhausted")
+        return commit()
+
+    def _safe_summary_prefixes(self, working: list[_WorkingEntry], identity: AgentInputIdentity,
+                               required_events: frozenset[int]) -> tuple[tuple[_WorkingEntry, ...], ...]:
+        """Complete old prefixes, independent of the summarizer's input size.
+
+        Protect identities rather than only input rows: A/input, B/current,
+        A/late-completion must never make the first A row independently old.
+        """
+        inputs = [entry for entry in working if entry.kind == "input"]
+        protected = {entry.identity for entry in inputs[-max(1, self.config.recent_turns):]}
+        protected.add(identity)
+        if self._current is not None:
+            protected.add(self._current)
+        boundary = next((index for index, entry in enumerate(working)
+                         if entry.identity in protected or entry.sequence in required_events), len(working))
+        result = []
+        for end in range(boundary, 0, -1):
+            if (working[end - 1].kind not in ("completion", "summary")
+                and end < len(working) and working[end].kind not in ("input", "summary")):
+                continue
+            included_inputs = {entry.identity for entry in working[:end] if entry.kind == "input"}
+            if any(entry.identity in included_inputs and entry.kind in ("completion", "tool_exchange")
+                   for entry in working[end:]):
+                continue
+            result.append(tuple(working[:end]))
+        return tuple(result)
+
+    def _chunk_atoms(self, span: tuple[_WorkingEntry, ...]) -> tuple[SummaryAtom, ...]:
+        """Flatten ordinary parts, keeping each closed tool batch indivisible."""
+        records = []
+        for entry in span:
+            sequence = entry.origin_sequence or entry.sequence
+            archived = self._archive[sequence - 1] if 0 < sequence <= len(self._archive) else None
+            if entry.kind == "summary" and archived is not None and archived.kind == "summary_completion":
+                reference = SourceReference(sequence, -1, 0, "model_notes", "", 0)
+                records.append((Message.text("user", archived.text), (reference,), entry))
+                continue
+            original_indices = ([index for index, message in enumerate(archived.messages)
+                                 if message.role not in ("system", "developer")]
+                                if archived is not None and entry.kind == "input" else [])
+            for index, message in enumerate(entry.messages):
+                message_index = original_indices[index] if original_indices else index
+                kind = "text"
+                if archived is not None and not archived.messages and entry.kind == "completion":
+                    message_index, kind = -1, "completion_text"
+                references = []
+                for part_index, part in enumerate(message.parts):
+                    if isinstance(part, TextPart):
+                        references.append(SourceReference(sequence, message_index, part_index, kind,
+                            hashlib.sha256(part.text.encode("utf-8")).hexdigest(), 0, len(part.text)))
+                    else:
+                        references.append(SourceReference(sequence, message_index, part_index, "image",
+                            hashlib.sha256(part.data).hexdigest(), image_whole=True))
+                for call_index, call in enumerate(message.tool_calls):
+                    value = json.dumps({"call_id": call.call_id, "name": call.name,
+                                        "arguments_json": call.arguments_json},
+                                       ensure_ascii=False, separators=(",", ":"))
+                    references.append(SourceReference(sequence, message_index, -1, "tool_call",
+                        hashlib.sha256(value.encode("utf-8")).hexdigest(), call_index=call_index))
+                records.append((replace(message, native_assistant=None), tuple(references), entry))
+        atoms = []
+        position = 0
+        while position < len(records):
+            message, references, entry = records[position]
+            if message.tool_calls:
+                ids = {call.call_id for call in message.tool_calls}
+                stop = position + 1 + len(ids)
+                replies = records[position + 1:stop]
+                if (len(replies) != len(ids) or any(item[0].role != "tool" for item in replies)
+                    or {item[0].tool_call_id for item in replies} != ids):
+                    raise AgentLimitError("historical tool group is not a closed assistant/result batch")
+                group = records[position:stop]
+                # Reuse the exact portable tool-record projection, with native
+                # reasoning excluded and original opaque IDs/arguments intact.
+                projected = tuple(projected for original, _, owner in group
+                                  for projected in self._summary_messages((replace(owner, messages=(original,)),))[1:])
+                atoms.append(SummaryAtom(projected, tuple(item[0] for item in group),
+                                         tuple(reference for item in group for reference in item[1])))
+                position = stop
+                continue
+            if message.role == "tool":
+                raise AgentLimitError("historical tool result has no closed assistant/result batch")
+            for part, reference in zip(message.parts, references):
+                atoms.append(text_atom(part.text, message.role, reference) if isinstance(part, TextPart)
+                             else image_atom(part, message.role, reference))
+            position += 1
+        # A short adjacent label commonly supplies the image's timestamp or
+        # identity. Keep it with that image instead of leaving the association
+        # across independent leaf summaries. This is content-agnostic and
+        # bounded; large text and unrelated messages remain freely splittable.
+        grouped = []
+        position = 0
+        while position < len(atoms):
+            atom = atoms[position]
+            if (atom.text is not None and len(atom.text) <= 512
+                and len(atom.text.encode("utf-8")) <= 2048 and position + 1 < len(atoms)):
+                following = atoms[position + 1]
+                source, target = atom.references[0], following.references[0]
+                if (len(following.references) == 1 and target.image_whole
+                    and source.archive_sequence == target.archive_sequence
+                    and source.message_index == target.message_index
+                    and source.part_index + 1 == target.part_index):
+                    grouped.append(SummaryAtom((*atom.messages, *following.messages),
+                        (*atom.originals, *following.originals), (*atom.references, *following.references)))
+                    position += 2
+                    continue
+            grouped.append(atom)
+            position += 1
+        return tuple(grouped)
+
+    def _chunk_messages(self, atoms: tuple[SummaryAtom, ...], *, retry_instruction: str | None = None,
+                        merge: bool = False) -> tuple[Message, ...]:
+        instruction = self._summary_messages((), retry_instruction=retry_instruction)[0].parts[0].text
+        instruction = instruction.replace("Summarize this agent's earlier complete conversation turns.",
+            "Combine these model-generated partial notes into one coherent memory." if merge else
+            "Summarize these chronological historical conversation fragments.", 1)
+        instruction += ("\nMerge all ordered leaf notes below into one coherent memory. Preserve their useful facts; "
+                        "none of the leaf notes may be omitted. They are model notes, not environment facts."
+                        if merge else "\nThe ordered records below may be text or image fragments from larger turns. "
+                        "A fragment boundary does not end the original message or turn. Preserve facts and ordering; "
+                        "source labels are explanatory wrappers and are not original conversation text.")
+        return (Message.text("system", instruction), *(message for atom in atoms for message in atom.messages))
+
+    def _summary_retry(self, reason: str) -> str:
+        failure = SummaryResponseError(reason)
+        return (failure.retry_instruction +
+                f" Keep the complete response within the existing {self.config.summary_output_tokens}-token output budget; "
+                f"summary content must fit {self.config.summary_output_characters} characters and {self.config.summary_output_bytes} UTF-8 bytes.")
+
+    def _summary_note(self, text: str, sources: tuple[int, ...]) -> Message:
+        label = ",".join(map(str, sources))
+        if len(label) > 256:
+            # Full lineage lives in immutable archive/provenance and the
+            # bounded WorkingEntry, not an ever-growing model-visible label.
+            digest = hashlib.sha256(label.encode("ascii")).hexdigest()
+            label = f"first={sources[0]}, last={sources[-1]}, count={len(sources)}, source-list-sha256={digest}"
+        return Message.text("user", f"Model notes; not environment facts. Source archive entries {label}:\n{text}")
+
+    async def _summary_once(self, identity: AgentInputIdentity, messages: tuple[Message, ...],
+                            originals: tuple[Message, ...], sources: tuple[int, ...], metadata: str,
+                            *, require_reduction: bool = True):
+        """One billed attempt, with one validation path for turns/leaves/merge."""
+        if not self._fits(messages, summary=True):
+            raise AgentLimitError("summary request including its complete wrapper exceeds summary input bounds")
+        self._summary_attempts[identity] = self._summary_attempts.get(identity, 0) + 1
+        try:
+            request = replace(self._model_request(messages, "summary"), compaction_json=metadata)
+            completion = await self._call_model(self._summarizer, request)
+        except SummaryResponseError as failure:
+            self._summary_usage.append(failure.usage)
+            if self._deadline is not None:
+                self._deadline.check()
+            return None, None, failure.reason
+        if not isinstance(completion, ModelCompletion):
+            raise AgentError("summary model returned an invalid completion")
+        # Bill genuine completions even when a later archive or output bound
+        # rejects them. Raw provider reasoning never enters summary memory.
+        self._summary_usage.append(completion.usage)
+        sequence = len(self._archive) + 1
+        invalid_shape = bool(completion.tool_calls or completion.context_messages or completion.native_assistant is not None)
+        archive_metadata = metadata
+        if invalid_shape:
+            archive_metadata = json.dumps(dict(json.loads(metadata), status="rejected", reason="invalid_completion_shape"),
+                                          ensure_ascii=False, separators=(",", ":"))
+        self._append_archive(ArchiveEntry(sequence, "summary_completion", identity,
+                             text=completion.text, usage=completion.usage, compaction_json=archive_metadata))
+        if invalid_shape:
+            raise AgentError("summary model returned an invalid completion")
+        output = (Message.text("assistant", completion.text),)
+        if not completion.text.strip():
+            return None, sequence, "empty_content"
+        if (len(completion.text) > self.config.summary_output_characters
+            or len(completion.text.encode("utf-8")) > self.config.summary_output_bytes
+            or self._tokens(output, len(encoded_messages(output))) > self.config.summary_output_tokens):
+            return None, sequence, "output_bounds"
+        note = self._summary_note(completion.text, sources)
+        if require_reduction and _metrics((note,))[1] >= _metrics(originals)[1]:
+            return None, sequence, "not_reduced"
+        return note, sequence, None
+
+    async def _summarize_chunk_plan(self, identity: AgentInputIdentity, span: tuple[_WorkingEntry, ...],
+                                    leaves: tuple[tuple[SummaryAtom, ...], ...], plan_id: str):
+        sources = tuple(number for entry in span for number in entry.source_sequences)
+        completed = []
+        count = len(leaves)
+        for index, leaf in enumerate(leaves):
+            retry_instruction = None
+            while True:
+                # Reserve one call for every pending leaf and the final merge.
+                reserved = count - index - 1 + (1 if count > 1 else 0)
+                if self.config.max_summary_calls - self._summary_attempts.get(identity, 0) <= reserved:
+                    raise AgentLimitError("summary call bound exhausted before all planned fragments were summarized")
+                messages = self._chunk_messages(leaf, retry_instruction=retry_instruction)
+                audit = compaction_metadata(self.config.compaction_policy, "leaf", plan_id,
+                    tuple(reference for atom in leaf for reference in atom.references), leaf_index=index, leaf_count=count)
+                originals = tuple(message for atom in leaf for message in atom.originals)
+                leaf_sources = tuple(dict.fromkeys(reference.archive_sequence for atom in leaf for reference in atom.references))
+                # Intermediate notes may need explanatory context for a tiny
+                # tail fragment. The final labelled result must still reduce
+                # the complete original prefix before commit.
+                note, sequence, reason = await self._summary_once(identity, messages, originals, leaf_sources, audit,
+                                                               require_reduction=count == 1)
+                if reason is None:
+                    completed.append((note, sequence))
+                    break
+                retry_instruction = self._summary_retry(reason)
+        if count == 1:
+            note, sequence = completed[0]
+            # The final working note references the complete original prefix.
+            body = self._archive[sequence - 1].text
+            return self._summary_note(body, sources), sequence
+        merge_atoms = tuple(text_atom(self._archive[sequence - 1].text, "user",
+                            SourceReference(sequence, -1, 0, "leaf_summary", "", 0))
+                            for _, sequence in completed)
+        retry_instruction = None
+        while self._summary_attempts.get(identity, 0) < self.config.max_summary_calls:
+            messages = self._chunk_messages(merge_atoms, retry_instruction=retry_instruction, merge=True)
+            if not self._fits(messages, summary=True):
+                raise AgentLimitError("all leaf summaries and the complete merge wrapper cannot fit summary input bounds")
+            audit = compaction_metadata(self.config.compaction_policy, "merge", plan_id,
+                    tuple(reference for atom in merge_atoms for reference in atom.references), leaf_count=count)
+            # The final note carries the original prefix's lineage label.
+            # Compare like-for-like with that complete source prefix, rather
+            # than charging its label against only the unlabelled leaf bodies.
+            originals = tuple(message for entry in span for message in entry.messages)
+            note, sequence, reason = await self._summary_once(identity, messages, originals, sources, audit)
+            if reason is None:
+                return note, sequence
+            retry_instruction = self._summary_retry(reason)
+        raise AgentLimitError("summary call bound exhausted before the complete merge succeeded")
+
+    async def _compact(self, identity: AgentInputIdentity, *, original=None, pinned=None, required_events=None,
+                       fresh_decision: bool = False):
+        if self.config.compaction_policy == "whole_turn_v1":
+            return await self._compact_whole_turn(identity, original=original, pinned=pinned,
+                required_events=required_events, fresh_decision=fresh_decision)
+        original = tuple(self._working) if original is None else original
+        staged = list(original)
+        pinned = (self._pinned or ()) if pinned is None else pinned
+        required_events = frozenset(self._required_events) if required_events is None else required_events
+        target_fits = self._fresh_decision_fits if fresh_decision else self._fits
+        changed = False
+        retry_instruction = last_failure = None
+
+        def snapshot():
+            return pinned + tuple(message for entry in staged for message in entry.messages)
+
+        def commit():
+            if tuple(self._working[:len(original)]) == original:
+                candidate = [*staged, *self._working[len(original):]]
+                if changed:
+                    candidate = [replace(entry, messages=tuple(replace(message, native_assistant=None)
+                                 for message in entry.messages)) for entry in candidate]
+                self._working = candidate
+            return snapshot(), tuple(staged)
+
+        while not target_fits(snapshot()):
+            remaining = self.config.max_summary_calls - self._summary_attempts.get(identity, 0)
+            if remaining <= 0:
+                if fresh_decision and self._fits(snapshot()):
+                    return commit()
+                raise AgentLimitError("summary call bound exhausted" + (": " + last_failure if last_failure else ""))
+            prefixes = self._safe_summary_prefixes(staged, identity, required_events)
+            if not prefixes:
+                if fresh_decision and self._fits(snapshot()):
+                    return commit()
+                raise AgentLimitError("current input, required feedback, or retained turns cannot fit context bounds")
+            plan_id = hashlib.sha256((repr(identity) + repr(tuple(entry.sequence for entry in prefixes[0])) +
+                       str(self._summary_attempts.get(identity, 0))).encode("utf-8")).hexdigest()[:24]
+            normal_span = self._summary_span(staged, required_events, retry_instruction)
+            safe_lengths = {len(prefix) for prefix in prefixes}
+            normal = None
+            # Keep the established one-call path when useful. The legacy
+            # obstruction is only a signal to plan chunks immediately, never
+            # a proof that the new policy cannot summarize an oversized turn.
+            needs_chunks = self._compaction_obstruction(staged, pinned, required_events) is not None
+            if (not needs_chunks or retry_instruction) and len(normal_span) in safe_lengths:
+                for candidate in prefixes:
+                    if len(candidate) > len(normal_span):
+                        continue
+                    atoms = self._chunk_atoms(candidate)
+                    try:
+                        audit = compaction_metadata(self.config.compaction_policy, "whole_turn", plan_id,
+                                tuple(reference for atom in atoms for reference in atom.references))
+                    except AgentLimitError:
+                        # Bound provenance by selecting a smaller complete
+                        # prefix; never truncate or silently omit references.
+                        continue
+                    messages = self._summary_messages(candidate, retry_instruction=retry_instruction)
+                    if self._fits(messages, summary=True):
+                        normal = candidate, messages, audit
+                        break
+            if normal is not None:
+                span, messages, audit = normal
+                sources = tuple(number for entry in span for number in entry.source_sequences)
+                originals = tuple(message for entry in span for message in entry.messages)
+                note, sequence, reason = await self._summary_once(identity, messages, originals, sources, audit)
+                if reason is not None:
+                    last_failure = str(SummaryResponseError(reason))
+                    retry_instruction = self._summary_retry(reason)
+                    continue
+            else:
+                failure = None
+                for span in prefixes:
+                    try:
+                        atoms = self._chunk_atoms(span)
+                        # A single leaf needs no merge; multiple leaves reserve
+                        # one call and have at most three source leaves.
+                        one = self._chunk_messages(atoms)
+                        if self._fits(one, summary=True):
+                            leaves = (atoms,)
+                        else:
+                            leaves = pack_atoms(atoms,
+                                lambda chunk: self._fits(self._chunk_messages(chunk), summary=True),
+                                lambda chunk: not self._monotone_limit_excess(self._chunk_messages(chunk), summary=True),
+                                min(3, remaining - 1))
+                        # Validate bounded audit metadata before any model work.
+                        for index, leaf in enumerate(leaves):
+                            compaction_metadata(self.config.compaction_policy, "leaf", plan_id,
+                                tuple(reference for atom in leaf for reference in atom.references),
+                                leaf_index=index, leaf_count=len(leaves))
+                        break
+                    except AgentLimitError as error:
+                        failure = error
+                else:
+                    if fresh_decision and self._fits(snapshot()):
+                        return commit()
+                    raise failure
+                note, sequence = await self._summarize_chunk_plan(identity, span, leaves, plan_id)
+                sources = tuple(number for entry in span for number in entry.source_sequences)
+                originals = tuple(message for entry in span for message in entry.messages)
+                if _metrics((note,))[1] >= _metrics(originals)[1]:
+                    raise AgentLimitError("merged summary did not reduce the complete source prefix")
+            replacement = _WorkingEntry(span[0].sequence, "summary", span[0].identity, (note,), sources, sequence)
+            staged = [replace(entry, messages=tuple(replace(message, native_assistant=None)
+                      for message in entry.messages)) for entry in (replacement, *staged[len(span):])]
+            changed = True
+            retry_instruction = last_failure = None
         return commit()
 
     async def complete(self, request: AgentRequest) -> AgentResponse:

@@ -301,7 +301,7 @@ def test_default_token_limit_includes_output_reserve(excess_tokens):
     asyncio.run(run())
 
 
-def test_default_image_limit_compacts_only_after_256_images():
+def test_legacy_default_image_limit_compacts_only_after_256_images():
     async def run():
         calls = []
         image = image_from_pixels(bytes([1, 2, 3]), 1, 1)
@@ -311,7 +311,8 @@ def test_default_image_limit_compacts_only_after_256_images():
             return ModelCompletion("Earlier camera facts retained." if value.purpose == "summary" else "{}")
 
         # Isolate the image-count policy from the independent token limit.
-        runtime = SimpleRuntime(CallableModel(model), token_counter=lambda messages: 1)
+        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(compaction_policy="whole_turn_v1"),
+                                token_counter=lambda messages: 1)
         for number in range(1, 257):
             source = replace(request(number), messages=(*request(number).messages, Message("user", (image,))))
             await runtime.complete(source)
@@ -1252,7 +1253,7 @@ def test_summary_rejects_native_context_and_keeps_original_working_transaction()
                 assert not value.tools
                 return ModelCompletion("must not become a summary", context_messages=context)
             return ModelCompletion("A" * 280, context_messages=context)
-        runtime = SimpleRuntime(CallableModel(model), config())
+        runtime = SimpleRuntime(CallableModel(model), config(compaction_policy="whole_turn_v1"))
         await runtime.complete(request(1, "x" * 400))
         await runtime.complete(request(2, "x" * 400))
         source = request(3, "x" * 400)
@@ -1404,7 +1405,7 @@ def test_transformed_summary_budget_keeps_complete_native_turn_and_rolls_back(bo
             assert value.purpose == "action"
             return ModelCompletion("A" * 180, context_messages=context)
         first = request(1, "x" * 260)
-        probe = SimpleRuntime(CallableModel(model), config(max_context_characters=700))
+        probe = SimpleRuntime(CallableModel(model), config(compaction_policy="whole_turn_v1", max_context_characters=700))
         await probe.complete(first)
         transformed = probe._summary_messages(tuple(probe._working))
         raw = (transformed[0],) + tuple(message for entry in probe._working for message in entry.messages)
@@ -1414,7 +1415,7 @@ def test_transformed_summary_budget_keeps_complete_native_turn_and_rolls_back(bo
         assert raw_bytes < transformed_bytes - 1
         updates = {"summary_input_" + bound: (transformed_characters if bound == "characters" else transformed_bytes) - 1}
         counter = (lambda messages: len(encoded_messages(messages))) if bound == "tokens" else None
-        runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=700, **updates), token_counter=counter)
+        runtime = SimpleRuntime(CallableModel(model), config(compaction_policy="whole_turn_v1", max_context_characters=700, **updates), token_counter=counter)
         await runtime.complete(first)
         next_input = request(2, "y" * 260)
         runtime.accept_input(next_input)

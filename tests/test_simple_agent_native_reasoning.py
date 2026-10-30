@@ -694,7 +694,7 @@ def test_runtime_rejects_summary_completion_with_native_state_and_preserves_work
                 return ModelCompletion("Earlier complete turns retained.", native_assistant=state("Earlier complete turns retained."))
             return ModelCompletion("answer", native_assistant=state("answer"))
         runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
-            max_context_characters=1800, max_context_tokens=20000,
+            compaction_policy="whole_turn_v1", max_context_characters=1800, max_context_tokens=20000,
             output_reserve_tokens=64, recent_turns=1, summary_output_tokens=128))
         await runtime.complete(request(1, "old " + "x" * 500))
         await runtime.complete(request(2, "recent " + "x" * 500))

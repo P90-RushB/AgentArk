@@ -139,6 +139,47 @@ def test_omitted_simple_settings_equal_explicit_effective_defaults():
     assert build_evaluation_identity(minimal) == build_evaluation_identity(explicit)
 
 
+@pytest.mark.parametrize('config,old_hash', [
+    ({'agent_type': 'simple', 'provider': 'openai', 'model': 'test-model'},
+     'e57a2f3f5b16b81648ce586f423e2356f61f6ae3c798826094dfa06284ac9bc8'),
+    (SIMPLE, '2504b7efa393b6c898a9b6d3d4934c992c0e51455e84e87500e158d721e5ef5e'),
+])
+def test_explicit_whole_turn_policy_preserves_pre_policy_fingerprint(config, old_hash):
+    legacy = deepcopy(config)
+    legacy.setdefault('simple_agent', {}).setdefault('context', {})['compaction_policy'] = 'whole_turn_v1'
+    identity = build_evaluation_identity(legacy)
+    assert identity == {'version': 1, 'agent_type': 'simple', 'config_sha256': old_hash}
+    assert build_evaluation_identity(config)['config_sha256'] != old_hash
+
+
+@pytest.mark.parametrize('parallel', [False, True])
+def test_old_simple_fingerprint_resumes_only_with_legacy_policy_and_survives_new_results(tmp_path, parallel):
+    old = {**row(), 'model': 'test-model', 'provider': 'openai', 'agent_type': 'simple',
+           'evaluation_identity': {'version': 1, 'agent_type': 'simple',
+                                  'config_sha256': '2504b7efa393b6c898a9b6d3d4934c992c0e51455e84e87500e158d721e5ef5e'}}
+    path = tmp_path / 'results.jsonl'
+    save(path, [old])
+    legacy = deepcopy(SIMPLE)
+    legacy['simple_agent']['context']['compaction_policy'] = 'whole_turn_v1'
+    for config, expected in [(legacy, 1), (SIMPLE, 0)]:
+        if parallel:
+            pending, existing = filter_existing_parallel_jobs(build_parallel_eval_jobs([CASE], [config]), str(path))
+            assert len(pending) == 1 - expected
+        else:
+            existing = load_existing_eval_results(str(path), [CASE], [runtime(config)])
+        assert len(existing) == expected
+    if parallel:
+        removed = compact_parallel_results_file(str(path), build_parallel_eval_jobs([CASE], [SIMPLE]))
+        writer = ThreadSafeJsonlWriter(str(path), append=True, replace_existing_by_resume_key=True)
+        writer.write(row(SIMPLE))
+    else:
+        removed = compact_eval_results_file(str(path), [CASE], [runtime(SIMPLE)])
+        writer = JsonlWriter(str(path), append=True)
+        write_eval_result(writer, row(SIMPLE), replace_existing_by_resume_key=True)
+    assert removed == 0
+    assert read(path) == [old, row(SIMPLE)]
+
+
 def test_sequential_and_parallel_creation_record_same_identity():
     class FakeAgent:
         def __init__(self, **kwargs):
