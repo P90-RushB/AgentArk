@@ -9,6 +9,9 @@ import re
 from typing import Literal, Protocol, runtime_checkable
 
 
+_MAX_TOOL_CALL_ID_BYTES = 64 * 1024
+
+
 class AgentError(RuntimeError):
     """A bounded, local runtime failure; it grants no action authority."""
 
@@ -89,7 +92,10 @@ class ToolCall:
     def __post_init__(self) -> None:
         for name in ("call_id", "name", "arguments_json"):
             _text(getattr(self, name), name, empty=name == "arguments_json")
-        if len(self.call_id) > 256 or len(self.name) > 64 or len(self.arguments_json.encode("utf-8")) > 131072:
+        # Provider IDs are opaque and may carry continuation state. Preserve them
+        # unchanged while bounding their encoded size alongside the other fields.
+        if (len(self.call_id.encode("utf-8")) > _MAX_TOOL_CALL_ID_BYTES
+            or len(self.name) > 64 or len(self.arguments_json.encode("utf-8")) > 131072):
             raise ValueError("tool call exceeds its bound")
 
 
