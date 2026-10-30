@@ -99,7 +99,7 @@ Kaggle 评测通过其 OpenAI 兼容的 Model Proxy 运行。排行榜评测在�
 ## 1. 安装
 
 AgentArk 的本地评测、回放和环境服务需要本仓库中的 Python 包，以及 Hugging Face
-上与之匹配的 Unity 打包运行时。当前运行时版本为 `env-1.0.3`，包含 51 个首发任务。
+上与之匹配的 Unity 打包运行时。当前运行时版本为 `env-1.0.6`，包含 51 个首发任务。
 
 安装、运行时下载、本地路径配置和冒烟测试请参阅
 [docs/setup.zh-CN.md](docs/setup.zh-CN.md)。

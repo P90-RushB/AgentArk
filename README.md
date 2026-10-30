@@ -108,7 +108,7 @@ and should not be compared as identical runs.
 
 AgentArk local evaluation, replay, and env serving use the Python package in
 this repository plus a matching packaged Unity runtime from Hugging Face.
-Current runtime release: `env-1.0.3`, with 51 starter tasks.
+Current runtime release: `env-1.0.6`, with 51 starter tasks.
 
 See [docs/setup.md](docs/setup.md) for installation, runtime download, local
 path configuration, and smoke-test instructions.

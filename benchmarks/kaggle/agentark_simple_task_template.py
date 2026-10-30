@@ -28,11 +28,11 @@ import kaggle_benchmarks as kbench
 
 AGENTARK_REPO_URL = "https://github.com/P90-RushB/AgentArk.git"
 AGENTARK_COMMIT = "71a9cc305e3e87c0c5ed416086586e24db35210b"
-ENV_VERSION = "1.0.5"
-HF_REVISION = "fe2f916c538ef402f44ae64c51cecb4595e9bd15"
+ENV_VERSION = "1.0.6"
+HF_REVISION = "6a16c98e262abd760b09ef007a49118d0b1b0cb9"
 HF_BASE_URL = f"https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/{HF_REVISION}"
 ENV_ZIP_URL = f"{HF_BASE_URL}/artifacts/envs/{ENV_VERSION}/linux/AgentArk-env-{ENV_VERSION}-linux.zip"
-ENV_ZIP_SHA256 = "3a894106d2d3982290341e9bfa5d359b4c49dbf1515cb3e7fe9599e4d308f42c"
+ENV_ZIP_SHA256 = "f32061282f51bbc2ab36a4617d7af5eb6b4d349a944dd861171aba95c00ccdcc"
 TASK_ARTIFACT = None
 
 
@@ -276,7 +276,7 @@ def _download_runtime() -> None:
     if (ENV_ROOT / "AgentArk.x86_64").exists():
         return
     _download_verified(ENV_ZIP_URL, ENV_ZIP, ENV_ZIP_SHA256)
-    # The 1.0.5 starter ZIP contains the enclosing ENV_ROOT directory.
+    # The 1.0.6 starter ZIP contains the enclosing ENV_ROOT directory.
     _extract_archive(ENV_ZIP, ENV_ROOT.parent)
     exe = ENV_ROOT / "AgentArk.x86_64"
     if not exe.is_file():

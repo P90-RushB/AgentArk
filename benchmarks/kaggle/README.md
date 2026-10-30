@@ -4,17 +4,19 @@ New benchmarks use `agentark_simple_task_template.py` or
 `new-benchmark-task-f8fdd.ipynb`. Both explicitly select **SimpleAgent** with native
 host tools and context compaction. They pin wrapper commit
 `71a9cc305e3e87c0c5ed416086586e24db35210b`, HF revision
-`fe2f916c538ef402f44ae64c51cecb4595e9bd15` (`env-1.0.5`), and the env-1.0.5 Linux starter hash.
+`6a16c98e262abd760b09ef007a49118d0b1b0cb9` (`env-1.0.6`), and the env-1.0.6 Linux starter hash.
 The selected task package is fetched from that immutable registry and its hash
 and minimum wrapper commit are checked. A newer task may need a newer compatible
 HF/runtime pin; edit those constants before creating its benchmark.
 
-The 1.0.5 starter is named `AgentArk-env-1.0.5-linux.zip` and contains an
-`AgentArk-env-1.0.5-linux/` top-level directory. Its SHA-256 is
-`3a894106d2d3982290341e9bfa5d359b4c49dbf1515cb3e7fe9599e4d308f42c`.
-The notebook handles that layout. This release hides the legacy environment
-task-selection menu while preserving task-owned UI and configuration-driven
-task loading; changing the new template does not update existing hosted tasks.
+The 1.0.6 starter is named `AgentArk-env-1.0.6-linux.zip` (138,660,417 bytes)
+and contains an `AgentArk-env-1.0.6-linux/` top-level directory. Its SHA-256 is
+`f32061282f51bbc2ab36a4617d7af5eb6b4d349a944dd861171aba95c00ccdcc`.
+The notebook handles that layout. The runtime includes the 1.0.6 memory cleanup
+fixes and keeps the legacy environment task-selection menu hidden while
+preserving task-owned UI and configuration-driven task loading. Only newly
+imported or generated templates get these defaults; existing hosted or imported
+task definitions keep their own immutable pins.
 
 These are new evaluation conditions. Existing hosted task definitions and the
 historical `agentark_marble_stop_seeds_1_10.py` remain unchanged. An old task's

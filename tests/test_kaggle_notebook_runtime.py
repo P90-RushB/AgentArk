@@ -119,7 +119,7 @@ def test_config_accepts_proxy_url_forms(notebook, suffix, expected):
     assert config["eval"]["group_seeds"] == {"start": 1, "end": 2}
 
 
-def test_env105_wrapped_archive_extracts_without_an_extra_directory(notebook, tmp_path):
+def test_env106_wrapped_archive_extracts_without_an_extra_directory(notebook, tmp_path):
     archive = tmp_path / "published-layout-fixture.zip"
     root = notebook["ENV_ROOT"]
     with zipfile.ZipFile(archive, "w") as stream:
@@ -128,8 +128,8 @@ def test_env105_wrapped_archive_extracts_without_an_extra_directory(notebook, tm
     downloads = []
 
     def download(url, target, digest):
-        assert url.endswith("/artifacts/envs/1.0.5/linux/AgentArk-env-1.0.5-linux.zip")
-        assert digest == "3a894106d2d3982290341e9bfa5d359b4c49dbf1515cb3e7fe9599e4d308f42c"
+        assert url.endswith("/artifacts/envs/1.0.6/linux/AgentArk-env-1.0.6-linux.zip")
+        assert digest == "f32061282f51bbc2ab36a4617d7af5eb6b4d349a944dd861171aba95c00ccdcc"
         downloads.append(url)
         target.parent.mkdir(parents=True, exist_ok=True)
         notebook["shutil"].copyfile(archive, target)
