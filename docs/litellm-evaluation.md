@@ -176,6 +176,28 @@ The notebook helper explicitly selects Responses for Kaggle model IDs
 Override this with `DEFAULT_LITELLM_API` or `AGENTARK_KAGGLE_LITELLM_API` when
 needed; it writes the selected API into the ordinary AgentArk config.
 
+The new notebook and shared Kaggle template expose `DEFAULT_TOOL_CHOICE = None`.
+In LiteLLM mode, this authors `tool_choice: auto` from the first request for
+Kaggle Opus 5.5 aliases whose final slash-separated name is exactly
+`claude-opus-5-5` or `claude-opus-5.5`, optionally followed by `-default` or
+`@default`. Kaggle's CLI slug `claude-opus-5-5-default` selects wire model
+`anthropic/claude-opus-5-5@default`; its nested LiteLLM route is
+`openai/anthropic/claude-opus-5-5@default`.
+Native mode, Astra, Gemini and unknown model names keep `required`.
+Set `DEFAULT_TOOL_CHOICE` or `AGENTARK_KAGGLE_TOOL_CHOICE` to `required` or `auto`
+to choose explicitly; the environment override wins. Invalid choices fail during
+config authoring. This mapping belongs to the Kaggle notebook/template, not the
+core LiteLLM adapter. [Anthropic documents](https://platform.claude.com/docs/en/api/errors)
+that Opus 5.5 does not support forced tool choice; disabling thinking does not
+remove that restriction.
+
+`auto` still exposes function tools and the model remains instructed to use
+`submit_action`, but it does not force a tool call. Existing SimpleAgent behavior
+ends a decision on a prose-only response, which can become an invalid environment
+action. This change adds no reminder, retry or exception-based fallback. The
+selected tool choice is already part of the evaluation fingerprint; use a new
+benchmark name for the changed conditions.
+
 The notebook returns `normalized_mean_score_reward`: each case's raw final-attempt
 `score_reward` is normalized as `(score - min) / (max - min)` and averaged across
 seeds. Generated Python tasks return raw `mean_score_reward`. Set the task's
@@ -243,10 +265,14 @@ OpenAPI route or append `/chat/completions` to a Responses base URL.
   `modify_params`, fallback models and nonzero global retry settings must remain
   disabled; AgentArk rejects them instead of changing evaluation conditions.
   Request timeout and the SimpleAgent decision/call budgets still apply.
-- Host tools, `submit_action` and `tool_choice: required` keep their existing
-  SimpleAgent semantics. For a route that supports function tools but not
-  required tool choice, explicitly select `tool_choice: auto` as a separate
-  condition. Summaries have no executable tools. Read the
+- Host tools and `submit_action` keep their existing SimpleAgent semantics.
+  For any endpoint that supports function tools but rejects required tool choice,
+  a local manual YAML config can explicitly set `tool_choice: auto` under
+  `simple_agent`.
+  This permits tools without forcing a call and is a separate evaluation
+  condition. A prose-only response ends the decision and can be an invalid
+  environment action; no extra retry is added. Summaries have no executable
+  tools. Read the
   [harness limits](evaluation-guide.md#recommended-simpleagent-context-compaction-and-host-tools)
   before raising budgets.
 
@@ -305,6 +331,7 @@ remote model behavior or scores.
 | Real Kaggle Astra / Responses / packaged `DoorSpin3Turns`, seeds 1–2 | Both cases completed 10 Unity actions with raw final-attempt reward 1. Total: 20 action calls, 14 summary calls, zero model-call errors and zero SDK retries. |
 | Reasoning audit in that real run | Seven returned reasoning items: four were replayed in six later requests; three were cleared by existing compaction before first replay. No additional unexplained omission was found. |
 | Limits of the real run | Returned message phases were absent; phase preservation and intermediate host-tool continuations were covered by controlled loopback, not that run. Every real action directly submitted `submit_action`. |
+| Real Kaggle Opus 5.5 / Chat Completions / `tool_choice: auto` / `DoorSpin3Turns`, run 5800062 | Seed 1 completed 10 environment turns with raw final-attempt score 1.0 and final success. Seed 2 completed 4 environment turns, then an APIError stopped the run because the next request's estimated $0.647248 exceeded remaining Kaggle quota. The original forced-tool-choice HTTP 400 was resolved; this is partial two-seed validation interrupted by quota, not a task code error. The raw-output audit matched all 14 accepted native `submit_action` calls to environment actions; two mixed batches were rejected and corrected through existing behavior. |
 | Unverified claims | No direct native-Responses A/B comparison, performance-parity result, all-vendor signature validation or blanket live certification of the provider recipes above. |
 
 Evidence paths relative to the outer repository root are
@@ -321,7 +348,7 @@ into wire captures.
 | Symptom | Check |
 | --- | --- |
 | Missing LiteLLM / MCP / tenacity import | Install the pinned `.[litellm]` extra with the same Python executable used to run evaluation, then run `python -m pip check`. |
-| Function-tool HTTP 400 | Verify the selected model and API route support function tools. If only required tool choice is unsupported, explicitly use `tool_choice: auto`; do not enable global parameter dropping. |
+| Function-tool HTTP 400 | Verify the selected model and API route support function tools. If only required tool choice is unsupported, set `tool_choice: auto` under `simple_agent` in manual YAML or `AGENTARK_KAGGLE_TOOL_CHOICE=auto` in the new Kaggle template. Known LiteLLM Kaggle Opus 5.5 aliases already default to auto; other routes require an explicit choice. Do not enable global parameter dropping. |
 | Wrong model or model-not-found | Check the required nested provider prefix, top-level wire model, API mode and endpoint. Kaggle Astra needs nested `openai/openai/gpt-6-astra`; direct OpenAI needs `openai/gpt-6-astra`. |
 | `openai/responses/` configuration error | Select `api: responses`; use the ordinary `openai/` route for new configs. Responses currently rejects other SDK vendor prefixes. |
 | Unsupported temperature / thinking | Use `temperature: null` for Astra and remove native `thinking`. Add `reasoning_effort` only where supported. |

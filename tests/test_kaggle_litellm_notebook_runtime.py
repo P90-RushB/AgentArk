@@ -12,7 +12,8 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from agent_ark.agent.simple_agent import SimpleAgent
+from agent_ark.ark_eval.evaluation_identity import build_evaluation_identity
+from agent_ark.ark_eval.run_api_agent import build_model_runtimes
 from test_kaggle_notebook_runtime import load_notebook, prepare_full_run
 
 
@@ -36,6 +37,7 @@ def notebook(tmp_path, monkeypatch):
 
 def test_formal_litellm_notebook_import_keeps_generic_defaults_and_distinct_artifacts(notebook):
     assert notebook["DEFAULT_MODEL_BACKEND"] == "litellm"
+    assert notebook["DEFAULT_TOOL_CHOICE"] is None
     assert notebook["DEFAULT_TASK_NAME"] == "MarbleStop"
     assert notebook["DEFAULT_SEED_START"] == 1 and notebook["DEFAULT_SEED_END"] == 10
     assert notebook["DEFAULT_TASK_SCORE_SCALE_MIN"] == 0 and notebook["DEFAULT_TASK_SCORE_SCALE_MAX"] == 1
@@ -69,8 +71,12 @@ def test_formal_litellm_notebook_returns_normalized_mean_score(notebook):
     assert summary["mean_score_reward"] == 0.0 and summary["normalized_mean_score_reward"] == 0.5
 
 
-@pytest.mark.parametrize("wire_model,api", [("openai/gpt-6-astra", "responses"), ("google/gemini-2.5-pro", "chat_completions")])
-def test_formal_notebook_recipe_uses_real_sdk_local_http_and_native_submission(notebook, monkeypatch, wire_model, api):
+@pytest.mark.parametrize("wire_model,api,tool_choice", [
+    ("openai/gpt-6-astra", "responses", "required"),
+    ("google/gemini-2.5-pro", "chat_completions", "required"),
+    ("anthropic/claude-opus-5-5@default", "chat_completions", "auto"),
+])
+def test_formal_notebook_recipe_uses_real_sdk_local_http_and_native_submission(notebook, monkeypatch, wire_model, api, tool_choice):
     monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
     pytest.importorskip("litellm")
     received = []
@@ -117,13 +123,19 @@ def test_formal_notebook_recipe_uses_real_sdk_local_http_and_native_submission(n
             model=wire_model, base_url=f"http://127.0.0.1:{server.server_port}/models/openapi/v1",
             max_completion_tokens=30000)
         recipe = yaml.safe_load(notebook["CONFIG_PATH"].read_text())["models"][0]
-        agent = SimpleAgent(api_key="synthetic-local-key", base_url=recipe["base_url"], provider=recipe["provider"],
-            model=recipe["model"], temperature=recipe["temperature"], max_retries=recipe["max_retries"], timeout_s=20,
-            max_completion_tokens=recipe["max_completion_tokens"], simple_agent_config=recipe["simple_agent"])
+        monkeypatch.setenv("MODEL_PROXY_API_KEY", "synthetic-local-key")
+        recipe["timeout_s"] = 20
+        runtime = build_model_runtimes([recipe])[0]
+        agent = runtime["agent"]
+        assert agent.tool_choice == recipe["simple_agent"]["tool_choice"] == tool_choice
+        assert runtime["evaluation_identity"] == build_evaluation_identity(recipe)
+        other_choice = dict(recipe, simple_agent=dict(recipe["simple_agent"], tool_choice="required" if tool_choice == "auto" else "auto"))
+        assert runtime["evaluation_identity"] != build_evaluation_identity(other_choice)
         actions, traces = agent.forward_with_trace({0: {"messages": [{"role": "user", "content": "Visible door state."}]}})
         assert json.loads(actions[0]["action"][11:-12]) == action
         expected_path = "/models/openapi/responses" if api == "responses" else "/models/openapi/v1/chat/completions"
         assert len(received) == 2 and all(path == expected_path and body["model"] == wire_model for path, body in received)
+        assert all(body["tool_choice"] == tool_choice for path, body in received)
         assert traces[0]["usage"]["total_tokens"] == 24
         if api == "responses":
             assert all(body["store"] is False and "temperature" not in body for path, body in received)
@@ -141,15 +153,18 @@ def test_formal_notebook_recipe_uses_real_sdk_local_http_and_native_submission(n
         thread.join(timeout=5)
 
 
-@pytest.mark.parametrize("backend,wire_model,api_override,expected_api,temperature", [
-    ("native", "google/gemini-2.5-pro", None, None, 1.0),
-    ("litellm", "openai/gpt-6-astra", None, "responses", None),
-    ("litellm", "gpt-6-astra", "chat_completions", "chat_completions", None),
-    ("litellm", "google/gemini-2.5-pro", None, "chat_completions", 1.0),
-    ("litellm", "selected-model", "responses", "responses", 1.0),
+@pytest.mark.parametrize("backend,wire_model,api_override,expected_api,temperature,tool_choice", [
+    ("native", "google/gemini-2.5-pro", None, None, 1.0, "required"),
+    ("native", "anthropic/claude-opus-5-5@default", None, None, 1.0, "required"),
+    ("litellm", "openai/gpt-6-astra", None, "responses", None, "required"),
+    ("litellm", "gpt-6-astra", "chat_completions", "chat_completions", None, "required"),
+    ("litellm", "google/gemini-2.5-pro", None, "chat_completions", 1.0, "required"),
+    ("litellm", "selected-model", "responses", "responses", 1.0, "required"),
+    ("litellm", "anthropic/claude-opus-5-5@default", None, "chat_completions", 1.0, "auto"),
+    ("litellm", "claude-opus-5-5-default", None, "chat_completions", 1.0, "auto"),
 ])
 def test_backend_selection_preserves_wire_model_and_authors_explicit_sdk_route(
-        notebook, monkeypatch, backend, wire_model, api_override, expected_api, temperature):
+        notebook, monkeypatch, backend, wire_model, api_override, expected_api, temperature, tool_choice):
     monkeypatch.setenv("AGENTARK_KAGGLE_BACKEND", backend)
     if api_override:
         monkeypatch.setenv("AGENTARK_KAGGLE_LITELLM_API", api_override)
@@ -162,6 +177,7 @@ def test_backend_selection_preserves_wire_model_and_authors_explicit_sdk_route(
     assert model["api_key_env"] == "MODEL_PROXY_API_KEY"
     assert model["temperature"] == temperature and model["max_retries"] == (0 if backend == "litellm" else 1)
     assert model["simple_agent"]["tools"]["enabled"] is True
+    assert model["simple_agent"]["tool_choice"] == tool_choice
     if backend == "litellm":
         assert model["simple_agent"]["backend"] == "litellm"
         assert model["simple_agent"]["litellm"] == {"model": "openai/" + wire_model, "api": expected_api}
@@ -178,6 +194,60 @@ def test_imported_backend_constant_is_editable_and_environment_override_wins(not
     assert notebook["_selected_litellm_api"]("unknown-model") == "chat_completions"
     monkeypatch.setenv("AGENTARK_KAGGLE_BACKEND", "litellm")
     assert notebook["_selected_model_backend"]() == "litellm"
+
+
+@pytest.mark.parametrize("wire_model", [
+    "claude-opus-5-5", "claude-opus-5-5-default", "claude-opus-5-5@default",
+    "claude-opus-5.5", "claude-opus-5.5-default", "claude-opus-5.5@default",
+    "anthropic/claude-opus-5-5@default", "anthropic/claude-opus-5.5",
+])
+def test_tool_choice_policy_matches_only_bounded_opus_5_5_aliases_in_litellm(notebook, wire_model):
+    assert notebook["_selected_tool_choice"](wire_model, "litellm") == "auto"
+    assert notebook["_selected_tool_choice"](wire_model, "native") == "required"
+
+
+@pytest.mark.parametrize("wire_model", [
+    "claude-opus-5-6", "claude-opus-4-5", "claude-sonnet-5-5", "opus-5-5",
+    "claude-opus-5-50", "my-claude-opus-5-5", "claude-opus-5-5-thinking",
+    "claude-opus-5-5@preview", "claude-opus-5-5-default-extra", "claude-opus-5-5/other",
+    "openai/gpt-6-astra", "google/gemini-2.5-pro", "selected-model",
+])
+def test_unknown_model_tool_choice_policy_remains_required(notebook, wire_model):
+    assert notebook["_selected_tool_choice"](wire_model, "litellm") == "required"
+
+
+@pytest.mark.parametrize("backend,wire_model,default,override,expected", [
+    ("litellm", "anthropic/claude-opus-5-5@default", "required", None, "required"),
+    ("litellm", "anthropic/claude-opus-5-5@default", "auto", "required", "required"),
+    ("litellm", "selected-model", None, "auto", "auto"),
+    ("native", "selected-model", "auto", None, "auto"),
+    ("native", "selected-model", "required", "auto", "auto"),
+])
+def test_tool_choice_explicit_default_and_environment_override_are_authored_before_request(
+        notebook, monkeypatch, backend, wire_model, default, override, expected):
+    monkeypatch.setenv("AGENTARK_KAGGLE_BACKEND", backend)
+    notebook["DEFAULT_TOOL_CHOICE"] = default
+    if override is not None:
+        monkeypatch.setenv("AGENTARK_KAGGLE_TOOL_CHOICE", override)
+    notebook["_write_eval_config"](task_name="Snake", seed_start=1, seed_end=2, env_id=0,
+                                    model=wire_model, base_url="https://proxy.example",
+                                    max_completion_tokens=30000)
+    recipe = yaml.safe_load(notebook["CONFIG_PATH"].read_text())["models"][0]
+    assert recipe["simple_agent"]["tool_choice"] == expected
+
+
+@pytest.mark.parametrize("source", ["default", "environment"])
+@pytest.mark.parametrize("invalid", ["", "any", "none", "automatic"])
+def test_invalid_tool_choice_is_rejected_before_config_output(notebook, monkeypatch, source, invalid):
+    if source == "default":
+        notebook["DEFAULT_TOOL_CHOICE"] = invalid
+    else:
+        monkeypatch.setenv("AGENTARK_KAGGLE_TOOL_CHOICE", invalid)
+    with pytest.raises(ValueError, match="TOOL_CHOICE.*required or auto"):
+        notebook["_write_eval_config"](task_name="Snake", seed_start=1, seed_end=2, env_id=0,
+                                        model="anthropic/claude-opus-5-5@default", base_url="https://proxy.example",
+                                        max_completion_tokens=30000)
+    assert not notebook["CONFIG_PATH"].exists()
 
 
 
@@ -244,9 +314,17 @@ def test_invalid_backend_or_protocol_is_rejected_during_config_authoring(noteboo
 
 
 
-@pytest.mark.parametrize("wire_model,expected_temperature", [("openai/gpt-6-astra", None), ("selected-model", 1.0)])
-def test_litellm_authors_first_request_policy_without_temperature_fallback(notebook, monkeypatch, wire_model, expected_temperature):
+@pytest.mark.parametrize("wire_model,expected_temperature,override,tool_choice,error", [
+    ("openai/gpt-6-astra", None, None, "required", "temperature is unsupported"),
+    ("selected-model", 1.0, None, "required", "temperature is unsupported"),
+    ("anthropic/claude-opus-5-5@default", 1.0, None, "auto", "tool choice is unsupported"),
+    ("anthropic/claude-opus-5-5@default", 1.0, "required", "required", "tool_choice type tool and any not supported"),
+])
+def test_litellm_authors_first_request_policy_without_parameter_fallback(
+        notebook, monkeypatch, wire_model, expected_temperature, override, tool_choice, error):
     monkeypatch.setenv("AGENTARK_KAGGLE_BACKEND", "litellm")
+    if override is not None:
+        monkeypatch.setenv("AGENTARK_KAGGLE_TOOL_CHOICE", override)
     path = notebook["RESULT_PATH"]
     path.parent.mkdir(parents=True, exist_ok=True)
     configs = []
@@ -257,10 +335,10 @@ def test_litellm_authors_first_request_policy_without_temperature_fallback(noteb
         configs.append(yaml.safe_load(notebook["CONFIG_PATH"].read_text())["models"][0])
 
     def run(*args, **kwargs):
-        rows = [{"status": "error", "requested_group_seed": seed, "error": "temperature is unsupported"}
+        rows = [{"status": "error", "requested_group_seed": seed, "error": error}
                 for seed in [1, 2]]
         path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
-        return SimpleNamespace(returncode=1, stdout="temperature is unsupported")
+        return SimpleNamespace(returncode=1, stdout=error)
 
     notebook["_write_eval_config"] = write_config
     notebook["subprocess"] = SimpleNamespace(run=run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT)
@@ -269,5 +347,6 @@ def test_litellm_authors_first_request_policy_without_temperature_fallback(noteb
                                             base_url="https://proxy.example/openapi", max_completion_tokens=30000)
     assert len(configs) == 1
     assert configs[0]["temperature"] == expected_temperature and configs[0]["max_retries"] == 0
+    assert configs[0]["simple_agent"]["tool_choice"] == tool_choice
     assert not notebook["_ok_seeds"](results)
     assert not list(notebook["EXPORTED_RESULT_PATH"].parent.glob("*_before_temperature_retry.jsonl"))

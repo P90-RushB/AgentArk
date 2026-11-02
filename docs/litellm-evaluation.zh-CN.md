@@ -162,6 +162,23 @@ Notebook helper 为 Kaggle 的 `openai/gpt-6-astra`、`gpt-6-astra` 显式选择
 其他模型选择 Chat Completions。需要时可通过 `DEFAULT_LITELLM_API` 或
 `AGENTARK_KAGGLE_LITELLM_API` 覆盖；helper 会将选定 API 写入普通 AgentArk 配置。
 
+新 Notebook 和共享 Kaggle 模板提供 `DEFAULT_TOOL_CHOICE = None`。在 LiteLLM 模式下，
+对于最后一段斜杠分隔模型名恰好为 `claude-opus-5-5` 或 `claude-opus-5.5`
+（可带 `-default` 或 `@default` 后缀）的 Kaggle Opus 5.5 别名，从首次请求起写入
+`tool_choice: auto`。Kaggle CLI slug `claude-opus-5-5-default` 选择的 wire model 为
+`anthropic/claude-opus-5-5@default`，对应内层 LiteLLM 路由为
+`openai/anthropic/claude-opus-5-5@default`。
+原生模式、Astra、Gemini 和未知模型名仍使用 `required`。可将 `DEFAULT_TOOL_CHOICE` 或
+`AGENTARK_KAGGLE_TOOL_CHOICE` 显式设为 `required` 或 `auto`，环境变量优先；无效值会在
+生成配置时失败。这是 Kaggle Notebook／模板的映射规则，不是核心 LiteLLM 适配器的模型规则。
+[Anthropic 文档](https://platform.claude.com/docs/en/api/errors)说明 Opus 5.5 不支持强制工具选择，
+关闭 thinking 也不会解除这一限制。
+
+`auto` 仍提供函数工具，模型也仍被要求使用 `submit_action`，但不强制模型调用工具。
+按 SimpleAgent 既有行为，纯文字响应会结束本次决策，可能成为无效的环境动作。
+本次调整不添加提醒、重试或基于异常的回退。工具选择已经包含在评测指纹中；改变条件时应使用
+新的 benchmark 名称。
+
 Notebook 返回 `normalized_mean_score_reward`：将每个 case 的原始最终尝试
 `score_reward` 按 `(score - min) / (max - min)` 归一化，再对 seeds 求平均。
 生成的 Python 任务返回原始 `mean_score_reward`。创建 benchmark 前须设置任务实际分数范围；
@@ -218,9 +235,11 @@ Responses 基址后追加 `/chat/completions`。
   重试。SDK 进程级的 `drop_params`、`modify_params`、模型 fallback 和非零全局重试设置
   必须关闭，否则 AgentArk 明确拒绝，避免暗改评测条件。请求超时及 SimpleAgent 决策／调用
   预算继续有效。
-- 宿主工具、`submit_action` 和 `tool_choice: required` 保持 SimpleAgent 原有语义。
-  若端点支持函数工具但不支持 required，可显式选择 `tool_choice: auto`，作为另一个评测条件；
-  摘要没有可执行工具。提高预算前先阅读[完整 harness 限制](evaluation-guide.zh-CN.md#推荐-simpleagent上下文压缩与宿主工具)。
+- 宿主工具和 `submit_action` 保持 SimpleAgent 原有语义。对于任何支持函数工具但拒绝
+  required tool choice 的端点，本地手动 YAML 配置都可在 `simple_agent` 下显式设置
+  `tool_choice: auto`，作为另一个评测条件。它允许而不强制工具调用；纯文字响应
+  会结束决策，可能成为无效的环境动作，不会因此额外重试。摘要没有可执行工具。
+  提高预算前先阅读[完整 harness 限制](evaluation-guide.zh-CN.md#推荐-simpleagent上下文压缩与宿主工具)。
 
 ## 推理历史、压缩和 Trace
 
@@ -264,6 +283,7 @@ CodexAgent、SimpleAgent 原生 OpenRouter 处理和 RL 集成保留原有行为
 | 真实 Kaggle Astra／Responses／打包 `DoorSpin3Turns`，seeds 1–2 | 两个 case 各执行 10 个 Unity 动作，原始最终尝试 reward 均为 1；合计 20 次动作请求、14 次摘要请求，模型调用错误 0、SDK 重试 0。 |
 | 该次真实运行的推理审计 | 返回 7 个推理条目，4 个在后续 6 次请求中回传，3 个在首次回传前被既有压缩清除；额外无法解释的缺失为 0。 |
 | 真实运行的覆盖边界 | 响应没有 phase 字段；phase 保留和宿主工具中间续轮由受控 loopback 覆盖。真实运行的每个动作均直接 `submit_action`。 |
+| 真实 Kaggle Opus 5.5／Chat Completions／`tool_choice: auto`／`DoorSpin3Turns`，run 5800062 | Seed 1 完成 10 个环境轮次，原始最终尝试分数为 1.0，最终成功。Seed 2 完成 4 个环境轮次后，因下一请求估算费用 $0.647248 超出剩余 Kaggle 配额而报 APIError 并停止。原先强制工具选择导致的 HTTP 400 已解决；这是因配额中断的双 seed 部分验证，不是任务代码错误。原始输出审计确认全部 14 次已接受的原生 `submit_action` 与环境动作一致；另有两次混合批次被既有机制拒绝并纠正。 |
 | 未建立的结论 | 未做原生 Responses 直接 A/B，不宣称性能／效果零损失、全部供应商签名校验通过，也不把上方配置示例等同于全面真实调用认证。 |
 
 相对外层仓库根目录的本地证据位于
@@ -279,7 +299,7 @@ CodexAgent、SimpleAgent 原生 OpenRouter 处理和 RL 集成保留原有行为
 | 现象 | 检查方法 |
 | --- | --- |
 | 找不到 LiteLLM／MCP／tenacity | 用实际运行评测的同一 Python 安装固定的 `.[litellm]` extra，再执行 `python -m pip check`。 |
-| 函数工具 HTTP 400 | 检查模型和 API 路由是否支持函数工具。仅 required tool choice 不受支持时，显式改为 `tool_choice: auto`；不要启用全局丢参数。 |
+| 函数工具 HTTP 400 | 检查模型和 API 路由是否支持函数工具。仅 required tool choice 不受支持时，手动 YAML 在 `simple_agent` 下设置 `tool_choice: auto`，新 Kaggle 模板使用 `AGENTARK_KAGGLE_TOOL_CHOICE=auto`。已知 LiteLLM Kaggle Opus 5.5 别名默认使用 auto；其他路由需显式选择。不要启用全局丢参数。 |
 | 模型错误或 model-not-found | 检查内层供应商前缀、顶层 wire model、API 模式和端点。Kaggle Astra 内层需要 `openai/openai/gpt-6-astra`，直接 OpenAI 是 `openai/gpt-6-astra`。 |
 | `openai/responses/` 配置错误 | 选择 `api: responses`；新配置使用普通 `openai/` 路由。Responses 目前拒绝其他 SDK 供应商前缀。 |
 | temperature／thinking 不受支持 | Astra 使用 `temperature: null`，移除原生 `thinking`，只在支持时添加 `reasoning_effort`。 |

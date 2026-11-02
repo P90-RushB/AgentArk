@@ -49,6 +49,7 @@ def test_new_evaluation_examples_enable_simple_native_tools(filename):
 def test_generated_task_uses_generic_simple_template_and_immutable_pin(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENTARK_KAGGLE_BACKEND", raising=False)
     monkeypatch.delenv("AGENTARK_KAGGLE_LITELLM_API", raising=False)
+    monkeypatch.delenv("AGENTARK_KAGGLE_TOOL_CHOICE", raising=False)
     module = generator()
     output = tmp_path / "robot_painting.py"
     pin = "a" * 40
@@ -70,12 +71,12 @@ def test_generated_task_uses_generic_simple_template_and_immutable_pin(tmp_path,
 
     # Execute only the real config author, with no Kaggle import, downloads,
     # subprocesses, environment creation or model calls.
-    names = {"_write_eval_config", "_selected_model_backend", "_selected_litellm_api", "_is_kaggle_astra"}
+    names = {"_write_eval_config", "_selected_model_backend", "_selected_litellm_api", "_is_kaggle_astra", "_selected_tool_choice"}
     functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     namespace = {"Path": Path, "os": os, "json": json, "textwrap": textwrap, "Optional": __import__("typing").Optional,
                  "AGENTARK_ROOT": tmp_path, "RESULT_PATH": tmp_path / "tmp" / "simple.jsonl",
                  "ENV_ROOT": tmp_path / "env", "MOD_PATH": tmp_path / "Mods", "CONFIG_PATH": tmp_path / "eval.yaml",
-                 "DEFAULT_MODEL_BACKEND": "native", "DEFAULT_LITELLM_API": None}
+                 "DEFAULT_MODEL_BACKEND": "native", "DEFAULT_LITELLM_API": None, "DEFAULT_TOOL_CHOICE": None}
     exec(compile(ast.Module(body=functions, type_ignores=[]), str(output), "exec"), namespace)
     namespace["_write_eval_config"](task_name="RobotPainting", seed_start=2, seed_end=4, env_id=7,
                                    model="selected-model", base_url="https://proxy.example/genai",
@@ -85,6 +86,7 @@ def test_generated_task_uses_generic_simple_template_and_immutable_pin(tmp_path,
     assert model["agent_type"] == "simple"
     assert model["base_url"] == "https://proxy.example/openapi"
     assert model["simple_agent"]["tools"]["enabled"] is True
+    assert model["simple_agent"]["tool_choice"] == "required"
     assert model["simple_agent"]["context"]["output_reserve_tokens"] == 30000
     assert model["simple_agent"]["context"]["compaction_policy"] == "message_chunks_v1"
     budget = SimpleRuntimeConfig(**model["simple_agent"]["context"])
@@ -133,6 +135,7 @@ def test_litellm_notebook_is_generated_from_shared_template_and_published_backen
     source = "\n\n".join("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code")
     assert f'AGENTARK_COMMIT = "{pin}"' in source
     assert 'DEFAULT_MODEL_BACKEND = "litellm"' in source
+    assert 'DEFAULT_TOOL_CHOICE = None' in source
     assert "_simple_litellm_seeds_" in source and '"/tmp/agentark_kaggle_litellm_work"' in source
     assert '}-litellm"' in source
     assert 'DEFAULT_SEED_START = 1' in source and 'DEFAULT_SEED_END = 10' in source

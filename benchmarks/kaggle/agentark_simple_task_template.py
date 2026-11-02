@@ -58,6 +58,9 @@ DEFAULT_MAX_COMPLETION_TOKENS = 30000
 # The pinned native default remains usable without the optional SDK.
 DEFAULT_MODEL_BACKEND = "native"
 DEFAULT_LITELLM_API = None  # Set chat_completions or responses to override model defaults.
+# None uses auto for known Kaggle Opus 5.5 aliases in LiteLLM mode, required otherwise.
+# auto permits function tools without forcing a call; submit_action is still instructed.
+DEFAULT_TOOL_CHOICE = None  # Set required or auto, or AGENTARK_KAGGLE_TOOL_CHOICE.
 DEFAULT_ENV_ID = 0
 DEFAULT_PYTHON_VERSION = "3.10.12"
 # Use a new benchmark name for new evaluation conditions, preserving existing tasks.
@@ -135,6 +138,25 @@ def _selected_litellm_api(model: str) -> str:
     if api not in {"chat_completions", "responses"}:
         raise ValueError("AGENTARK_KAGGLE_LITELLM_API must be chat_completions or responses")
     return api
+
+
+def _selected_tool_choice(model: str, backend: str) -> str:
+    choice = os.getenv("AGENTARK_KAGGLE_TOOL_CHOICE")
+    if choice is None:
+        choice = DEFAULT_TOOL_CHOICE
+    if choice is not None:
+        if not isinstance(choice, str) or choice.strip().lower() not in {"required", "auto"}:
+            raise ValueError("DEFAULT_TOOL_CHOICE / AGENTARK_KAGGLE_TOOL_CHOICE must be required or auto")
+        return choice.strip().lower()
+    # Notebook policy only: match bounded aliases, leaving the proxy wire model intact.
+    alias = model.strip().lower().rsplit("/", 1)[-1]
+    if backend == "litellm" and alias in {
+        "claude-opus-5-5", "claude-opus-5-5-default",
+        "claude-opus-5.5", "claude-opus-5.5-default",
+        "claude-opus-5-5@default", "claude-opus-5.5@default",
+    }:
+        return "auto"
+    return "required"
 
 
 def _ensure_os_packages() -> None:
@@ -442,6 +464,7 @@ def _write_eval_config(
     if not openai_base_url.endswith(("/openapi", "/openapi/v1")):
         openai_base_url = openai_base_url + "/openapi"
     backend = _selected_model_backend()
+    tool_choice = _selected_tool_choice(model, backend)
     backend_yaml = ""
     if backend == "litellm":
         api = _selected_litellm_api(model)
@@ -498,7 +521,7 @@ models:
     # Keep the simple_agent settings below only when agent_type is simple.
     agent_type: simple
     simple_agent:
-{backend_yaml}      tool_choice: required
+{backend_yaml}      tool_choice: {tool_choice}
       output_token_parameter: max_completion_tokens
       context:
         # message_chunks_v1: bounded message chunks (default).

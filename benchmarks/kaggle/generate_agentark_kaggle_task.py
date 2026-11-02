@@ -91,6 +91,20 @@ final-attempt reward. The selected Model Proxy model remains unchanged. Verified
 `DEFAULT_LITELLM_API` or `AGENTARK_KAGGLE_LITELLM_API` to choose either API
 explicitly. Only LiteLLM Responses canonicalizes `/openapi/v1` to `/openapi`.
 
+`DEFAULT_TOOL_CHOICE = None` selects `auto` for the known Kaggle Opus 5.5
+aliases (last model segment `claude-opus-5-5` or `claude-opus-5.5`, optionally
+ending in `-default` or `@default`) in LiteLLM mode. Other models and native mode keep
+`required`. Set `DEFAULT_TOOL_CHOICE` or `AGENTARK_KAGGLE_TOOL_CHOICE` to
+`required` or `auto` to override this before the first request. This mapping is
+limited to the Kaggle template; the wrapper pin and core defaults are unchanged.
+`auto` enables function tools without forcing a call. The model is still
+instructed to finish with `submit_action`; a prose-only response ends the
+decision under the existing runtime behavior and can be an invalid task action.
+There is no new retry or exception-based fallback. Tool choice is already part
+of the evaluation fingerprint. For a manual YAML evaluation on any compatible
+endpoint, explicitly set `simple_agent.tool_choice: auto` when required tool
+choice is unsupported.
+
 ## Reproduce the DoorSpin3Turns Astra evaluation
 
 Before running the configuration cell, edit these defaults (or use the matching

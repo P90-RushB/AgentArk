@@ -68,7 +68,8 @@ Omitting `--backend` preserves native generation and its original pin. An
 explicit `--wrapper-commit <full-published-commit>` overrides the selected pin.
 The older native pin does not contain LiteLLM; setup rejects a missing backend
 feature instead of silently changing transport. Environment overrides
-`AGENTARK_KAGGLE_BACKEND` and `AGENTARK_KAGGLE_LITELLM_API` remain available in
+`AGENTARK_KAGGLE_BACKEND`, `AGENTARK_KAGGLE_LITELLM_API` and
+`AGENTARK_KAGGLE_TOOL_CHOICE` remain available in
 the shared template and new notebook. The frozen native notebook keeps its
 original settings.
 
@@ -87,6 +88,28 @@ The Responses mode removes a trailing `/v1` from `/openapi/v1`, using the proxy'
 supported `/openapi/responses` route; native and LiteLLM Chat keep their existing URL handling.
 For example, `openai/gpt-6-astra` becomes
 `simple_agent.litellm: {model: openai/openai/gpt-6-astra, api: responses}`.
+
+`DEFAULT_TOOL_CHOICE = None` selects a bounded Kaggle compatibility default:
+LiteLLM mode authors `tool_choice: auto` for Opus 5.5 aliases whose final
+slash-separated name is exactly `claude-opus-5-5` or `claude-opus-5.5`, optionally
+with `-default` or `@default`. Kaggle's CLI slug `claude-opus-5-5-default` selects
+wire model `anthropic/claude-opus-5-5@default`, yielding nested LiteLLM route
+`openai/anthropic/claude-opus-5-5@default`.
+Native mode, Astra, Gemini and unknown models keep `required`.
+Set `DEFAULT_TOOL_CHOICE` or `AGENTARK_KAGGLE_TOOL_CHOICE` explicitly to `required`
+or `auto` to override; the environment variable wins and invalid values fail
+during config authoring. This is a notebook/shared-template default, not a model
+mapping in the core runtime. [Anthropic documents](https://platform.claude.com/docs/en/api/errors)
+that Opus 5.5 rejects forced tool choice even with thinking disabled.
+
+`auto` continues to expose function tools and instruct the model to
+`submit_action`, without forcing a tool call. A prose-only response ends the
+decision under existing SimpleAgent behavior and can become an invalid
+environment action. There is no added reminder, retry or exception-based
+fallback. Tool choice is already included in the evaluation fingerprint.
+For any other endpoint that supports function tools but rejects required tool
+choice, explicitly choose `auto`; local manual YAML can also set `tool_choice: auto`
+under `simple_agent` independently of the Kaggle model mapping.
 
 Astra starts with `temperature: null`, and LiteLLM mode uses zero SDK retries.
 It keeps unsupported-parameter errors visible instead of rerunning with a
@@ -242,8 +265,9 @@ estimated input tokens. The message policy can split eligible old messages when
 needed. Protected inputs, complete tool groups, and all image, byte, and request
 limits remain enforced. Tune both action and summary budgets for the selected
 model; token estimates do not guarantee the provider's actual context limit.
-If the proxy requires `max_tokens` or `tool_choice: auto`, adjust the generated
-model recipe before publishing; the template does not silently switch harnesses.
+If the proxy requires `max_tokens`, adjust the generated model recipe before
+publishing. For tool choice, use the explicit controls described above; the
+template does not silently switch harnesses.
 
 For a new formal task, push and run the generated file:
 
