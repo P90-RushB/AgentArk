@@ -101,14 +101,27 @@ def _total_usage(usages: list[ModelUsage]) -> dict:
 
 class _LoopOwner:
     """A single event loop owns all requests and the default HTTP client."""
-    def __init__(self) -> None:
+    def __init__(self, *, cancel_pending_on_close: bool = False) -> None:
         self.loop = asyncio.new_event_loop()
+        self.cancel_pending_on_close = cancel_pending_on_close
         self.thread = threading.Thread(target=self._run, name="agentark-simple-loop", daemon=True)
         self.thread.start()
 
     def _run(self) -> None:
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
+        if self.cancel_pending_on_close:
+            # Optional SDKs may create background logging tasks on this private
+            # loop. Cancel only these tasks, leaving shared SDK clients alone.
+            async def drain() -> None:
+                current = asyncio.current_task()
+                pending = [task for task in asyncio.all_tasks(self.loop) if task is not current]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.wait(pending, timeout=2.0)
+                await self.loop.shutdown_asyncgens()
+            self.loop.run_until_complete(drain())
         self.loop.close()
 
     def run(self, coroutine):
@@ -416,6 +429,8 @@ class SimpleAgent(BaseAgent):
     ``simple_agent_config`` accepts ``context`` (SimpleRuntimeConfig fields),
     ``tools`` (``enabled``, ``workspace_parent``, ``limits``), and
     ``output_token_parameter`` (``max_completion_tokens`` or ``max_tokens``).
+    ``backend: litellm`` opts into the optional SDK with a required qualified
+    ``litellm.model`` and ``litellm.api`` (``chat_completions`` or ``responses``).
     An injected async ``model_backend`` is caller-owned and useful for tests.
     """
     def __init__(
@@ -433,9 +448,18 @@ class SimpleAgent(BaseAgent):
             raise ValueError("SimpleAgent requires append-only env messages with return_mode: delta")
         self.env_message_mode = env_message_mode
         config = _mapping(simple_agent_config, "simple_agent")
-        unknown = set(config) - {"context", "tools", "output_token_parameter", "tool_choice"}
+        unknown = set(config) - {"context", "tools", "output_token_parameter", "tool_choice", "backend", "litellm"}
         if unknown:
             raise ValueError("unknown simple_agent settings: " + ", ".join(sorted(unknown)))
+        self.backend = config.get("backend", "native")
+        if self.backend not in ("native", "litellm"):
+            raise ValueError("simple_agent.backend must be native or litellm")
+        self.litellm_config = _mapping(config.get("litellm"), "simple_agent.litellm")
+        if self.backend == "litellm":
+            from .litellm_model import validate_litellm_config
+            self.litellm_config = validate_litellm_config(self.litellm_config)
+        elif self.litellm_config:
+            raise ValueError("simple_agent.litellm requires backend: litellm")
         self.context_config = SimpleRuntimeConfig(**_mapping(config.get("context"), "simple_agent.context"))
         self.tools_config = _mapping(config.get("tools"), "simple_agent.tools")
         unknown_tools = set(self.tools_config) - {"enabled", "workspace_parent", "limits"}
@@ -454,8 +478,13 @@ class SimpleAgent(BaseAgent):
         self.tool_choice = config.get("tool_choice", "required")
         if self.tool_choice not in ("required", "auto"):
             raise ValueError("simple_agent.tool_choice must be required or auto")
-        self.base_url = str(base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        if self.backend == "litellm":
+            self.base_url = (str(base_url).strip() or None) if base_url is not None else None
+        else:
+            self.base_url = str(base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1")
         self.provider = str(provider or "auto").strip().lower()
+        if self.backend == "litellm" and self.provider == "codex":
+            raise ValueError("simple_agent.backend: litellm cannot be combined with provider: codex")
         self.model = str(model or ("gpt-6.1-sol" if self.provider == "codex" else "qwen3-vl-plus"))
         self.codex_bin = codex_bin or os.getenv("AGENTARK_CODEX_BIN") or None
         self.temperature = None if temperature is None else float(temperature)
@@ -465,6 +494,8 @@ class SimpleAgent(BaseAgent):
             raise ValueError("timeout_s must be positive or null")
         if self.max_retries < 0:
             raise ValueError("max_retries must be nonnegative")
+        if self.backend == "litellm" and thinking is not None:
+            raise ValueError("LiteLLM backend uses reasoning_effort; thinking must be null")
         self.thinking_type = APIAgent._normalize_thinking_type(thinking)
         self.reasoning_effort = APIAgent._normalize_reasoning_effort(reasoning_effort)
         if self.provider == "codex" and self.reasoning_effort is None:
@@ -476,13 +507,15 @@ class SimpleAgent(BaseAgent):
         parameter_source.client = SimpleNamespace(provider=self.provider, base_url_host=(urlparse(self.base_url).hostname or "").lower())
         parameter_source.thinking_type = self.thinking_type
         parameter_source.reasoning_effort = self.reasoning_effort
-        if self.provider == "codex":
+        if self.backend == "litellm":
+            self.extra_body, self._request_reasoning_effort = {}, self.reasoning_effort
+        elif self.provider == "codex":
             if self.thinking_type is not None:
                 raise ValueError("Codex backend uses reasoning_effort instead of thinking")
             self.extra_body, self._request_reasoning_effort = {}, None
         else:
             self.extra_body, self._request_reasoning_effort = parameter_source._request_parameters()
-        self._api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY")
+        self._api_key = api_key if self.backend == "litellm" else (api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY"))
         if model_backend is not None and not callable(getattr(model_backend, "complete", None)):
             raise TypeError("model_backend must expose async complete")
         if tool_setup is not None and not callable(tool_setup):
@@ -713,13 +746,16 @@ class SimpleAgent(BaseAgent):
 
     def configuration_summary(self) -> dict:
         """Reproducible bounds and policy, without credentials or local paths."""
-        return {"context": asdict(self.context_config),
+        summary = {"context": asdict(self.context_config),
                 "tools": {"enabled": self.tools_enabled, "limits": asdict(self.tool_limits)},
                 "output_token_parameter": self.output_token_parameter,
                 "tool_choice": self.tool_choice,
                 "env_message_mode": "delta", "sdk_max_retries": self.max_retries,
                 "custom_tools": self._tool_setup is not None, "tools_enabled": self.tools_enabled,
                 "native_action_submission": self.tools_enabled or self._tool_setup is not None}
+        if self.backend == "litellm":
+            summary.update({"backend": "litellm", "litellm": dict(self.litellm_config)})
+        return summary
 
     def _trace(self, state: _AgentState, archive_start: int, *, final=None, action=None, error=None, extra_events=()) -> dict:
         events = []
@@ -763,7 +799,7 @@ class SimpleAgent(BaseAgent):
                     continue
                 state, request, dynamic, attempt, original_messages = self._prepare(agent_idx, obs_dict)
                 if self._loop is None:
-                    self._loop = _LoopOwner()
+                    self._loop = _LoopOwner(cancel_pending_on_close=self.backend == "litellm")
                 archive_start = len(state.runtime.history_snapshot)
                 # Request traces belong to this decision, not to an additional
                 # unbounded copy of every previous full model context.
@@ -835,6 +871,9 @@ class SimpleAgent(BaseAgent):
             self._closed = True
 
     def _new_backend(self):
+        if self.backend == "litellm":
+            from .litellm_model import LiteLLMModel
+            return LiteLLMModel(self)
         if self.provider == "codex":
             from .codex_model import CodexModel
             return CodexModel(model=self.model, reasoning_effort=self.reasoning_effort or "medium",

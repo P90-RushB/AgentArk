@@ -215,6 +215,140 @@ class NativeAssistantState:
 
 
 @dataclass(frozen=True, slots=True)
+class LiteLLMAssistantState:
+    """Bounded LiteLLM replay fields, isolated from the native Chat contract.
+
+    Chat provider JSON remains opaque inside the four named state families;
+    Responses retains ordered native output items with a checked projection.
+    It is never a source of tools, ordinary text, or provider request kwargs.
+    """
+    scope: str
+    message_json: str
+
+    def __post_init__(self) -> None:
+        _text(self.scope, "LiteLLM assistant scope")
+        _text(self.message_json, "LiteLLM assistant JSON")
+        if len(self.scope) > 256 or len(self.message_json.encode("utf-8")) > 1024 * 1024:
+            raise ValueError("LiteLLM assistant state exceeds its bound")
+
+        def pairs(items):
+            value = {}
+            for key, item in items:
+                if key in value:
+                    raise ValueError("duplicate LiteLLM assistant fields")
+                value[key] = item
+            return value
+
+        def constant(value):
+            raise ValueError("nonfinite LiteLLM assistant JSON")
+
+        try:
+            value = json.loads(self.message_json, object_pairs_hook=pairs, parse_constant=constant)
+            json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            if (not isinstance(value, dict) or value.get("role") != "assistant"
+                or "content" not in value or set(value) - {
+                    "role", "content", "tool_calls", "reasoning_items", "thinking_blocks",
+                    "reasoning_content", "provider_specific_fields", "responses_output"}):
+                raise ValueError("invalid LiteLLM assistant fields")
+            content = value["content"]
+            if content is not None and not isinstance(content, (str, list)):
+                raise ValueError("invalid LiteLLM assistant content")
+            if isinstance(content, list) and any(
+                not isinstance(part, dict) or not isinstance(part.get("text"), str)
+                or part.get("type", "text") != "text" or set(part) - {"type", "text"}
+                for part in content
+            ):
+                raise ValueError("LiteLLM assistant content must contain only text parts")
+            for name in ("reasoning_items", "thinking_blocks"):
+                item = value.get(name)
+                if item is not None and (not isinstance(item, list) or any(not isinstance(part, dict) for part in item)):
+                    raise ValueError("invalid LiteLLM assistant " + name)
+            if value.get("reasoning_content") is not None and not isinstance(value["reasoning_content"], str):
+                raise ValueError("invalid LiteLLM assistant reasoning_content")
+            if value.get("provider_specific_fields") is not None and not isinstance(value["provider_specific_fields"], dict):
+                raise ValueError("invalid LiteLLM assistant provider_specific_fields")
+            calls = self._calls(value)
+            if "responses_output" in value:
+                if set(value) & {"reasoning_items", "thinking_blocks", "reasoning_content", "provider_specific_fields"}:
+                    raise ValueError("LiteLLM Responses state cannot contain Chat state")
+                output = value["responses_output"]
+                if (not isinstance(output, list) or not output
+                    or any(not isinstance(item, dict) or item.get("type") not in ("message", "reasoning", "function_call") for item in output)):
+                    raise ValueError("invalid LiteLLM Responses output")
+                texts, output_calls = [], []
+                output_ids = set()
+                for item in output:
+                    if item.get("id") is not None:
+                        _text(item["id"], "LiteLLM Responses output ID")
+                        if item["id"] in output_ids:
+                            raise ValueError("duplicate LiteLLM Responses output ID")
+                        output_ids.add(item["id"])
+                    if item.get("status", "completed") not in (None, "completed"):
+                        raise ValueError("incomplete LiteLLM Responses output")
+                    if item.get("provider_specific_fields") is not None and not isinstance(item["provider_specific_fields"], dict):
+                        raise ValueError("invalid LiteLLM Responses provider fields")
+                    if item["type"] == "message":
+                        if (item.get("role") != "assistant" or not isinstance(item.get("content"), list)
+                            or item.get("phase") not in (None, "commentary", "final_answer")
+                            or any(not isinstance(part, dict) or part.get("type") != "output_text"
+                                   or not isinstance(part.get("text"), str) for part in item["content"])):
+                            raise ValueError("invalid LiteLLM Responses message")
+                        texts.extend(part["text"] for part in item["content"])
+                    elif item["type"] == "function_call":
+                        output_calls.append(ToolCall(item.get("call_id"), item.get("name"), item.get("arguments")))
+                    else:
+                        if (item.get("encrypted_content") is not None and not isinstance(item["encrypted_content"], str)
+                            or "summary" not in item or not isinstance(item["summary"], list)
+                            or any(not isinstance(part, dict) or part.get("type") != "summary_text"
+                                   or not isinstance(part.get("text"), str) for part in item["summary"])):
+                            raise ValueError("invalid LiteLLM Responses reasoning")
+                if tuple(output_calls) != calls or "".join(texts).strip() != self.content_text:
+                    raise ValueError("LiteLLM Responses output must match its assistant projection")
+        except (TypeError, RecursionError, OverflowError) as error:
+            raise ValueError("invalid LiteLLM assistant JSON") from error
+
+    @staticmethod
+    def _calls(value: dict) -> tuple[ToolCall, ...]:
+        calls = value.get("tool_calls")
+        if calls is None:
+            calls = []
+        if not isinstance(calls, list) or len(calls) > 32:
+            raise ValueError("invalid LiteLLM assistant tool calls")
+        parsed = []
+        for call in calls:
+            if (not isinstance(call, dict) or not {"id", "type", "function"} <= set(call)
+                or set(call) - {"id", "type", "function", "provider_specific_fields"}
+                or call["type"] != "function" or not isinstance(call["function"], dict)
+                or not {"name", "arguments"} <= set(call["function"])
+                or set(call["function"]) - {"name", "arguments", "provider_specific_fields"}):
+                raise ValueError("invalid LiteLLM assistant tool call")
+            for item in (call, call["function"]):
+                if item.get("provider_specific_fields") is not None and not isinstance(item["provider_specific_fields"], dict):
+                    raise ValueError("invalid LiteLLM tool provider_specific_fields")
+            parsed.append(ToolCall(call["id"], call["function"]["name"], call["function"]["arguments"]))
+        if len({call.call_id for call in parsed}) != len(parsed):
+            raise ValueError("duplicate LiteLLM assistant tool call ID")
+        return tuple(parsed)
+
+    @property
+    def message(self) -> dict:
+        return json.loads(self.message_json)
+
+    @property
+    def tool_calls(self) -> tuple[ToolCall, ...]:
+        return self._calls(self.message)
+
+    @property
+    def content_text(self) -> str:
+        content = self.message["content"]
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content.strip()
+        return "\n".join(part["text"].strip() for part in content if part["text"].strip())
+
+
+@dataclass(frozen=True, slots=True)
 class ToolResult:
     call_id: str
     parts: tuple[TextPart | ImagePart, ...]
@@ -234,7 +368,7 @@ class Message:
     parts: tuple[TextPart | ImagePart, ...]
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
-    native_assistant: NativeAssistantState | None = None
+    native_assistant: NativeAssistantState | LiteLLMAssistantState | None = None
 
     def __post_init__(self) -> None:
         if self.role not in ("system", "developer", "user", "assistant", "tool"):
@@ -252,7 +386,7 @@ class Message:
         elif self.tool_call_id is not None:
             raise ValueError("only tool results may have a call ID")
         if self.native_assistant is not None:
-            if (self.role != "assistant" or not isinstance(self.native_assistant, NativeAssistantState)
+            if (self.role != "assistant" or not isinstance(self.native_assistant, (NativeAssistantState, LiteLLMAssistantState))
                 or self.native_assistant.tool_calls != self.tool_calls):
                 raise ValueError("native assistant state must match the assistant tool calls")
             if (any(not isinstance(part, TextPart) for part in self.parts)
@@ -367,7 +501,7 @@ class ModelCompletion:
     usage: ModelUsage = ModelUsage()
     tool_calls: tuple[ToolCall, ...] = ()
     context_messages: tuple[Message, ...] = ()
-    native_assistant: NativeAssistantState | None = None
+    native_assistant: NativeAssistantState | LiteLLMAssistantState | None = None
 
     def __post_init__(self) -> None:
         _text(self.text, "completion text", empty=True)
@@ -378,7 +512,7 @@ class ModelCompletion:
         if len({c.call_id for c in self.tool_calls}) != len(self.tool_calls):
             raise ValueError("duplicate completion tool call ID")
         if self.native_assistant is not None:
-            if (not isinstance(self.native_assistant, NativeAssistantState) or self.context_messages
+            if (not isinstance(self.native_assistant, (NativeAssistantState, LiteLLMAssistantState)) or self.context_messages
                 or self.native_assistant.tool_calls != self.tool_calls):
                 raise ValueError("native completion state must match the assistant tool calls")
             if self.text != self.native_assistant.content_text:

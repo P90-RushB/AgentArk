@@ -1,0 +1,60 @@
+# Supported optional LiteLLM backend; see docs/litellm-evaluation.md (also zh-CN).
+# From the AgentArk package root, in the existing Python environment:
+# python -m pip install -e ".[litellm]"
+# The extra pins litellm[mcp] and tenacity; it may upgrade the shared openai SDK.
+# Native Chat Completions remains the default in all existing configurations.
+env_cfg:
+  env_path: "${AGENTARK_ENV_PATH}"
+  mod_path: "${AGENTARK_MOD_PATH}"
+  task_type: RLTask
+  env_config_overrides:
+    override_by_task: true
+    num_parallel_envs: 1
+
+eval:
+  output_path: tmp/simple_agent_litellm_results.jsonl
+  stop_on_error: false
+  fixed_env_id: 0
+  task_names: [MarbleStop]
+  group_seeds:
+    start: 1
+    end: 2
+
+models:
+  - name: simple-astra-litellm
+    agent_type: simple
+    # This retains the evaluator's HTTP-provider label. LiteLLM uses its own
+    # explicitly qualified model below; it does not infer a vendor from this label.
+    provider: openai
+    # Top-level model is the display/evaluation label (the wire model in this example).
+    # The nested qualified model selects actual SDK routing.
+    model: gpt-6-astra
+    api_key_env: OPENAI_API_KEY
+    # Omit base_url to use the LiteLLM provider's endpoint, or supply a compatible proxy.
+    temperature: null
+    reasoning_effort: medium
+    max_completion_tokens: 30000
+    max_retries: 0
+    timeout_s: 600
+    simple_agent:
+      # native: existing OpenAI-compatible HTTP / Codex transport (default).
+      # litellm: optional LiteLLM Python SDK transport.
+      backend: litellm
+      litellm:
+        # Explicit LiteLLM provider/model. Direct OpenAI uses openai/gpt-6-astra.
+        # Kaggle also needs top-level model: openai/gpt-6-astra, its /models/openapi
+        # base_url, api_key_env: MODEL_PROXY_API_KEY, and this nested model:
+        # openai/openai/gpt-6-astra. The first openai/ selects the SDK adapter.
+        model: openai/gpt-6-astra
+        # chat_completions: acompletion, supports LiteLLM's Chat providers.
+        # responses: native aresponses; currently requires an openai/ provider.
+        # This is not a Chat-to-Responses bridge. Do not copy native thinking fields;
+        # reasoning_effort is optional and subject to provider/model support.
+        api: responses
+      tool_choice: required
+      context:
+        compaction_policy: message_chunks_v1
+        output_reserve_tokens: 30000
+      tools:
+        enabled: true
+        workspace_parent: tmp/simple_agent_litellm_workspaces

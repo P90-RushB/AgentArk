@@ -195,6 +195,58 @@ def test_sequential_and_parallel_creation_record_same_identity():
     assert error['evaluation_identity'] == actual['evaluation_identity']
 
 
+@pytest.mark.parametrize('config,expected', [
+    ({'agent_type': 'simple', 'provider': 'openai', 'model': 'test-model'},
+     '047216dbe08c318aec600d7b3903e8f3d22bb7d5bc41f8007199527ffa4a6694'),
+    ({'provider': 'openai', 'model': 'test-model'},
+     '0b8894134cb4283560e4351ec01f6d99dde337f442701cf3d6c999e418a01bcf'),
+    ({'agent_type': 'simple', 'provider': 'codex', 'model': 'gpt-6.1-sol'},
+     'd4f812358261971c9a2379b713cce25854bb1ea95a86e83570b1a9e42255316b'),
+])
+def test_optional_litellm_does_not_change_existing_identity(config, expected):
+    assert build_evaluation_identity(config)['config_sha256'] == expected
+    if config.get('agent_type') == 'simple':
+        explicit = deepcopy(config)
+        explicit.setdefault('simple_agent', {})['backend'] = 'native'
+        assert build_evaluation_identity(explicit) == build_evaluation_identity(config)
+
+
+def test_litellm_identity_distinguishes_protocol_model_and_provider_default_url():
+    config = deepcopy(SIMPLE)
+    config['simple_agent'].update(backend='litellm', litellm={
+        'model': 'openai/gpt-6-astra', 'api': 'responses'})
+    original = build_evaluation_identity(config)
+    assert original != build_evaluation_identity(SIMPLE)
+    for change in (
+        {'model': 'openai/gpt-6.1-sol', 'api': 'responses'},
+        {'model': 'openai/gpt-6-astra', 'api': 'chat_completions'},
+    ):
+        changed = deepcopy(config)
+        changed['simple_agent']['litellm'] = change
+        assert build_evaluation_identity(changed) != original
+    changed = deepcopy(config)
+    changed['base_url'] = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    assert build_evaluation_identity(changed) != original
+    alias = deepcopy(config)
+    alias['simple_agent']['litellm']['model'] = 'openai/responses/gpt-6-astra'
+    assert build_evaluation_identity(alias) == original
+
+
+@pytest.mark.parametrize('parallel', [False, True])
+def test_litellm_results_cannot_resume_native_chat_cases(tmp_path, parallel):
+    config = deepcopy(SIMPLE)
+    config['simple_agent'].update(backend='litellm', litellm={
+        'model': 'openai/gpt-6-astra', 'api': 'responses'})
+    path = tmp_path / 'results.jsonl'
+    save(path, [row(config)])
+    if parallel:
+        pending, existing = filter_existing_parallel_jobs(build_parallel_eval_jobs([CASE], [SIMPLE]), str(path))
+        assert len(pending) == 1
+    else:
+        existing = load_existing_eval_results(str(path), [CASE], [runtime(SIMPLE)])
+    assert not existing
+
+
 def test_unknown_or_invalid_record_identity_does_not_crash_or_resume(tmp_path):
     path = tmp_path / 'results.jsonl'
     save(path, [

@@ -65,6 +65,14 @@ def build_evaluation_identity(config: Mapping[str, Any]) -> dict[str, Any]:
     """
     agent_type = resolved_agent_name(config)
     provider = str(config.get('provider', 'auto') or 'auto').strip().lower()
+    options = config.get('simple_agent', {})
+    if isinstance(options, Mapping) and options.get('backend') == 'litellm':
+        # Validate this new opt-in before parallel resume filtering can match
+        # an unrelated legacy result. Historical native identities stay intact.
+        if agent_type != 'simple':
+            raise ValueError('simple_agent.backend: litellm requires agent_type: simple')
+        if provider == 'codex':
+            raise ValueError('simple_agent.backend: litellm cannot be combined with provider: codex')
     codex = provider == 'codex' or agent_type == 'codex'
     fields = {
         'agent_type': agent_type,
@@ -107,6 +115,16 @@ def build_evaluation_identity(config: Mapping[str, Any]) -> dict[str, Any]:
         }
         fields['tool_choice'] = options.get('tool_choice', 'required')
         fields['output_token_parameter'] = options.get('output_token_parameter', 'max_completion_tokens')
+        if options.get('backend', 'native') == 'litellm':
+            from agent_ark.agent.simple_agent.litellm_model import validate_litellm_config
+
+            fields['model_backend'] = 'litellm'
+            fields['litellm'] = validate_litellm_config(options.get('litellm', {}))
+            fields['litellm_contract_version'] = 1
+            # An omitted LiteLLM URL selects that SDK provider's default; it
+            # must not inherit the historical native DashScope endpoint.
+            endpoint = str(config.get('base_url') or '').strip()
+            fields['endpoint'] = canonical_endpoint(endpoint) if endpoint else None
     elif agent_type == 'codex':
         fields.update({
             'thread_mode': config.get('thread_mode') or 'per_agent',

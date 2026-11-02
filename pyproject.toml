@@ -28,6 +28,12 @@ readme = "README.md"
 requires-python = ">=3.10,<3.10.13"
 
 [project.optional-dependencies]
+litellm = [
+    # The pinned SDK imports MCP for tool requests and tenacity for retries.
+    # tenacity is a runtime import absent from LiteLLM's dependency metadata.
+    "litellm[mcp]==1.106.6",
+    "tenacity==9.1.2",
+]
 codex = [
     "openai-codex>=0.147.0",
 ]

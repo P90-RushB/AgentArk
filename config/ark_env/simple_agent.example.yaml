@@ -52,6 +52,9 @@ models:
     max_retries: 0
     timeout_s: 1800
     simple_agent:
+      # backend options: native (default) or litellm (optional Python SDK).
+      # See simple_agent_litellm.example.yaml for Chat / Responses configuration.
+      backend: native
       # Native rounds can choose a host tool or the terminal submit_action.
       # Use auto for endpoints that do not support required tool selection.
       tool_choice: required

@@ -459,8 +459,8 @@ function traceImage(url) {
 function traceContent(content) {
     if (!Array.isArray(content)) return `<pre>${esc(typeof content === 'string' ? content : formatJson(content, '(empty content)'))}</pre>`;
     return content.map(part => {
-        if (part && part.type === 'text') return `<pre>${esc(part.text || '')}</pre>`;
-        if (part && part.type === 'image_url') return traceImage(part.url || (part.image_url && part.image_url.url));
+        if (part && ['text', 'input_text', 'output_text'].includes(part.type)) return `<pre>${esc(part.text || '')}</pre>`;
+        if (part && ['image_url', 'input_image'].includes(part.type)) return traceImage(part.url || (typeof part.image_url === 'string' ? part.image_url : part.image_url && part.image_url.url));
         return `<pre>${esc(formatJson(part, '(empty part)'))}</pre>`;
     }).join('');
 }
@@ -469,7 +469,7 @@ function traceMessages(messages) {
     return messages.map((message, index) => {
         if (!message || typeof message !== 'object') return traceJsonSection(`Message ${index + 1}`, message);
         const extras = Object.fromEntries(Object.entries(message).filter(([key]) => key !== 'role' && key !== 'content'));
-        return `<div class="call-message"><div class="call-label">${index + 1} · ${esc(message.role || 'unknown role')}</div>${traceContent(message.content)}${Object.keys(extras).length ? traceJsonSection('Message fields (tool calls, IDs or native continuation)', extras) : ''}</div>`;
+        return `<div class="call-message"><div class="call-label">${index + 1} · ${esc(message.role || message.type || 'unknown role')}</div>${traceContent(message.content)}${Object.keys(extras).length ? traceJsonSection('Message fields (tool calls, IDs or native continuation)', extras) : ''}</div>`;
     }).join('');
 }
 function traceTransport(transport) {

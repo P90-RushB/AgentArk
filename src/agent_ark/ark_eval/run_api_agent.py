@@ -877,7 +877,7 @@ def _sanitize_raw_trace_message_part(part: Any, *, image_assets: dict | None = N
         return part
 
     part_type = part.get('type', None)
-    if part_type == 'image_url':
+    if part_type in ('image_url', 'input_image'):
         image_url = part.get('image_url', None)
         if isinstance(image_url, dict):
             out = dict(part)
