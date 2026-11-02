@@ -1,8 +1,12 @@
 # SimpleAgent native reasoning history
 
-SimpleAgent's HTTP backend uses Chat Completions messages and function tools,
+This page describes SimpleAgent's `simple_agent.backend: native` HTTP path
+(the default). The optional LiteLLM backend has a separate state contract;
+see [LiteLLM evaluation](litellm-evaluation.md#reasoning-history-compaction-and-traces).
+
+SimpleAgent's native HTTP backend uses Chat Completions messages and function tools,
 with closed OpenRouter and Volcengine native reasoning field families.
-The existing `provider: openai` setting selects this HTTP backend; it does not
+With the native backend, `provider: openai` selects this HTTP transport; it does not
 promise compatibility with every endpoint that describes itself as
 OpenAI-compatible. Response fields select the supported family automatically;
 no new platform setting, URL-based dispatch or automatic request fallback is added.
@@ -74,7 +78,9 @@ record contents are unchanged.
   SDK optional defaults are distinguished from explicit fields using field-set
   and extra-field metadata. SDK message extras are never copied wholesale.
 - Portable message encoding, summary input and Codex SDK input exclude this
-  API-only state. The SDK transport continues to use its own protocol.
+  native-HTTP-only state. The Codex SDK transport continues to use its own protocol.
+  LiteLLM uses a separate, bounded `LiteLLMAssistantState`; it does not reinterpret
+  these native HTTP field families or change `NativeAssistantState`.
 - Request traces use the actual HTTP message projection. Response traces
   preserve native assistant state separately from ordinary content. Enabled
   record tools publish `native_assistants.json` alongside `assistant.txt` and

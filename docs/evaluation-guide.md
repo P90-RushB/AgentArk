@@ -28,7 +28,8 @@ AgentArk eval YAML files use four main sections:
   `Mods/config.yaml`, such as `num_parallel_envs`, `virtual_display`, or history
   settings.
 - `eval`: case selection, seed ranges, output path, and parallelism.
-- `models`: OpenAI-compatible model providers, or `provider: codex` for local
+- `models`: model/harness selection, including native OpenAI-compatible HTTP,
+  the optional SimpleAgent LiteLLM SDK backend, or `provider: codex` for local
   Codex SDK evaluation.
 
 For evaluation, keep `env_cfg.env_config_overrides.num_parallel_envs: 1`.
@@ -54,11 +55,15 @@ Then choose one model provider style below. Keep `agent_type: simple` and its
 Provider-only snippets below describe transport settings and retain legacy
 selection when copied without an explicit harness.
 
-### OpenAI-Compatible Providers
+<a id="openai-compatible-providers"></a>
 
-Use this path for OpenAI, OpenRouter, DashScope-compatible, or other
-OpenAI-compatible HTTP endpoints. New evaluation templates explicitly select
-`SimpleAgent`, which uses Chat Completions with native function tools.
+### Native OpenAI-Compatible Providers
+
+This is the default native HTTP path for OpenAI, OpenRouter, DashScope-compatible,
+or other OpenAI-compatible endpoints. New evaluation templates explicitly select
+`SimpleAgent`, which uses Chat Completions with native function tools here.
+For LiteLLM Chat or Responses routing, use the separate
+[LiteLLM guide](litellm-evaluation.md); its provider and parameter rules differ.
 
 ```yaml
 models:
@@ -91,7 +96,7 @@ set `temperature: null` to omit the parameter from API requests.
 `max_completion_tokens` defaults to `30000` for HTTP API models and limits
 reasoning plus visible output tokens. Set it to `null` to omit the parameter.
 
-HTTP models share the `thinking.type` (`enabled` or `disabled`) and
+Native HTTP models share the `thinking.type` (`enabled` or `disabled`) and
 `reasoning_effort` configuration. AgentArk maps them by provider:
 
 | Provider | Request fields sent |
@@ -160,8 +165,11 @@ env_cfg:
 ### Recommended SimpleAgent: Context Compaction and Host Tools
 
 `APIAgent`, `SimpleAgent`, and `CodexAgent` are separate agents. The optional
-`models[*].agent_type` selects `api`, `simple`, or `codex`; `provider` continues
-to select the model backend. Without `agent_type`, the existing behavior is
+`models[*].agent_type` selects `api`, `simple`, or `codex`. Within SimpleAgent,
+`simple_agent.backend` selects `native` (default) or `litellm`. On the native
+path, `provider` selects the HTTP provider mapping or Codex transport; on the
+LiteLLM path, the qualified `simple_agent.litellm.model` selects the SDK vendor.
+Without `agent_type`, the existing behavior is
 unchanged: `provider: codex` selects CodexAgent, other providers select APIAgent.
 The existing agents retain their implementation and configuration defaults. New
 seed, parallel and Colab examples explicitly choose SimpleAgent with host tools
@@ -231,7 +239,7 @@ run compaction. Loading a trajectory history prefix is not restoration of the
 private model working context or its compaction state. Existing Kaggle tasks
 keep their immutable wrapper pin and evaluation conditions.
 
-SimpleAgent's HTTP backend preserves the supported OpenRouter reasoning fields
+SimpleAgent's native HTTP backend preserves the supported OpenRouter reasoning fields
 and Volcengine's original `reasoning_content` / `encrypted_content` pair in
 Chat Completions history. Response content and native reasoning are stored
 separately; response fields select the supported replay family without a new
@@ -239,8 +247,19 @@ configuration option. Other endpoint contracts are not guaranteed compatible.
 See [native reasoning history](simple-agent-native-reasoning.md) for replay,
 compaction and record behavior.
 
-SimpleAgent uses the HTTP API transport by default. To select an existing
-ChatGPT subscription instead, use this model entry for any task:
+The optional LiteLLM SDK backend is also a supported SimpleAgent evaluation path.
+Install `python -m pip install -e ".[litellm]"` in the existing Python environment,
+then set `simple_agent.backend: litellm` with an explicit qualified SDK model.
+`api: chat_completions` (default) calls `acompletion`; `api: responses` calls native
+`aresponses`, currently through an `openai/` model, including compatible proxies.
+Existing configurations keep the native transport and identity. See the
+[LiteLLM evaluation guide](litellm-evaluation.md) for complete configuration,
+credentials, OpenRouter/OpenAI/Kaggle recipes, supported reasoning history,
+validation scope and troubleshooting. The native `thinking` table above does
+not apply to LiteLLM.
+
+To use an existing ChatGPT subscription, select SimpleAgent's native Codex
+transport with this model entry for any task:
 
 ```yaml
 models:

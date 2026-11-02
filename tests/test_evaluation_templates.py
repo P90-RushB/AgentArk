@@ -1,8 +1,10 @@
 """Offline contracts for new evaluation recipes and generated Kaggle tasks."""
 import ast
+from hashlib import sha256
 import importlib.util
 import json
 import os
+import re
 import textwrap
 from copy import deepcopy
 from pathlib import Path
@@ -30,6 +32,7 @@ def generator():
 @pytest.mark.parametrize("filename", [
     "eval_seed1.example.yaml", "eval_seeds_1_n.example.yaml",
     "parallel_api_eval.example.yaml", "simple_agent.example.yaml",
+    "simple_agent_litellm.example.yaml",
 ])
 def test_new_evaluation_examples_enable_simple_native_tools(filename):
     cfg = yaml.safe_load((ROOT / "config" / "ark_env" / filename).read_text(encoding="utf-8"))
@@ -43,7 +46,9 @@ def test_new_evaluation_examples_enable_simple_native_tools(filename):
         assert effective["env_config_overrides"]["env_wrapper_cfg"]["context_manager"]["messages"]["return_mode"] == "delta"
 
 
-def test_generated_task_uses_generic_simple_template_and_immutable_pin(tmp_path):
+def test_generated_task_uses_generic_simple_template_and_immutable_pin(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENTARK_KAGGLE_BACKEND", raising=False)
+    monkeypatch.delenv("AGENTARK_KAGGLE_LITELLM_API", raising=False)
     module = generator()
     output = tmp_path / "robot_painting.py"
     pin = "a" * 40
@@ -65,11 +70,13 @@ def test_generated_task_uses_generic_simple_template_and_immutable_pin(tmp_path)
 
     # Execute only the real config author, with no Kaggle import, downloads,
     # subprocesses, environment creation or model calls.
-    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_write_eval_config")
+    names = {"_write_eval_config", "_selected_model_backend", "_selected_litellm_api", "_is_kaggle_astra"}
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     namespace = {"Path": Path, "os": os, "json": json, "textwrap": textwrap, "Optional": __import__("typing").Optional,
                  "AGENTARK_ROOT": tmp_path, "RESULT_PATH": tmp_path / "tmp" / "simple.jsonl",
-                 "ENV_ROOT": tmp_path / "env", "MOD_PATH": tmp_path / "Mods", "CONFIG_PATH": tmp_path / "eval.yaml"}
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(output), "exec"), namespace)
+                 "ENV_ROOT": tmp_path / "env", "MOD_PATH": tmp_path / "Mods", "CONFIG_PATH": tmp_path / "eval.yaml",
+                 "DEFAULT_MODEL_BACKEND": "native", "DEFAULT_LITELLM_API": None}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), str(output), "exec"), namespace)
     namespace["_write_eval_config"](task_name="RobotPainting", seed_start=2, seed_end=4, env_id=7,
                                    model="selected-model", base_url="https://proxy.example/genai",
                                    max_completion_tokens=30000)
@@ -104,29 +111,77 @@ def test_generator_protects_existing_benchmark_and_validates_identifiers(tmp_pat
                              output=tmp_path / "out.py")
 
 
-def test_kaggle_notebook_and_generic_template_stay_in_sync():
+def test_native_notebook_keeps_its_published_bytes_and_wrapper_pin():
     assert generator().DEFAULT_WRAPPER_COMMIT == "b37efe0b692b29a16c42e31b19aecbd3472271cf"
-    notebook = json.loads((KAGGLE / "new-benchmark-task-f8fdd.ipynb").read_text(encoding="utf-8"))
-    expected = "\n\n".join("# %%\n" + "".join(cell["source"]).rstrip()
-                              for cell in notebook["cells"] if cell["cell_type"] == "code") + "\n"
-    # The generator keeps its historical raw mean metric, while the notebook
-    # keeps its pre-existing normalized metric. All other source stays aligned.
-    expected = "# Generated-task template: preserve the generator's raw mean score; the companion notebook uses normalized scores.\n" + expected
-    expected = expected.replace('return float(summary["normalized_mean_score_reward"])', 'return float(summary["mean_score_reward"])')
-    expected = expected.replace('"metric": "normalized_mean_score_reward"', '"metric": "mean_score_reward"')
-    expected = expected.replace('Mean of per-seed AgentArk score_reward normalized from the configured task score min/max range to 0-1.',
-                                'Mean of per-seed AgentArk final-attempt score_reward; normalized values are diagnostics only.')
-    expected = expected.replace('Formal benchmark runs normalize each AgentArk score_reward from the configured task score min/max range to 0-1, then average across seeds.',
-                                'Formal benchmark runs average raw per-seed AgentArk final-attempt score_reward; normalized values are diagnostics only.')
-    assert 'AGENTARK_COMMIT = "b37efe0b692b29a16c42e31b19aecbd3472271cf"' in expected
-    assert (KAGGLE / "agentark_simple_task_template.py").read_text(encoding="utf-8") == expected
-    ast.parse(expected)
+    raw = (KAGGLE / "new-benchmark-task-f8fdd.ipynb").read_bytes()
+    # Git may materialize this frozen text file with CRLF on Windows.
+    assert sha256(raw.replace(b"\r\n", b"\n")).hexdigest() == "d44f410405d0e83c96afeca340867a4b19eb66ff4690488b5a3df2e019b4a86c"
+    notebook = json.loads(raw)
+    source = "\n\n".join("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code")
+    assert 'AGENTARK_COMMIT = "b37efe0b692b29a16c42e31b19aecbd3472271cf"' in source
+    assert "DEFAULT_MODEL_BACKEND" not in source
+    ast.parse(source)
 
 
-@pytest.mark.parametrize("notebook, expected_score", [(False, 20.0), (True, 0.2)])
+def test_litellm_notebook_is_generated_from_shared_template_and_published_backend_pin():
+    module = generator()
+    pin = module.DEFAULT_LITELLM_WRAPPER_COMMIT
+    assert isinstance(pin, str) and re.fullmatch(r"[0-9a-f]{40}", pin)
+    assert pin != module.DEFAULT_WRAPPER_COMMIT
+    notebook = json.loads((KAGGLE / "agentark_litellm_task.ipynb").read_text(encoding="utf-8"))
+    assert notebook == module.build_litellm_notebook()
+    source = "\n\n".join("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code")
+    assert f'AGENTARK_COMMIT = "{pin}"' in source
+    assert 'DEFAULT_MODEL_BACKEND = "litellm"' in source
+    assert "_simple_litellm_seeds_" in source and '"/tmp/agentark_kaggle_litellm_work"' in source
+    assert '}-litellm"' in source
+    assert 'DEFAULT_SEED_START = 1' in source and 'DEFAULT_SEED_END = 10' in source
+    assert '"MarbleStop"' in source and '"DoorSpin3Turns"' not in source
+    assert all(cell["execution_count"] is None and not cell["outputs"] for cell in notebook["cells"] if cell["cell_type"] == "code")
+    assert "DoorSpin3Turns" in "".join(notebook["cells"][0]["source"])
+    ast.parse(source)
+
+
+def test_generator_backend_defaults_keep_native_and_separate_litellm_outputs(tmp_path):
+    module = generator()
+    module.ROOT = tmp_path
+    module.DEFAULT_LITELLM_WRAPPER_COMMIT = "a" * 40
+    native = module.generate(task_name="Snake", seed_start=1, seed_end=2, env_id=0, output=None)
+    optional = module.generate(task_name="Snake", seed_start=1, seed_end=2, env_id=0, output=None, backend="litellm")
+    assert native.name == "agentark_snake.py" and optional.name == "agentark_snake_litellm.py"
+    native_source, optional_source = native.read_text(), optional.read_text()
+    assert f'AGENTARK_COMMIT = "{module.DEFAULT_WRAPPER_COMMIT}"' in native_source
+    assert 'DEFAULT_MODEL_BACKEND = "native"' in native_source
+    assert f'AGENTARK_COMMIT = "{"a" * 40}"' in optional_source
+    assert 'DEFAULT_MODEL_BACKEND = "litellm"' in optional_source
+    assert 'def agentark_snake_litellm(llm)' in optional_source
+    assert '"agentark-snake-litellm"' in optional_source
+    assert '_simple_litellm_seeds_' in optional_source
+    assert 'return float(summary["mean_score_reward"])' in optional_source
+
+
+def test_litellm_generation_requires_a_published_pin_without_native_fallback(tmp_path):
+    module = generator()
+    module.DEFAULT_LITELLM_WRAPPER_COMMIT = None
+    output = tmp_path / "optional.py"
+    with pytest.raises(ValueError, match="awaits publication"):
+        module.generate(task_name="Snake", seed_start=1, seed_end=2, env_id=0, output=output, backend="litellm")
+    assert not output.exists()
+    # An explicitly supplied immutable pin also makes rendering reproducible
+    # without changing the generator's native default or creating a checkout.
+    notebook = module.build_litellm_notebook(wrapper_commit="a" * 40)
+    source = "\n\n".join("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code")
+    assert f'AGENTARK_COMMIT = "{"a" * 40}"' in source
+    assert 'DEFAULT_MODEL_BACKEND = "litellm"' in source
+    assert 'return float(summary["normalized_mean_score_reward"])' in source
+    ast.parse(source)
+
+
+@pytest.mark.parametrize("notebook, expected_score", [(False, 20.0), (True, 0.2), ("litellm", 0.2)])
 def test_kaggle_entry_points_preserve_their_score_metrics(tmp_path, monkeypatch, notebook, expected_score):
     if notebook:
-        data = json.loads((KAGGLE / "new-benchmark-task-f8fdd.ipynb").read_text(encoding="utf-8"))
+        filename = "agentark_litellm_task.ipynb" if notebook == "litellm" else "new-benchmark-task-f8fdd.ipynb"
+        data = json.loads((KAGGLE / filename).read_text(encoding="utf-8"))
         source = "\n\n".join("".join(cell["source"]) for cell in data["cells"] if cell["cell_type"] == "code")
     else:
         source = (KAGGLE / "agentark_simple_task_template.py").read_text(encoding="utf-8")

@@ -54,6 +54,10 @@ DEFAULT_SEED_START = 1
 DEFAULT_SEED_END = 10
 DEFAULT_EVAL_ATTEMPTS = 3
 DEFAULT_MAX_COMPLETION_TOKENS = 30000
+# LiteLLM requires a published wrapper revision containing that optional backend.
+# The pinned native default remains usable without the optional SDK.
+DEFAULT_MODEL_BACKEND = "native"
+DEFAULT_LITELLM_API = None  # Set chat_completions or responses to override model defaults.
 DEFAULT_ENV_ID = 0
 DEFAULT_PYTHON_VERSION = "3.10.12"
 # Use a new benchmark name for new evaluation conditions, preserving existing tasks.
@@ -112,6 +116,25 @@ def _bool_env(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _selected_model_backend() -> str:
+    backend = os.getenv("AGENTARK_KAGGLE_BACKEND", DEFAULT_MODEL_BACKEND).strip().lower()
+    if backend not in {"native", "litellm"}:
+        raise ValueError("AGENTARK_KAGGLE_BACKEND must be native or litellm")
+    return backend
+
+
+def _is_kaggle_astra(model: str) -> bool:
+    return model.strip().lower() in {"openai/gpt-6-astra", "gpt-6-astra"}
+
+
+def _selected_litellm_api(model: str) -> str:
+    api = (os.getenv("AGENTARK_KAGGLE_LITELLM_API") or DEFAULT_LITELLM_API
+           or ("responses" if _is_kaggle_astra(model) else "chat_completions"))
+    if api not in {"chat_completions", "responses"}:
+        raise ValueError("AGENTARK_KAGGLE_LITELLM_API must be chat_completions or responses")
+    return api
 
 
 def _ensure_os_packages() -> None:
@@ -233,7 +256,17 @@ def _ensure_python_env() -> None:
             f"Choose a fresh AGENTARK_KAGGLE_WORK_ROOT and Python {DEFAULT_PYTHON_VERSION}."
         )
     _ensure_venv_pip()
-    _run([VENV_PY, "-m", "pip", "install", "-q", "-e", AGENTARK_ROOT])
+    if _selected_model_backend() == "litellm":
+        feature = AGENTARK_ROOT / "src" / "agent_ark" / "agent" / "simple_agent" / "litellm_model.py"
+        if not feature.is_file():
+            raise RuntimeError(
+                "The pinned AgentArk wrapper does not include the optional LiteLLM backend. "
+                "Publish a wrapper revision containing this feature, then update AGENTARK_COMMIT "
+                "or generate with --wrapper-commit <full-published-commit>."
+            )
+        _run([VENV_PY, "-m", "pip", "install", "-q", "-e", str(AGENTARK_ROOT) + "[litellm]"])
+    else:
+        _run([VENV_PY, "-m", "pip", "install", "-q", "-e", AGENTARK_ROOT])
 
 
 def _download_verified(url: str, target: Path, sha256: str) -> None:
@@ -408,6 +441,16 @@ def _write_eval_config(
         openai_base_url = openai_base_url[: -len("/genai")]
     if not openai_base_url.endswith(("/openapi", "/openapi/v1")):
         openai_base_url = openai_base_url + "/openapi"
+    backend = _selected_model_backend()
+    backend_yaml = ""
+    if backend == "litellm":
+        api = _selected_litellm_api(model)
+        if api == "responses" and openai_base_url.endswith("/openapi/v1"):
+            openai_base_url = openai_base_url[:-len("/v1")]
+        backend_yaml = ("      backend: litellm\n      litellm:\n"
+                        f"        model: {json.dumps('openai/' + model)}\n        api: {api}\n")
+        if _is_kaggle_astra(model):
+            temperature = None
     temperature_yaml = "null" if temperature is None else f"{float(temperature):g}"
     config = f"""
 env_cfg:
@@ -455,7 +498,7 @@ models:
     # Keep the simple_agent settings below only when agent_type is simple.
     agent_type: simple
     simple_agent:
-      tool_choice: required
+{backend_yaml}      tool_choice: required
       output_token_parameter: max_completion_tokens
       context:
         # message_chunks_v1: bounded message chunks (default).
@@ -479,7 +522,7 @@ models:
     temperature: {temperature_yaml}
     max_completion_tokens: {int(max_completion_tokens)}
     timeout_s: {float(os.getenv("AGENTARK_KAGGLE_REQUEST_TIMEOUT_S", "600"))}
-    max_retries: 1
+    max_retries: {0 if backend == "litellm" else 1}
 """
     CONFIG_PATH.write_text(textwrap.dedent(config).strip() + "\n", encoding="utf-8")
 
@@ -629,7 +672,7 @@ def _run_agentark_eval(
         RESULT_PATH.unlink()
     expected = set(_expected_seeds(seed_start, seed_end))
     last_returncode = 0
-    temperature: Optional[float] = 1.0
+    temperature: Optional[float] = None if _selected_model_backend() == "litellm" and _is_kaggle_astra(model) else 1.0
     retried_without_temperature = False
     _write_eval_config(
         task_name=task_name,
@@ -678,7 +721,8 @@ def _run_agentark_eval(
             )
             break
         if (
-            not retried_without_temperature
+            _selected_model_backend() == "native"
+            and not retried_without_temperature
             and temperature is not None
             and (
                 _is_temperature_unsupported_text(output)

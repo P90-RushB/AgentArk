@@ -26,8 +26,8 @@ AgentArk 评测 YAML 主要包含四部分：
 - `env_cfg.env_config_overrides`：对运行时 `Mods/config.yaml` 的临时覆盖，例如
   `num_parallel_envs`、`virtual_display` 或 history 设置。
 - `eval`：case 选择、seed 范围、输出路径和并行度。
-- `models`：OpenAI 兼容的模型 provider；本地 Codex SDK 评测使用
-  `provider: codex`。
+- `models`：模型及 harness 选择，支持原生 OpenAI 兼容 HTTP、可选的 SimpleAgent
+  LiteLLM SDK 后端，以及 `provider: codex` 本地 Codex SDK 评测。
 
 评测时保持 `env_cfg.env_config_overrides.num_parallel_envs: 1`。并行评分通过启动多个
 独立的 `ArkEnv` 实例实现，而不是增加单个 `ArkEnv` 内的 sub-env 数量。
@@ -50,10 +50,14 @@ eval:
 `agent_type: simple` 和 `simple_agent` 设置。下方只包含 provider 的片段用于说明
 传输参数；单独复制且不指定 harness 时，仍沿用旧选择规则。
 
-### OpenAI 兼容 Provider
+<a id="openai-兼容-provider"></a>
 
-此方式适用于 OpenAI、OpenRouter、DashScope 兼容端点和其他 OpenAI 兼容的 HTTP
-端点。新评测模板显式选择 `SimpleAgent`，通过 Chat Completions 和原生函数工具运行。
+### 原生 OpenAI 兼容 Provider
+
+这是默认的原生 HTTP 路径，适用于 OpenAI、OpenRouter、DashScope 兼容端点和其他
+OpenAI 兼容端点。新评测模板显式选择 `SimpleAgent`，在此路径通过 Chat Completions
+和原生函数工具运行。LiteLLM Chat 或 Responses 的路由和参数规则见单独的
+[LiteLLM 指南](litellm-evaluation.zh-CN.md)。
 
 ```yaml
 models:
@@ -84,7 +88,7 @@ models:
 HTTP API 模型的 `max_completion_tokens` 默认为 `30000`，限制推理 token 与可见
 输出 token 的总量；设置为 `null` 时省略该参数。
 
-HTTP 模型可以使用统一的 `thinking.type`（`enabled` 或 `disabled`）和
+原生 HTTP 模型可以使用统一的 `thinking.type`（`enabled` 或 `disabled`）和
 `reasoning_effort` 配置。AgentArk 会按 provider 转换请求字段：
 
 | provider | 实际请求字段 |
@@ -148,8 +152,10 @@ env_cfg:
 
 ### 推荐 SimpleAgent：上下文压缩与宿主工具
 
-`APIAgent`、`SimpleAgent`、`CodexAgent` 是独立的 agent。新增的 `agent_type`
-选择 agent，`provider` 继续选择模型后端。不填写 `agent_type` 时沿用原来的行为：
+`APIAgent`、`SimpleAgent`、`CodexAgent` 是独立的 agent。`agent_type` 选择 agent；
+SimpleAgent 内的 `simple_agent.backend` 选择 `native`（默认）或 `litellm`。
+原生路径由 `provider` 选择 HTTP 供应商映射或 Codex 传输；LiteLLM 路径由带前缀的
+`simple_agent.litellm.model` 选择实际 SDK 供应商。不填写 `agent_type` 时沿用原来的行为：
 `provider: codex` 使用 CodexAgent，其他 provider 使用基础 APIAgent。
 已有配置、基础 agent 和 Codex 的上下文管理保持原样。新的单 seed、多 seed、并行
 和 Colab 示例显式选择 SimpleAgent 并启用宿主工具，不改变缺省选择或任务配置。
@@ -199,14 +205,21 @@ SimpleAgent 接收新增图文/动作反馈，自行保留近期完整轮次，�
 载入 trajectory 历史前缀不等于恢复模型私有工作上下文和压缩状态。已有 Kaggle 任务继续
 使用其固定 wrapper commit 和原来的评测条件。
 
-SimpleAgent 的 HTTP 后端在 Chat Completions 历史中保留已支持的 OpenRouter 推理字段，
+SimpleAgent 的原生 HTTP 后端在 Chat Completions 历史中保留已支持的 OpenRouter 推理字段，
 以及火山的原名 `reasoning_content` / `encrypted_content` 字段组合。
 回复正文与原生推理分开保存；按响应字段选择支持的回传形式，无需新增配置项。
 不保证兼容采用其他协议的端点。
 回传、压缩和记录行为详见[原生推理历史说明](simple-agent-native-reasoning.md)。
 
-SimpleAgent 默认使用 HTTP API。使用已有 ChatGPT 订阅作为模型调用后端时，
-可为任意任务配置以下模型条目：
+可选的 LiteLLM SDK 后端也是正式支持的 SimpleAgent 评测路径。在已有 Python 环境安装
+`python -m pip install -e ".[litellm]"`，设置 `simple_agent.backend: litellm` 并显式填写
+带供应商前缀的 SDK 模型。`api: chat_completions`（默认）调用 `acompletion`；
+`api: responses` 调用原生 `aresponses`，目前通过 `openai/` 模型使用，也支持兼容代理。
+已有配置保留原生传输和评测身份。完整配置、凭据、OpenRouter/OpenAI/Kaggle 示例、
+推理历史、验证范围和排错见 [LiteLLM 评测指南](litellm-evaluation.zh-CN.md)。
+上方的原生 `thinking` 参数映射表不适用于 LiteLLM。
+
+使用已有 ChatGPT 订阅时，通过以下模型条目选择 SimpleAgent 的原生 Codex 传输，适用于任意任务：
 
 ```yaml
 models:

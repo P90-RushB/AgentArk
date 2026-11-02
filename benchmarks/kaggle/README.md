@@ -1,10 +1,17 @@
 # AgentArk Kaggle Benchmark Tasks
 
-New benchmarks use `agentark_simple_task_template.py` or
-`new-benchmark-task-f8fdd.ipynb`. Both explicitly select **SimpleAgent** with native
-host tools and context compaction. They pin wrapper commit
-`b37efe0b692b29a16c42e31b19aecbd3472271cf`, HF revision
-`6a16c98e262abd760b09ef007a49118d0b1b0cb9` (`env-1.0.6`), and the env-1.0.6 Linux starter hash.
+There are two importable notebooks. Both select **SimpleAgent**, native function
+tools, and context compaction, with generic MarbleStop seeds 1–10 defaults:
+
+| Notebook | Default backend | Wrapper pin |
+| --- | --- | --- |
+| `new-benchmark-task-f8fdd.ipynb` | Native HTTP | Frozen `b37efe0b692b29a16c42e31b19aecbd3472271cf` |
+| `agentark_litellm_task.ipynb` | LiteLLM SDK | `3465fc850634204da24f82813a22541e7cf7eb00` |
+
+The native notebook is retained byte-for-byte for its existing evaluation
+conditions. The LiteLLM notebook uses separate benchmark names, result names,
+and a work directory containing `litellm`. Both retain HF revision
+`6a16c98e262abd760b09ef007a49118d0b1b0cb9` (`env-1.0.6`) and the env-1.0.6 Linux starter hash.
 The selected task package is fetched from that immutable registry and its hash
 and minimum wrapper commit are checked. A newer task may need a newer compatible
 HF/runtime pin; edit those constants before creating its benchmark.
@@ -23,7 +30,7 @@ historical `agentark_marble_stop_seeds_1_10.py` remain unchanged. An old task's
 immutable wrapper commit continues to select its original harness. Its saved
 actions can still be replayed independently of the model harness.
 
-The pinned wrapper includes the SimpleAgent defaults, trace/resume and replay
+The native wrapper pin includes the SimpleAgent defaults, trace/resume and replay
 compatibility improvements, compaction failure handling, and HumanView updates.
 It also accepts opaque provider tool-call IDs up to 64 KiB of UTF-8 without
 rewriting them, fixing the prior 256-character rejection on Kaggle Gemini calls.
@@ -38,9 +45,58 @@ For later wrapper revisions, generate with
 `--wrapper-commit <full-published-commit>`. Never replace a formal benchmark pin
 with `main` or an unpublished local commit.
 
+## LiteLLM Notebook and Generated Tasks
+
+Import `agentark_litellm_task.ipynb` for a new LiteLLM benchmark. It sets
+`DEFAULT_MODEL_BACKEND = "litellm"`, installs `AgentArk[litellm]`, and authors
+`simple_agent.backend: litellm`. Its first Markdown cell gives a DoorSpin3Turns
+Astra reproduction recipe: seeds 1–2, score range −1–1, and a new benchmark name.
+Its runnable defaults remain generic MarbleStop seeds 1–10 with score range 0–1.
+
+The shared Python template `agentark_simple_task_template.py` still defaults to
+native HTTP, including Gemini. The generator selects a backend-specific
+immutable wrapper pin; `--backend litellm` also gives the generated file,
+function, and benchmark name a `litellm` suffix. For example:
+
+```bash
+python benchmarks/kaggle/generate_agentark_kaggle_task.py --backend litellm \
+  --task-name DoorSpin3Turns --seed-start 1 --seed-end 2 \
+  --output agentark_door_spin_3_turns_litellm.py
+```
+
+Omitting `--backend` preserves native generation and its original pin. An
+explicit `--wrapper-commit <full-published-commit>` overrides the selected pin.
+The older native pin does not contain LiteLLM; setup rejects a missing backend
+feature instead of silently changing transport. Environment overrides
+`AGENTARK_KAGGLE_BACKEND` and `AGENTARK_KAGGLE_LITELLM_API` remain available in
+the shared template and new notebook. The frozen native notebook keeps its
+original settings.
+
+Only one Python implementation is maintained. The generator's
+`build_litellm_notebook()` derives the LiteLLM notebook from that shared template;
+tests verify the generated notebook, empty outputs, immutable pin, and offline
+import. The new notebook contains no source overlays or diagnostic patches.
+
+In LiteLLM mode, the verified Kaggle model names `openai/gpt-6-astra` and
+`gpt-6-astra` default to the native Responses API; other selected models default
+to Chat Completions. Set `AGENTARK_KAGGLE_LITELLM_API=responses` or
+`chat_completions` (or edit `DEFAULT_LITELLM_API`) to select the protocol
+explicitly. The selected wire model remains unchanged in `model`; the LiteLLM
+route prefixes it with `openai/` to use the same Model Proxy `/openapi` endpoint.
+The Responses mode removes a trailing `/v1` from `/openapi/v1`, using the proxy's
+supported `/openapi/responses` route; native and LiteLLM Chat keep their existing URL handling.
+For example, `openai/gpt-6-astra` becomes
+`simple_agent.litellm: {model: openai/openai/gpt-6-astra, api: responses}`.
+
+Astra starts with `temperature: null`, and LiteLLM mode uses zero SDK retries.
+It keeps unsupported-parameter errors visible instead of rerunning with a
+different temperature. Choose new benchmark names for these evaluation
+conditions; existing tasks, seeds, artifacts, and score formulas remain intact.
+
 ## Importing the Notebook to Create a New Task
 
-Import `new-benchmark-task-f8fdd.ipynb` into the Kaggle Benchmark task editor.
+Import the native `new-benchmark-task-f8fdd.ipynb` or LiteLLM
+`agentark_litellm_task.ipynb` into the Kaggle Benchmark task editor.
 Its first Markdown cell explains the setup. Before running its configuration
 cell, edit the defaults for the new task:
 
@@ -73,7 +129,7 @@ For a real test, inspect the exported summary, results JSONL, and AgentArk log:
   native `submit_action` calls; host-tool calls and summaries appear when used.
 - A failed seed makes the run fail after exporting its diagnostics. Failed
   requests are not silently returned as a zero leaderboard score. If a model
-  rejects temperature, earlier results are archived as
+  rejects temperature in the default native backend, earlier results are archived as
   `*_before_temperature_retry.jsonl`, and all seeds rerun with the new setting.
 
 The notebook still returns `normalized_mean_score_reward`; the generated Python

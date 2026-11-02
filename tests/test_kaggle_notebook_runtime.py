@@ -24,9 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK = ROOT / "benchmarks/kaggle/new-benchmark-task-f8fdd.ipynb"
 
 
-@pytest.fixture
-def notebook(tmp_path, monkeypatch):
-    """Run every original code cell, including its lightweight creation entry."""
+def load_notebook(path, tmp_path, monkeypatch, *, expected_commit):
+    """Run original code cells with local-only Kaggle creation hooks."""
     monkeypatch.chdir(tmp_path)
     for key in list(os.environ):
         if key.startswith("AGENTARK_KAGGLE_") or key == "BENCHMARK_MODE":
@@ -51,15 +50,22 @@ def notebook(tmp_path, monkeypatch):
     module.assertions = SimpleNamespace(assert_in=assert_in)
     monkeypatch.setitem(sys.modules, "kaggle_benchmarks", module)
     namespace = {"__name__": "__notebook__"}
-    document = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+    document = json.loads(path.read_text(encoding="utf-8"))
     for index, cell in enumerate(document["cells"]):
         if cell["cell_type"] == "code":
             assert not cell.get("outputs") and cell.get("execution_count") is None
-            exec(compile("".join(cell["source"]), f"{NOTEBOOK}:cell{index}", "exec"), namespace)
-    assert namespace["AGENTARK_COMMIT"] == "b37efe0b692b29a16c42e31b19aecbd3472271cf"
+            exec(compile("".join(cell["source"]), f"{path}:cell{index}", "exec"), namespace)
+    assert namespace["AGENTARK_COMMIT"] == expected_commit
     assert creation_returns == [0.0]
     assert json.loads(namespace["EXPORTED_SUMMARY_PATH"].read_text())["evaluation_status"] == "creation_smoke"
     return namespace
+
+
+@pytest.fixture
+def notebook(tmp_path, monkeypatch):
+    """Keep the published native notebook's import and creation semantics."""
+    return load_notebook(NOTEBOOK, tmp_path, monkeypatch,
+                         expected_commit="b37efe0b692b29a16c42e31b19aecbd3472271cf")
 
 
 def prepare_full_run(namespace, rows):

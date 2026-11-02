@@ -134,6 +134,14 @@ independent `SimpleAgent` consumes incremental environment messages; existing
 API/Codex configurations keep their behavior. Setup and limits are documented in
 [the evaluation guide](docs/evaluation-guide.md#recommended-simpleagent-context-compaction-and-host-tools).
 
+SimpleAgent supports the optional LiteLLM SDK evaluation backend. In your existing
+Python environment, install `python -m pip install -e ".[litellm]"` and use
+[simple_agent_litellm.example.yaml](config/ark_env/simple_agent_litellm.example.yaml).
+Choose LiteLLM Chat Completions or native OpenAI-compatible Responses explicitly;
+the native backend remains the default. See the [LiteLLM evaluation guide](docs/litellm-evaluation.md)
+([中文](docs/litellm-evaluation.zh-CN.md)) for provider/model routing, OpenRouter,
+OpenAI and Kaggle examples, reasoning-history limits and compatibility.
+
 Codex SDK evaluation is also supported through `provider: codex`. See
 [docs/evaluation-guide.md](docs/evaluation-guide.md) for the Codex install,
 AgentArk-only lean context profile, and delta message-context settings. The
