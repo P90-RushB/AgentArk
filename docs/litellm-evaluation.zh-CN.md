@@ -152,32 +152,60 @@ simple_agent:
 ## Kaggle 模型代理和 Notebook
 
 使用单独的 [agentark_litellm_task.ipynb](../benchmarks/kaggle/agentark_litellm_task.ipynb)。
-它默认评测 MarbleStop seeds 1–10，开头说明也提供已验证的 Door（`DoorSpin3Turns`）
+它默认评测 MarbleStop seeds 1–10，开头说明也提供 Door（`DoorSpin3Turns`）
 seeds 1–2 配方及 −1 到 1 的分数范围。环境仍为 `env-1.0.6`。Notebook 将 AgentArk
 wrapper 源码固定到不可变 commit；发布 benchmark 时应保留该 pin 和评测条件。
 已有原生 Notebook 保留各自的 pin 和行为。执行方法见
 [Kaggle benchmark 说明](../benchmarks/kaggle/README.md)。
 
-Notebook helper 为 Kaggle 的 `openai/gpt-6-astra`、`gpt-6-astra` 显式选择 Responses，
-其他模型选择 Chat Completions。需要时可通过 `DEFAULT_LITELLM_API` 或
-`AGENTARK_KAGGLE_LITELLM_API` 覆盖；helper 会将选定 API 写入普通 AgentArk 配置。
+当前 Notebook 和共享 Kaggle 模板对所有选定模型采用同一套 LiteLLM 策略：Responses、
+`tool_choice: auto`、省略温度，以及省略可选推理设置。模型名称不再决定 API 或参数。
+这套策略属于 Kaggle helper；核心 LiteLLM 配置省略这些字段时仍默认 Chat Completions
+和 `required`。
 
-新 Notebook 和共享 Kaggle 模板提供 `DEFAULT_TOOL_CHOICE = None`。在 LiteLLM 模式下，
-对于最后一段斜杠分隔模型名恰好为 `claude-opus-5-5` 或 `claude-opus-5.5`
-（可带 `-default` 或 `@default` 后缀）的 Kaggle Opus 5.5 别名，从首次请求起写入
-`tool_choice: auto`。Kaggle CLI slug `claude-opus-5-5-default` 选择的 wire model 为
-`anthropic/claude-opus-5-5@default`，对应内层 LiteLLM 路由为
-`openai/anthropic/claude-opus-5-5@default`。
-原生模式、Astra、Gemini 和未知模型名仍使用 `required`。可将 `DEFAULT_TOOL_CHOICE` 或
-`AGENTARK_KAGGLE_TOOL_CHOICE` 显式设为 `required` 或 `auto`，环境变量优先；无效值会在
-生成配置时失败。这是 Kaggle Notebook／模板的映射规则，不是核心 LiteLLM 适配器的模型规则。
-[Anthropic 文档](https://platform.claude.com/docs/en/api/errors)说明 Opus 5.5 不支持强制工具选择，
-关闭 thinking 也不会解除这一限制。
+| Notebook／模板常量 | 环境变量覆盖 | 取值和默认行为 |
+| --- | --- | --- |
+| `DEFAULT_LITELLM_API = "responses"` | `AGENTARK_KAGGLE_LITELLM_API` | `responses` 或 `chat_completions` |
+| `DEFAULT_TOOL_CHOICE = None` | `AGENTARK_KAGGLE_TOOL_CHOICE` | `auto` 或 `required`；`None` 在 LiteLLM 下选择 `auto`，在原生后端下选择 `required` |
+| `DEFAULT_TEMPERATURE = "default"` | `AGENTARK_KAGGLE_TEMPERATURE` | `default` 在 LiteLLM 下省略温度，在原生后端下选择 `1.0`；`null`／`none` 省略温度；有限数字显式设置温度 |
+
+环境变量优先于常量。向 `_write_eval_config` 或 `_run_agentark_eval` 显式传入的
+`temperature` 参数（包括 `None`）又优先于温度环境变量。Python 常量也可使用 `None`
+省略温度，或填写有限数字；布尔值和非有限值会被拒绝。无效设置会在首次请求前失败。
+这些控制项直接决定首次请求，不会根据异常切换 API 或参数。配置中用
+`temperature: null` 记录省略温度；推理仍为可选项，helper 不会强制发送
+`reasoning_effort: none`。
+
+原生生成仍保留 Chat Completions、`required`、温度 `1.0` 和既有的温度报错重试。
+LiteLLM 的 SDK 重试为零，不支持参数的报错直接保留。旧版已导入 Notebook 仍保留原先的
+模型名规则：手动选择 Responses 和 null 温度并不会改变旧版只识别 Opus 别名的自动工具
+选择规则。应显式设置工具选择，或导入新生成的 Notebook 来使用统一策略。
 
 `auto` 仍提供函数工具，模型也仍被要求使用 `submit_action`，但不强制模型调用工具。
 按 SimpleAgent 既有行为，纯文字响应会结束本次决策，可能成为无效的环境动作。
-本次调整不添加提醒、重试或基于异常的回退。工具选择已经包含在评测指纹中；改变条件时应使用
-新的 benchmark 名称。
+本次调整不添加提醒、重试或基于异常的回退。所选 API 和工具选择参与评测指纹；新的默认
+benchmark 名称以 `-litellm-responses-auto` 结尾，改变这些条件时应使用新的 benchmark 名称
+和输出路径。统一策略减少了模型之间的隐式差异，但不保证每个当前或未来模型都支持所选
+API、图像、工具和参数。
+
+例如，以 `--backend litellm` 生成 `Snake`，默认文件为
+`agentark_snake_litellm_responses_auto.py`，CLI 发现的函数标识为
+`agentark_snake_litellm_responses_auto`，benchmark slug 为
+`agentark-snake-litellm-responses-auto`。显式 `--output` 可以覆盖文件名；生成的函数和
+benchmark 身份仍标明新的评测条件。
+
+一个已确认的限制是 Kaggle Gemini 2.5 Flash（`google/gemini-2.5-flash`）：生产适配器
+发送包含两个函数工具的 Responses 请求时，返回 HTTP 400 `invalid_prompt`：
+"Multiple tools are supported only when they are all search tools"。
+该配置应通过 `DEFAULT_LITELLM_API = "chat_completions"` 或
+`AGENTARK_KAGGLE_LITELLM_API=chat_completions` 显式选择 Chat Completions。
+这是手动指定的评测条件；helper 不识别模型名称，也不会改用其他 API 重试。
+Gemini 3 Flash Preview 的生产适配器探测成功，不代表 Gemini 2.5 Flash 也兼容。
+
+本次测试的 Grok 4.6 Responses 路由（`xai/grok-4.6`）在首次生产适配器请求时返回
+HTTP 404 "requested model not found"。Chat Completions 也是该路由可显式配置的
+替代条件，但此处尚未进行真实调用验证。探测结果以子进程回执为准，不能以外层 benchmark
+的完成状态代替。
 
 Notebook 返回 `normalized_mean_score_reward`：将每个 case 的原始最终尝试
 `score_reward` 按 `(score - min) / (max - min)` 归一化，再对 seeds 求平均。
@@ -204,7 +232,7 @@ models:
       litellm:
         model: openai/openai/gpt-6-astra
         api: responses
-      tool_choice: required
+      tool_choice: auto
       context:
         output_reserve_tokens: 30000
       tools:
@@ -214,8 +242,8 @@ models:
 
 内层模型的第一个 `openai/` 选择 LiteLLM 的 OpenAI 适配器，剩下的
 `openai/gpt-6-astra` 才是 Kaggle 接收的模型名，因此双前缀是有意的。直接 OpenAI 则使用
-顶层 `gpt-6-astra`、内层 `openai/gpt-6-astra`。Astra 使用 `temperature: null`；
-通用 `reasoning_effort` 可选。不要把代理的 `/genai` 地址用于此 OpenAPI 路由，也不要在
+顶层 `gpt-6-astra`、内层 `openai/gpt-6-astra`。Kaggle 策略对所有模型省略温度；
+通用 `reasoning_effort` 可选，默认省略。不要把代理的 `/genai` 地址用于此 OpenAPI 路由，也不要在
 Responses 基址后追加 `/chat/completions`。
 
 ## 凭据、参数和预算
@@ -277,13 +305,20 @@ CodexAgent、SimpleAgent 原生 OpenRouter 处理和 RL 集成保留原有行为
 
 ## 验证范围
 
+下列证据类型的覆盖范围各不相同。历史打包运行属于统一 Kaggle Responses／auto 策略
+之前的条件，不能据此认证新策略已在各供应商上验证通过；供应商探测也不等于打包任务评测。
+
 | 验证 | 已建立的范围 |
 | --- | --- |
-| 离线 fake SDK 与本地 HTTP loopback | Chat／Responses 请求、多模态和工具续轮、签名及状态校验、包含 phase 的 Responses 条目顺序、重试、预算、压缩、trace 和评测身份。 |
-| 真实 Kaggle Astra／Responses／打包 `DoorSpin3Turns`，seeds 1–2 | 两个 case 各执行 10 个 Unity 动作，原始最终尝试 reward 均为 1；合计 20 次动作请求、14 次摘要请求，模型调用错误 0、SDK 重试 0。 |
+| 合成证据：离线 fake SDK 与本地 HTTP loopback | Chat／Responses 请求、多模态和工具续轮、签名及状态校验、包含 phase 的 Responses 条目顺序、重试、预算、压缩、trace 和评测身份。这些受控响应不认证供应商支持。 |
+| 生产适配器 v2 探测／Responses | Sol 6.1（`openai/gpt-6.1-sol`，run 6231754）、Opus 5.5（`anthropic/claude-opus-5-5@default`，run 6231755）和 Gemini 3 Flash Preview（`google/gemini-3-flash-preview`，run 6231756）均通过。每次探测实际调用生产 `aresponses` 三次：前两个图像轮次覆盖宿主 echo 结果、原生状态续传和动作提交，第三次为不带工具的图像摘要。统一使用 `auto`，省略温度和 reasoning effort，重试为零。这些是小型协议 smoke，不是 Unity 或完整 `DoorSpin3Turns` 评测。 |
+| 生产适配器探测：Kaggle Gemini 2.5 Flash（`google/gemini-2.5-flash`）／Responses | 包含两个函数工具的请求返回 HTTP 400 `invalid_prompt`："Multiple tools are supported only when they are all search tools"。配置此路由时应显式覆盖为 Chat API；没有自动回退。 |
+| 生产适配器 v2 探测：Kaggle Grok 4.6（`xai/grok-4.6`）／Responses | 首次请求返回 HTTP 404 "requested model not found"。外层 benchmark 虽报告完成，子进程回执仍明确记录失败。Chat 是可显式配置的替代条件，不是已完成真实验证的结果。 |
+| 原始 OpenAI SDK 探测：Kaggle Gemini 3 Flash Preview／Responses | 直接 SDK 调用 `/models/openapi/responses`，通过双工具、双轮探测，报告 2700 tokens；`/models/openapi/v1/responses` 返回 HTTP 405。仅属传输证据，不代表生产适配器或打包任务通过。 |
+| 历史真实 Kaggle Astra／Responses／`tool_choice: required`／`temperature: null`／打包 `DoorSpin3Turns`，seeds 1–2 | 两个 case 各执行 10 个 Unity 动作，原始最终尝试 reward 均为 1；合计 20 次动作请求、14 次摘要请求，模型调用错误 0、SDK 重试 0。 |
 | 该次真实运行的推理审计 | 返回 7 个推理条目，4 个在后续 6 次请求中回传，3 个在首次回传前被既有压缩清除；额外无法解释的缺失为 0。 |
 | 真实运行的覆盖边界 | 响应没有 phase 字段；phase 保留和宿主工具中间续轮由受控 loopback 覆盖。真实运行的每个动作均直接 `submit_action`。 |
-| 真实 Kaggle Opus 5.5／Chat Completions／`tool_choice: auto`／`DoorSpin3Turns`，run 5800062 | Seed 1 完成 10 个环境轮次，原始最终尝试分数为 1.0，最终成功。Seed 2 完成 4 个环境轮次后，因下一请求估算费用 $0.647248 超出剩余 Kaggle 配额而报 APIError 并停止。原先强制工具选择导致的 HTTP 400 已解决；这是因配额中断的双 seed 部分验证，不是任务代码错误。原始输出审计确认全部 14 次已接受的原生 `submit_action` 与环境动作一致；另有两次混合批次被既有机制拒绝并纠正。 |
+| 历史真实 Kaggle Opus 5.5／Chat Completions／`tool_choice: auto`／`temperature: 1.0`／`DoorSpin3Turns`，run 5800062 | Seed 1 完成 10 个环境轮次，原始最终尝试分数为 1.0，最终成功。Seed 2 完成 4 个环境轮次后，因下一请求估算费用 $0.647248 超出剩余 Kaggle 配额而报 APIError 并停止。原先强制工具选择导致的 HTTP 400 已解决；这是因配额中断的双 seed 部分验证，不是任务代码错误。原始输出审计确认全部 14 次已接受的原生 `submit_action` 与环境动作一致；另有两次混合批次被既有机制拒绝并纠正。 |
 | 未建立的结论 | 未做原生 Responses 直接 A/B，不宣称性能／效果零损失、全部供应商签名校验通过，也不把上方配置示例等同于全面真实调用认证。 |
 
 相对外层仓库根目录的本地证据位于
@@ -294,15 +329,21 @@ CodexAgent、SimpleAgent 原生 OpenRouter 处理和 RL 集成保留原有行为
 这些报告及原始轨迹、图像、日志是已忽略的 local-only 证据，fresh clone 中不可用；
 它们不会把逻辑 SDK trace 变成上游报文抓包。
 
+当前 v2 协议 smoke 回执汇总在仅限本地的
+[探测核验报告](../../local_save/task_validation/SimpleAgent/unified_kaggle_20261105/verified_v2_probes.json)。
+各次回执位于相对外层仓库根目录的
+`local_save/task_validation/SimpleAgent/unified_kaggle_20261105/v2_outputs/`。
+这些证据同样不随 fresh clone 提供，只证明上表列出的探测条件。
+
 ## 常见问题
 
 | 现象 | 检查方法 |
 | --- | --- |
 | 找不到 LiteLLM／MCP／tenacity | 用实际运行评测的同一 Python 安装固定的 `.[litellm]` extra，再执行 `python -m pip check`。 |
-| 函数工具 HTTP 400 | 检查模型和 API 路由是否支持函数工具。仅 required tool choice 不受支持时，手动 YAML 在 `simple_agent` 下设置 `tool_choice: auto`，新 Kaggle 模板使用 `AGENTARK_KAGGLE_TOOL_CHOICE=auto`。已知 LiteLLM Kaggle Opus 5.5 别名默认使用 auto；其他路由需显式选择。不要启用全局丢参数。 |
+| 函数工具 HTTP 400 | 检查模型和 API 路由是否支持函数工具。当前 LiteLLM Kaggle helper 对所有模型默认使用 `auto`；手动 YAML 可在 `simple_agent` 下设置 `tool_choice: auto`。检查显式覆盖项和旧版已导入 Notebook，不要启用全局丢参数。 |
 | 模型错误或 model-not-found | 检查内层供应商前缀、顶层 wire model、API 模式和端点。Kaggle Astra 内层需要 `openai/openai/gpt-6-astra`，直接 OpenAI 是 `openai/gpt-6-astra`。 |
 | `openai/responses/` 配置错误 | 选择 `api: responses`；新配置使用普通 `openai/` 路由。Responses 目前拒绝其他 SDK 供应商前缀。 |
-| temperature／thinking 不受支持 | Astra 使用 `temperature: null`，移除原生 `thinking`，只在支持时添加 `reasoning_effort`。 |
+| temperature／thinking 不受支持 | 使用 `temperature: null`，移除原生 `thinking`。当前 LiteLLM Kaggle helper 已默认省略温度和可选推理；检查显式覆盖项，只在支持时添加 `reasoning_effort`。 |
 | 凭据或端点与预期不同 | 显式设置 `api_key_env`，查看逻辑 trace 端点。省略 `base_url` 表示 SDK 供应商默认地址；已指定但未设置的 key 会报错。 |
 | 全局参数修改／fallback 报错 | 在调用进程中关闭 SDK 全局丢参数、自动修改、fallback 和重试设置，在 AgentArk 配置里显式选择条件。 |
 | 摘要之后看不到推理 | 检查压缩事件和归档原生状态；成功压缩会按既有策略清除全部工作原生状态。 |

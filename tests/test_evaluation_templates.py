@@ -3,6 +3,7 @@ import ast
 from hashlib import sha256
 import importlib.util
 import json
+import math
 import os
 import re
 import textwrap
@@ -50,6 +51,7 @@ def test_generated_task_uses_generic_simple_template_and_immutable_pin(tmp_path,
     monkeypatch.delenv("AGENTARK_KAGGLE_BACKEND", raising=False)
     monkeypatch.delenv("AGENTARK_KAGGLE_LITELLM_API", raising=False)
     monkeypatch.delenv("AGENTARK_KAGGLE_TOOL_CHOICE", raising=False)
+    monkeypatch.delenv("AGENTARK_KAGGLE_TEMPERATURE", raising=False)
     module = generator()
     output = tmp_path / "robot_painting.py"
     pin = "a" * 40
@@ -71,12 +73,13 @@ def test_generated_task_uses_generic_simple_template_and_immutable_pin(tmp_path,
 
     # Execute only the real config author, with no Kaggle import, downloads,
     # subprocesses, environment creation or model calls.
-    names = {"_write_eval_config", "_selected_model_backend", "_selected_litellm_api", "_is_kaggle_astra", "_selected_tool_choice"}
+    names = {"_write_eval_config", "_selected_model_backend", "_selected_litellm_api", "_selected_tool_choice", "_selected_temperature"}
     functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
-    namespace = {"Path": Path, "os": os, "json": json, "textwrap": textwrap, "Optional": __import__("typing").Optional,
+    namespace = {"Path": Path, "os": os, "json": json, "math": math, "textwrap": textwrap, "Any": Any,
+                 "Optional": __import__("typing").Optional, "_UNSET_TEMPERATURE": object(), "DEFAULT_TEMPERATURE": "default",
                  "AGENTARK_ROOT": tmp_path, "RESULT_PATH": tmp_path / "tmp" / "simple.jsonl",
                  "ENV_ROOT": tmp_path / "env", "MOD_PATH": tmp_path / "Mods", "CONFIG_PATH": tmp_path / "eval.yaml",
-                 "DEFAULT_MODEL_BACKEND": "native", "DEFAULT_LITELLM_API": None, "DEFAULT_TOOL_CHOICE": None}
+                 "DEFAULT_MODEL_BACKEND": "native", "DEFAULT_LITELLM_API": "responses", "DEFAULT_TOOL_CHOICE": None}
     exec(compile(ast.Module(body=functions, type_ignores=[]), str(output), "exec"), namespace)
     namespace["_write_eval_config"](task_name="RobotPainting", seed_start=2, seed_end=4, env_id=7,
                                    model="selected-model", base_url="https://proxy.example/genai",
@@ -87,6 +90,7 @@ def test_generated_task_uses_generic_simple_template_and_immutable_pin(tmp_path,
     assert model["base_url"] == "https://proxy.example/openapi"
     assert model["simple_agent"]["tools"]["enabled"] is True
     assert model["simple_agent"]["tool_choice"] == "required"
+    assert model["temperature"] == 1.0 and "reasoning_effort" not in model
     assert model["simple_agent"]["context"]["output_reserve_tokens"] == 30000
     assert model["simple_agent"]["context"]["compaction_policy"] == "message_chunks_v1"
     budget = SimpleRuntimeConfig(**model["simple_agent"]["context"])
@@ -129,6 +133,7 @@ def test_litellm_notebook_is_generated_from_shared_template_and_published_backen
     module = generator()
     pin = module.DEFAULT_LITELLM_WRAPPER_COMMIT
     assert isinstance(pin, str) and re.fullmatch(r"[0-9a-f]{40}", pin)
+    assert pin == "3465fc850634204da24f82813a22541e7cf7eb00"
     assert pin != module.DEFAULT_WRAPPER_COMMIT
     notebook = json.loads((KAGGLE / "agentark_litellm_task.ipynb").read_text(encoding="utf-8"))
     assert notebook == module.build_litellm_notebook()
@@ -136,8 +141,11 @@ def test_litellm_notebook_is_generated_from_shared_template_and_published_backen
     assert f'AGENTARK_COMMIT = "{pin}"' in source
     assert 'DEFAULT_MODEL_BACKEND = "litellm"' in source
     assert 'DEFAULT_TOOL_CHOICE = None' in source
+    assert 'DEFAULT_LITELLM_API = "responses"' in source
+    assert 'DEFAULT_TEMPERATURE = "default"' in source
+    assert "_is_kaggle_astra" not in source and "claude-opus" not in source
     assert "_simple_litellm_seeds_" in source and '"/tmp/agentark_kaggle_litellm_work"' in source
-    assert '}-litellm"' in source
+    assert '}-litellm-responses-auto"' in source
     assert 'DEFAULT_SEED_START = 1' in source and 'DEFAULT_SEED_END = 10' in source
     assert '"MarbleStop"' in source and '"DoorSpin3Turns"' not in source
     assert all(cell["execution_count"] is None and not cell["outputs"] for cell in notebook["cells"] if cell["cell_type"] == "code")
@@ -150,17 +158,25 @@ def test_generator_backend_defaults_keep_native_and_separate_litellm_outputs(tmp
     module.ROOT = tmp_path
     module.DEFAULT_LITELLM_WRAPPER_COMMIT = "a" * 40
     native = module.generate(task_name="Snake", seed_start=1, seed_end=2, env_id=0, output=None)
+    historical = tmp_path / "agentark_snake_litellm.py"
+    historical.write_text("historical LiteLLM conditions", encoding="utf-8")
     optional = module.generate(task_name="Snake", seed_start=1, seed_end=2, env_id=0, output=None, backend="litellm")
-    assert native.name == "agentark_snake.py" and optional.name == "agentark_snake_litellm.py"
+    assert historical.read_text(encoding="utf-8") == "historical LiteLLM conditions"
+    assert native.name == "agentark_snake.py" and optional.name == "agentark_snake_litellm_responses_auto.py"
     native_source, optional_source = native.read_text(), optional.read_text()
     assert f'AGENTARK_COMMIT = "{module.DEFAULT_WRAPPER_COMMIT}"' in native_source
     assert 'DEFAULT_MODEL_BACKEND = "native"' in native_source
     assert f'AGENTARK_COMMIT = "{"a" * 40}"' in optional_source
     assert 'DEFAULT_MODEL_BACKEND = "litellm"' in optional_source
-    assert 'def agentark_snake_litellm(llm)' in optional_source
-    assert '"agentark-snake-litellm"' in optional_source
+    assert 'def agentark_snake_litellm_responses_auto(llm)' in optional_source
+    assert 'agentark_snake_litellm_responses_auto.run(kbench.llm)' in optional_source
+    assert '"agentark-snake-litellm-responses-auto"' in optional_source
     assert '_simple_litellm_seeds_' in optional_source
     assert 'return float(summary["mean_score_reward"])' in optional_source
+    custom = module.generate(task_name="Snake", seed_start=1, seed_end=2, env_id=0,
+                             output=tmp_path / "custom.py", backend="litellm")
+    assert custom.name == "custom.py"
+    assert 'def agentark_snake_litellm_responses_auto(llm)' in custom.read_text(encoding="utf-8")
 
 
 def test_litellm_generation_requires_a_published_pin_without_native_fallback(tmp_path):

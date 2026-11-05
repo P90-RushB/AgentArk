@@ -11,6 +11,7 @@ the Kaggle Model Proxy, and reports AgentArk's final-attempt score metric.
 # %%
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -57,10 +58,12 @@ DEFAULT_MAX_COMPLETION_TOKENS = 30000
 # LiteLLM requires a published wrapper revision containing that optional backend.
 # The pinned native default remains usable without the optional SDK.
 DEFAULT_MODEL_BACKEND = "native"
-DEFAULT_LITELLM_API = None  # Set chat_completions or responses to override model defaults.
-# None uses auto for known Kaggle Opus 5.5 aliases in LiteLLM mode, required otherwise.
+DEFAULT_LITELLM_API = "responses"  # Or chat_completions; independent of model name.
+# None uses auto for LiteLLM, required for native.
 # auto permits function tools without forcing a call; submit_action is still instructed.
 DEFAULT_TOOL_CHOICE = None  # Set required or auto, or AGENTARK_KAGGLE_TOOL_CHOICE.
+DEFAULT_TEMPERATURE = "default"  # LiteLLM omits it; native uses 1.0. Or None / a finite number.
+_UNSET_TEMPERATURE = object()
 DEFAULT_ENV_ID = 0
 DEFAULT_PYTHON_VERSION = "3.10.12"
 # Use a new benchmark name for new evaluation conditions, preserving existing tasks.
@@ -128,19 +131,14 @@ def _selected_model_backend() -> str:
     return backend
 
 
-def _is_kaggle_astra(model: str) -> bool:
-    return model.strip().lower() in {"openai/gpt-6-astra", "gpt-6-astra"}
+def _selected_litellm_api() -> str:
+    api = os.getenv("AGENTARK_KAGGLE_LITELLM_API", DEFAULT_LITELLM_API)
+    if not isinstance(api, str) or api.strip().lower() not in {"chat_completions", "responses"}:
+        raise ValueError("DEFAULT_LITELLM_API / AGENTARK_KAGGLE_LITELLM_API must be chat_completions or responses")
+    return api.strip().lower()
 
 
-def _selected_litellm_api(model: str) -> str:
-    api = (os.getenv("AGENTARK_KAGGLE_LITELLM_API") or DEFAULT_LITELLM_API
-           or ("responses" if _is_kaggle_astra(model) else "chat_completions"))
-    if api not in {"chat_completions", "responses"}:
-        raise ValueError("AGENTARK_KAGGLE_LITELLM_API must be chat_completions or responses")
-    return api
-
-
-def _selected_tool_choice(model: str, backend: str) -> str:
+def _selected_tool_choice(backend: str) -> str:
     choice = os.getenv("AGENTARK_KAGGLE_TOOL_CHOICE")
     if choice is None:
         choice = DEFAULT_TOOL_CHOICE
@@ -148,15 +146,30 @@ def _selected_tool_choice(model: str, backend: str) -> str:
         if not isinstance(choice, str) or choice.strip().lower() not in {"required", "auto"}:
             raise ValueError("DEFAULT_TOOL_CHOICE / AGENTARK_KAGGLE_TOOL_CHOICE must be required or auto")
         return choice.strip().lower()
-    # Notebook policy only: match bounded aliases, leaving the proxy wire model intact.
-    alias = model.strip().lower().rsplit("/", 1)[-1]
-    if backend == "litellm" and alias in {
-        "claude-opus-5-5", "claude-opus-5-5-default",
-        "claude-opus-5.5", "claude-opus-5.5-default",
-        "claude-opus-5-5@default", "claude-opus-5.5@default",
-    }:
-        return "auto"
-    return "required"
+    return "auto" if backend == "litellm" else "required"
+
+
+def _selected_temperature(backend: str, temperature: Any = _UNSET_TEMPERATURE) -> Optional[float]:
+    # An explicit function argument wins, including None during native retry.
+    if temperature is _UNSET_TEMPERATURE:
+        temperature = os.getenv("AGENTARK_KAGGLE_TEMPERATURE", DEFAULT_TEMPERATURE)
+    if temperature is None:
+        return None
+    if isinstance(temperature, str):
+        temperature = temperature.strip().lower()
+        if temperature == "default":
+            return None if backend == "litellm" else 1.0
+        if temperature in {"null", "none"}:
+            return None
+    elif isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+        raise ValueError("DEFAULT_TEMPERATURE / AGENTARK_KAGGLE_TEMPERATURE / temperature must be default, null, or a finite number")
+    try:
+        value = float(temperature)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("DEFAULT_TEMPERATURE / AGENTARK_KAGGLE_TEMPERATURE / temperature must be default, null, or a finite number") from None
+    if not math.isfinite(value):
+        raise ValueError("DEFAULT_TEMPERATURE / AGENTARK_KAGGLE_TEMPERATURE / temperature must be default, null, or a finite number")
+    return value
 
 
 def _ensure_os_packages() -> None:
@@ -455,26 +468,25 @@ def _write_eval_config(
     model: str,
     base_url: str,
     max_completion_tokens: int,
-    temperature: Optional[float] = 1.0,
+    temperature: Any = _UNSET_TEMPERATURE,
 ) -> None:
-    RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
     openai_base_url = base_url.rstrip("/")
     if openai_base_url.endswith("/genai"):
         openai_base_url = openai_base_url[: -len("/genai")]
     if not openai_base_url.endswith(("/openapi", "/openapi/v1")):
         openai_base_url = openai_base_url + "/openapi"
     backend = _selected_model_backend()
-    tool_choice = _selected_tool_choice(model, backend)
+    tool_choice = _selected_tool_choice(backend)
+    temperature = _selected_temperature(backend, temperature)
     backend_yaml = ""
     if backend == "litellm":
-        api = _selected_litellm_api(model)
+        api = _selected_litellm_api()
         if api == "responses" and openai_base_url.endswith("/openapi/v1"):
             openai_base_url = openai_base_url[:-len("/v1")]
         backend_yaml = ("      backend: litellm\n      litellm:\n"
                         f"        model: {json.dumps('openai/' + model)}\n        api: {api}\n")
-        if _is_kaggle_astra(model):
-            temperature = None
     temperature_yaml = "null" if temperature is None else f"{float(temperature):g}"
+    RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
     config = f"""
 env_cfg:
   env_path: {json.dumps(str(ENV_ROOT / "AgentArk.x86_64"))}
@@ -690,12 +702,14 @@ def _run_agentark_eval(
     model: str,
     base_url: str,
     max_completion_tokens: int,
+    temperature: Any = _UNSET_TEMPERATURE,
 ) -> List[Dict[str, Any]]:
+    backend = _selected_model_backend()
+    temperature = _selected_temperature(backend, temperature)
     if RESULT_PATH.exists():
         RESULT_PATH.unlink()
     expected = set(_expected_seeds(seed_start, seed_end))
     last_returncode = 0
-    temperature: Optional[float] = None if _selected_model_backend() == "litellm" and _is_kaggle_astra(model) else 1.0
     retried_without_temperature = False
     _write_eval_config(
         task_name=task_name,

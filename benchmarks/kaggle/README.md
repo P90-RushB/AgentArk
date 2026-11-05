@@ -50,26 +50,39 @@ with `main` or an unpublished local commit.
 Import `agentark_litellm_task.ipynb` for a new LiteLLM benchmark. It sets
 `DEFAULT_MODEL_BACKEND = "litellm"`, installs `AgentArk[litellm]`, and authors
 `simple_agent.backend: litellm`. Its first Markdown cell gives a DoorSpin3Turns
-Astra reproduction recipe: seeds 1–2, score range −1–1, and a new benchmark name.
+recipe: seeds 1–2, score range −1–1, and a new benchmark name. Historical Astra
+and Opus validation conditions are recorded separately in the
+[LiteLLM guide](../../docs/litellm-evaluation.md#validation-scope).
 Its runnable defaults remain generic MarbleStop seeds 1–10 with score range 0–1.
 
 The shared Python template `agentark_simple_task_template.py` still defaults to
 native HTTP, including Gemini. The generator selects a backend-specific
-immutable wrapper pin; `--backend litellm` also gives the generated file,
-function, and benchmark name a `litellm` suffix. For example:
+immutable wrapper pin; `--backend litellm` gives the default generated filename
+and Python function a `_litellm_responses_auto` suffix and the benchmark slug
+a `-litellm-responses-auto` suffix. For example:
 
 ```bash
 python benchmarks/kaggle/generate_agentark_kaggle_task.py --backend litellm \
-  --task-name DoorSpin3Turns --seed-start 1 --seed-end 2 \
-  --output agentark_door_spin_3_turns_litellm.py
+  --task-name Snake --seed-start 1 --seed-end 2
+```
+
+This produces `benchmarks/kaggle/agentark_snake_litellm_responses_auto.py` with
+function `agentark_snake_litellm_responses_auto` and benchmark slug
+`agentark-snake-litellm-responses-auto`. The CLI discovers that function
+identifier when loading the generated task. An explicit `--output` may choose
+another filename. Push and run the new condition with:
+
+```bash
+kaggle b t push agentark-snake-litellm-responses-auto -f benchmarks/kaggle/agentark_snake_litellm_responses_auto.py --wait
+kaggle b t run agentark-snake-litellm-responses-auto -m your-model-slug --wait
 ```
 
 Omitting `--backend` preserves native generation and its original pin. An
 explicit `--wrapper-commit <full-published-commit>` overrides the selected pin.
 The older native pin does not contain LiteLLM; setup rejects a missing backend
 feature instead of silently changing transport. Environment overrides
-`AGENTARK_KAGGLE_BACKEND`, `AGENTARK_KAGGLE_LITELLM_API` and
-`AGENTARK_KAGGLE_TOOL_CHOICE` remain available in
+`AGENTARK_KAGGLE_BACKEND`, `AGENTARK_KAGGLE_LITELLM_API`,
+`AGENTARK_KAGGLE_TOOL_CHOICE` and `AGENTARK_KAGGLE_TEMPERATURE` remain available in
 the shared template and new notebook. The frozen native notebook keeps its
 original settings.
 
@@ -78,43 +91,79 @@ Only one Python implementation is maintained. The generator's
 tests verify the generated notebook, empty outputs, immutable pin, and offline
 import. The new notebook contains no source overlays or diagnostic patches.
 
-In LiteLLM mode, the verified Kaggle model names `openai/gpt-6-astra` and
-`gpt-6-astra` default to the native Responses API; other selected models default
-to Chat Completions. Set `AGENTARK_KAGGLE_LITELLM_API=responses` or
-`chat_completions` (or edit `DEFAULT_LITELLM_API`) to select the protocol
-explicitly. The selected wire model remains unchanged in `model`; the LiteLLM
+LiteLLM mode uses the same default for every selected model: Responses,
+`tool_choice: auto`, omitted temperature, and omitted optional reasoning
+settings. Model names do not choose these settings. The selected wire model
+remains unchanged in `model`; the LiteLLM
 route prefixes it with `openai/` to use the same Model Proxy `/openapi` endpoint.
 The Responses mode removes a trailing `/v1` from `/openapi/v1`, using the proxy's
 supported `/openapi/responses` route; native and LiteLLM Chat keep their existing URL handling.
 For example, `openai/gpt-6-astra` becomes
 `simple_agent.litellm: {model: openai/openai/gpt-6-astra, api: responses}`.
 
-`DEFAULT_TOOL_CHOICE = None` selects a bounded Kaggle compatibility default:
-LiteLLM mode authors `tool_choice: auto` for Opus 5.5 aliases whose final
-slash-separated name is exactly `claude-opus-5-5` or `claude-opus-5.5`, optionally
-with `-default` or `@default`. Kaggle's CLI slug `claude-opus-5-5-default` selects
-wire model `anthropic/claude-opus-5-5@default`, yielding nested LiteLLM route
-`openai/anthropic/claude-opus-5-5@default`.
-Native mode, Astra, Gemini and unknown models keep `required`.
-Set `DEFAULT_TOOL_CHOICE` or `AGENTARK_KAGGLE_TOOL_CHOICE` explicitly to `required`
-or `auto` to override; the environment variable wins and invalid values fail
-during config authoring. This is a notebook/shared-template default, not a model
-mapping in the core runtime. [Anthropic documents](https://platform.claude.com/docs/en/api/errors)
-that Opus 5.5 rejects forced tool choice even with thinking disabled.
+| Constant | Environment override | Values and default |
+| --- | --- | --- |
+| `DEFAULT_LITELLM_API = "responses"` | `AGENTARK_KAGGLE_LITELLM_API` | `responses` or `chat_completions` |
+| `DEFAULT_TOOL_CHOICE = None` | `AGENTARK_KAGGLE_TOOL_CHOICE` | `auto` or `required`; `None` selects `auto` for LiteLLM and `required` for native |
+| `DEFAULT_TEMPERATURE = "default"` | `AGENTARK_KAGGLE_TEMPERATURE` | `default` selects omitted temperature for LiteLLM and `1.0` for native; `null`/`none` omits it; a finite number sets it explicitly |
+
+Environment overrides take precedence over constants. An explicit `temperature`
+argument to `_write_eval_config` or `_run_agentark_eval`, including `None`, takes
+precedence over the temperature environment override. Python constants also
+accept `None` or a finite numeric temperature; booleans and nonfinite values are
+rejected. Invalid settings fail during config authoring. The selected settings
+apply to the first request; no API or parameter fallback is triggered by errors.
+Omitted temperature is recorded as `temperature: null`; reasoning remains
+optional, with no forced `reasoning_effort: none`.
+
+This is a Kaggle notebook/shared-template policy. Core LiteLLM configs continue
+to default to Chat Completions and `required`. Native generation retains Chat
+Completions, `required`, temperature `1.0`, and its existing temperature-error
+retry. The frozen native notebook remains unchanged. Older imported LiteLLM
+notebooks keep their original model-name rules: manually selecting Responses and
+null temperature does not change their old Opus-only automatic tool-choice
+mapping. Choose tool choice explicitly or import the new generated notebook.
 
 `auto` continues to expose function tools and instruct the model to
 `submit_action`, without forcing a tool call. A prose-only response ends the
 decision under existing SimpleAgent behavior and can become an invalid
 environment action. There is no added reminder, retry or exception-based
 fallback. Tool choice is already included in the evaluation fingerprint.
-For any other endpoint that supports function tools but rejects required tool
-choice, explicitly choose `auto`; local manual YAML can also set `tool_choice: auto`
-under `simple_agent` independently of the Kaggle model mapping.
+Local manual YAML can also set `tool_choice: auto` under `simple_agent`.
 
-Astra starts with `temperature: null`, and LiteLLM mode uses zero SDK retries.
-It keeps unsupported-parameter errors visible instead of rerunning with a
-different temperature. Choose new benchmark names for these evaluation
-conditions; existing tasks, seeds, artifacts, and score formulas remain intact.
+LiteLLM mode uses zero SDK retries and keeps unsupported-parameter errors
+visible. Choose a new benchmark name and output path for these evaluation
+conditions; the new default name ends in `-litellm-responses-auto`. This uniform
+policy does not guarantee that every current or future model supports Responses,
+images, tools, and the chosen parameters. Historical Astra Responses/required and
+Opus Chat/auto results do not certify the new policy across vendors. Existing
+tasks, seeds, artifacts, and score formulas remain intact.
+
+Kaggle Gemini 2.5 Flash (`google/gemini-2.5-flash`) has a known Responses
+limitation: the production adapter's request with two function tools returned
+HTTP 400 `invalid_prompt`: "Multiple tools are supported only when they are all
+search tools". Select `DEFAULT_LITELLM_API = "chat_completions"` or
+`AGENTARK_KAGGLE_LITELLM_API=chat_completions` explicitly for this configuration.
+There is no model-name routing or automatic API fallback.
+
+The tested Grok 4.6 Responses route (`xai/grok-4.6`) returned HTTP 404
+"requested model not found" on its first production-adapter request. The same
+explicit Chat override is a configurable alternative, but Chat has not been
+live-verified here. The child receipt establishes this failure; the outer
+benchmark's completion status did not establish success.
+
+| Evidence | Established scope |
+| --- | --- |
+| Synthetic SDK / local HTTP loopback | Controlled image, tool continuation, state, and configuration behavior; no provider certification. |
+| Production adapter v2 / Responses | Sol 6.1 (`openai/gpt-6.1-sol`, run 6231754), Opus 5.5 (`anthropic/claude-opus-5-5@default`, run 6231755), and Gemini 3 Flash Preview (`google/gemini-3-flash-preview`, run 6231756) passed three actual production `aresponses` calls each: two image turns with a host echo result, native continuation and action submission, then a third tool-free image summary. All used auto, omitted temperature/reasoning effort, and zero retries. These are small protocol smokes, not Unity/full Door evaluations. Gemini 2.5 Flash returned the two-function-tool HTTP 400 above; Grok 4.6 (`xai/grok-4.6`) returned HTTP 404 "requested model not found" on its first request. Chat alternatives remain unverified here. |
+| Raw OpenAI SDK / Gemini 3 Flash Preview | `/models/openapi/responses` passed two tools and two turns, with 2,700 tokens reported; `/models/openapi/v1/responses` returned HTTP 405. This is transport-only, not production-adapter proof. |
+| Historical packaged `DoorSpin3Turns` evaluation | Astra used Responses/required/null temperature; Opus used Chat/auto/temperature 1.0. Full results and quota limits remain in the [historical validation matrix](../../docs/litellm-evaluation.md#validation-scope). |
+
+The local-only [v2 probe verification report](../../../local_save/task_validation/SimpleAgent/unified_kaggle_20261105/verified_v2_probes.json)
+summarizes receipts under
+`local_save/task_validation/SimpleAgent/unified_kaggle_20261105/v2_outputs/`
+(relative to the outer repository root). These ignored probe artifacts are
+unavailable in a fresh clone.
 
 ## Importing the Notebook to Create a New Task
 
@@ -126,7 +175,7 @@ cell, edit the defaults for the new task:
 | Setting | Snake smoke example | Purpose |
 | --- | --- | --- |
 | `DEFAULT_TASK_NAME` | `Snake` | Selects the AgentArk task package |
-| `DEFAULT_BENCHMARK_TASK_NAME_FALLBACK` | `agentark-snake-simple` | Gives the new evaluation conditions their own benchmark name |
+| `DEFAULT_BENCHMARK_TASK_NAME_FALLBACK` | `agentark-snake-litellm-responses-auto` | Gives the LiteLLM evaluation conditions their own benchmark name; choose a separate name for native conditions |
 | `DEFAULT_SEED_START` / `DEFAULT_SEED_END` | `1` / `2` | Keeps the first real test short; restore the formal range afterward |
 | `DEFAULT_TASK_SCORE_SCALE_MIN` / `DEFAULT_TASK_SCORE_SCALE_MAX` | `0` / `6` | Normalizes Snake's final-attempt reward for the notebook leaderboard |
 
@@ -290,7 +339,7 @@ AGENTARK_KAGGLE_FULL_EVAL=1 python3 benchmarks/kaggle/agentark_marble_stop_seeds
 ```
 
 Some GPT/Gemini/reasoning model proxy endpoints recommend or require the
-provider default sampling temperature. The task starts every model with
+provider default sampling temperature. The historical native task starts every model with
 `temperature: 1.0`. If AgentArk sees a temperature-specific error such as
 "temperature is deprecated" or "temperature is unsupported", the same task
 rewrites its eval config to `temperature: null` and retries the remaining
@@ -345,6 +394,10 @@ Useful environment overrides for the modern SimpleAgent notebook/template:
 - `AGENTARK_KAGGLE_EVAL_ATTEMPTS`, default `3`; reruns the full AgentArk eval loop while any requested seed lacks an ok result, then stops when all seeds are ok or the loop limit is reached
 - `AGENTARK_KAGGLE_ENV_ID`, default `0`
 - `AGENTARK_KAGGLE_MODEL`, explicit model override for local or remote runs
+- `AGENTARK_KAGGLE_BACKEND`, `native` or `litellm`; the shared template defaults to native and the LiteLLM notebook defaults to LiteLLM
+- `AGENTARK_KAGGLE_LITELLM_API`, `responses` (LiteLLM Kaggle default) or `chat_completions`
+- `AGENTARK_KAGGLE_TOOL_CHOICE`, `auto` or `required`; defaults to auto for LiteLLM and required for native
+- `AGENTARK_KAGGLE_TEMPERATURE`, `default`, `null`, `none`, or a finite number; default omits temperature for LiteLLM and uses `1.0` for native
 - `AGENTARK_KAGGLE_MAX_COMPLETION_TOKENS`, default `30000`
 - `AGENTARK_KAGGLE_REQUEST_TIMEOUT_S`, default `600`
 - `AGENTARK_KAGGLE_FULL_EVAL=1`, force a full AgentArk evaluation outside

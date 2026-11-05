@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import importlib.util
+import base64
+import io
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import subprocess
@@ -11,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+from PIL import Image
 
 from agent_ark.ark_eval.evaluation_identity import build_evaluation_identity
 from agent_ark.ark_eval.run_api_agent import build_model_runtimes
@@ -38,10 +41,12 @@ def notebook(tmp_path, monkeypatch):
 def test_formal_litellm_notebook_import_keeps_generic_defaults_and_distinct_artifacts(notebook):
     assert notebook["DEFAULT_MODEL_BACKEND"] == "litellm"
     assert notebook["DEFAULT_TOOL_CHOICE"] is None
+    assert notebook["DEFAULT_LITELLM_API"] == "responses"
+    assert notebook["DEFAULT_TEMPERATURE"] == "default"
     assert notebook["DEFAULT_TASK_NAME"] == "MarbleStop"
     assert notebook["DEFAULT_SEED_START"] == 1 and notebook["DEFAULT_SEED_END"] == 10
     assert notebook["DEFAULT_TASK_SCORE_SCALE_MIN"] == 0 and notebook["DEFAULT_TASK_SCORE_SCALE_MAX"] == 1
-    assert notebook["DEFAULT_BENCHMARK_TASK_NAME"].endswith("-litellm")
+    assert notebook["DEFAULT_BENCHMARK_TASK_NAME"].endswith("-litellm-responses-auto")
     assert "_litellm_" in notebook["RESULT_STEM"]
     summary = json.loads(notebook["EXPORTED_SUMMARY_PATH"].read_text())
     assert summary["evaluation_status"] == "creation_smoke" and summary["full_eval"] is False
@@ -71,12 +76,15 @@ def test_formal_litellm_notebook_returns_normalized_mean_score(notebook):
     assert summary["mean_score_reward"] == 0.0 and summary["normalized_mean_score_reward"] == 0.5
 
 
-@pytest.mark.parametrize("wire_model,api,tool_choice", [
-    ("openai/gpt-6-astra", "responses", "required"),
-    ("google/gemini-2.5-pro", "chat_completions", "required"),
-    ("anthropic/claude-opus-5-5@default", "chat_completions", "auto"),
+@pytest.mark.parametrize("wire_model,response_shape", [
+    ("openai/gpt-6.1-sol", "reasoning_phase"),
+    ("anthropic/claude-opus-5-5@default", "message"),
+    ("google/gemini-2.5-flash", "function_only"),
+    ("xai/grok-4.6", "message"),
 ])
-def test_formal_notebook_recipe_uses_real_sdk_local_http_and_native_submission(notebook, monkeypatch, wire_model, api, tool_choice):
+def test_uniform_responses_recipe_uses_real_sdk_images_host_continuation_and_submission(
+        notebook, monkeypatch, wire_model, response_shape):
+    """Synthetic vendor-shaped replies prove serialization, not cloud support."""
     monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
     pytest.importorskip("litellm")
     received = []
@@ -92,21 +100,23 @@ def test_formal_notebook_recipe_uses_real_sdk_local_http_and_native_submission(n
             name = "list_files" if first else "submit_action"
             arguments = {"path": "records", "offset": 0, "limit": 10} if first else {
                 "format": "tool_call", "content": json.dumps(action)}
-            if api == "responses":
-                payload = {"id": "synthetic-response", "object": "response", "created_at": 0, "model": wire_model,
-                    "status": "completed", "output": [
-                        {"type": "message", "id": "synthetic-message", "role": "assistant", "status": "completed", "phase": "commentary",
-                         "content": [{"type": "output_text", "text": "Inspect visible state." if first else "Wait one second.", "annotations": []}]},
-                        {"type": "function_call", "id": "fc-" + str(len(received)), "call_id": "call-" + str(len(received)),
-                         "name": name, "arguments": json.dumps(arguments), "status": "completed"}],
-                    "usage": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12}}
-            else:
-                payload = {"id": "synthetic-chat", "object": "chat.completion", "created": 0, "model": wire_model,
-                    "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant",
-                        "content": "Inspect visible state." if first else "Wait one second.",
-                        "tool_calls": [{"id": "call-" + str(len(received)), "type": "function",
-                            "function": {"name": name, "arguments": json.dumps(arguments)}}]}}],
-                    "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12}}
+            output = []
+            if response_shape == "reasoning_phase":
+                output.append({"type": "reasoning", "id": "reason-" + str(len(received)),
+                               "summary": [], "encrypted_content": "opaque-synthetic-reasoning"})
+            if response_shape != "function_only":
+                message = {"type": "message", "id": "message-" + str(len(received)),
+                           "role": "assistant", "status": "completed",
+                           "content": [{"type": "output_text", "text": "Inspect visible state." if first else "Wait one second.", "annotations": []}]}
+                if response_shape == "reasoning_phase":
+                    message["phase"] = "commentary"
+                output.append(message)
+            output.append({"type": "function_call", "id": "fc-" + str(len(received)),
+                           "call_id": "call-" + str(len(received)), "name": name,
+                           "arguments": json.dumps(arguments), "status": "completed"})
+            payload = {"id": "response-" + str(len(received)), "object": "response", "created_at": 0,
+                       "model": wire_model, "status": "completed", "output": output,
+                       "usage": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12}}
             encoded = json.dumps(payload).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -127,24 +137,41 @@ def test_formal_notebook_recipe_uses_real_sdk_local_http_and_native_submission(n
         recipe["timeout_s"] = 20
         runtime = build_model_runtimes([recipe])[0]
         agent = runtime["agent"]
-        assert agent.tool_choice == recipe["simple_agent"]["tool_choice"] == tool_choice
+        assert agent.tool_choice == recipe["simple_agent"]["tool_choice"] == "auto"
+        assert recipe["simple_agent"]["litellm"] == {"model": "openai/" + wire_model, "api": "responses"}
         assert runtime["evaluation_identity"] == build_evaluation_identity(recipe)
-        other_choice = dict(recipe, simple_agent=dict(recipe["simple_agent"], tool_choice="required" if tool_choice == "auto" else "auto"))
+        other_choice = dict(recipe, simple_agent=dict(recipe["simple_agent"], tool_choice="required"))
         assert runtime["evaluation_identity"] != build_evaluation_identity(other_choice)
-        actions, traces = agent.forward_with_trace({0: {"messages": [{"role": "user", "content": "Visible door state."}]}})
+        image = io.BytesIO()
+        Image.new("RGB", (8, 8), "green").save(image, format="PNG")
+        image_url = "data:image/png;base64," + base64.b64encode(image.getvalue()).decode()
+        content = [{"type": "text", "text": "Visible door state."},
+                   {"type": "image_url", "image_url": {"url": image_url}}]
+        actions, traces = agent.forward_with_trace({0: {"messages": [{"role": "user", "content": content}]}})
         assert json.loads(actions[0]["action"][11:-12]) == action
-        expected_path = "/models/openapi/responses" if api == "responses" else "/models/openapi/v1/chat/completions"
-        assert len(received) == 2 and all(path == expected_path and body["model"] == wire_model for path, body in received)
-        assert all(body["tool_choice"] == tool_choice for path, body in received)
+        next_content = [{"type": "text", "text": "Wait action completed. Updated visible door state."}, content[1]]
+        next_actions, next_traces = agent.forward_with_trace({0: {"messages": [{"role": "user", "content": next_content}]}})
+        assert json.loads(next_actions[0]["action"][11:-12]) == action
+        assert len(received) == 3 and all(path == "/models/openapi/responses" and body["model"] == wire_model
+                                          for path, body in received)
+        assert all(body["tool_choice"] == "auto" for path, body in received)
         assert traces[0]["usage"]["total_tokens"] == 24
-        if api == "responses":
-            assert all(body["store"] is False and "temperature" not in body for path, body in received)
-            assert all(tool["strict"] is False for tool in received[0][1]["tools"])
-            assert any(item.get("type") == "function_call_output" and item["call_id"] == "call-1"
+        assert next_traces[0]["usage"]["total_tokens"] == 12
+        assert all(body["store"] is False and "temperature" not in body and "reasoning" not in body
+                   and "reasoning_effort" not in body and body["max_output_tokens"] == 30000
+                   for path, body in received)
+        assert all(tool["strict"] is False for tool in received[0][1]["tools"])
+        assert any(item.get("type") == "function_call_output" and item["call_id"] == "call-1"
+                   for item in received[1][1]["input"])
+        assert any(part.get("type") == "input_image" and part["image_url"] == image_url
+                   for item in received[0][1]["input"] for part in item.get("content", []))
+        assert any(part.get("type") == "input_image" for item in received[2][1]["input"]
+                   for part in item.get("content", []))
+        if response_shape == "reasoning_phase":
+            assert any(item.get("type") == "reasoning" and item["encrypted_content"] == "opaque-synthetic-reasoning"
                        for item in received[1][1]["input"])
-        else:
-            assert any(item.get("role") == "tool" and item["tool_call_id"] == "call-1"
-                       for item in received[1][1]["messages"])
+            assert any(item.get("type") == "message" and item.get("phase") == "commentary"
+                       for item in received[1][1]["input"])
     finally:
         if agent is not None:
             agent.close()
@@ -156,12 +183,12 @@ def test_formal_notebook_recipe_uses_real_sdk_local_http_and_native_submission(n
 @pytest.mark.parametrize("backend,wire_model,api_override,expected_api,temperature,tool_choice", [
     ("native", "google/gemini-2.5-pro", None, None, 1.0, "required"),
     ("native", "anthropic/claude-opus-5-5@default", None, None, 1.0, "required"),
-    ("litellm", "openai/gpt-6-astra", None, "responses", None, "required"),
-    ("litellm", "gpt-6-astra", "chat_completions", "chat_completions", None, "required"),
-    ("litellm", "google/gemini-2.5-pro", None, "chat_completions", 1.0, "required"),
-    ("litellm", "selected-model", "responses", "responses", 1.0, "required"),
-    ("litellm", "anthropic/claude-opus-5-5@default", None, "chat_completions", 1.0, "auto"),
-    ("litellm", "claude-opus-5-5-default", None, "chat_completions", 1.0, "auto"),
+    ("litellm", "openai/gpt-6.1-sol", None, "responses", None, "auto"),
+    ("litellm", "gpt-6-astra", "chat_completions", "chat_completions", None, "auto"),
+    ("litellm", "google/gemini-2.5-flash", None, "responses", None, "auto"),
+    ("litellm", "selected-model", "responses", "responses", None, "auto"),
+    ("litellm", "anthropic/claude-opus-5-5@default", None, "responses", None, "auto"),
+    ("litellm", "xai/grok-4.6", None, "responses", None, "auto"),
 ])
 def test_backend_selection_preserves_wire_model_and_authors_explicit_sdk_route(
         notebook, monkeypatch, backend, wire_model, api_override, expected_api, temperature, tool_choice):
@@ -191,29 +218,26 @@ def test_imported_backend_constant_is_editable_and_environment_override_wins(not
     assert notebook["DEFAULT_MODEL_BACKEND"] == "litellm"
     notebook["DEFAULT_MODEL_BACKEND"] = "native"
     assert notebook["_selected_model_backend"]() == "native"
-    assert notebook["_selected_litellm_api"]("unknown-model") == "chat_completions"
+    assert notebook["_selected_litellm_api"]() == "responses"
     monkeypatch.setenv("AGENTARK_KAGGLE_BACKEND", "litellm")
     assert notebook["_selected_model_backend"]() == "litellm"
 
 
 @pytest.mark.parametrize("wire_model", [
-    "claude-opus-5-5", "claude-opus-5-5-default", "claude-opus-5-5@default",
-    "claude-opus-5.5", "claude-opus-5.5-default", "claude-opus-5.5@default",
-    "anthropic/claude-opus-5-5@default", "anthropic/claude-opus-5.5",
+    "model-never-seen-before", "future-vendor/future-model@preview",
+    "openai/gpt-6.1-sol", "anthropic/claude-opus-5-5@default",
+    "google/gemini-2.5-flash", "xai/grok-4.6", "arbitrary/claude-opus-5-50",
 ])
-def test_tool_choice_policy_matches_only_bounded_opus_5_5_aliases_in_litellm(notebook, wire_model):
-    assert notebook["_selected_tool_choice"](wire_model, "litellm") == "auto"
-    assert notebook["_selected_tool_choice"](wire_model, "native") == "required"
-
-
-@pytest.mark.parametrize("wire_model", [
-    "claude-opus-5-6", "claude-opus-4-5", "claude-sonnet-5-5", "opus-5-5",
-    "claude-opus-5-50", "my-claude-opus-5-5", "claude-opus-5-5-thinking",
-    "claude-opus-5-5@preview", "claude-opus-5-5-default-extra", "claude-opus-5-5/other",
-    "openai/gpt-6-astra", "google/gemini-2.5-pro", "selected-model",
-])
-def test_unknown_model_tool_choice_policy_remains_required(notebook, wire_model):
-    assert notebook["_selected_tool_choice"](wire_model, "litellm") == "required"
+def test_first_request_policy_is_independent_of_wire_model_name(notebook, monkeypatch, wire_model):
+    notebook["_write_eval_config"](task_name="Snake", seed_start=1, seed_end=2, env_id=0,
+                                    model=wire_model, base_url="https://proxy.example",
+                                    max_completion_tokens=30000)
+    recipe = yaml.safe_load(notebook["CONFIG_PATH"].read_text())["models"][0]
+    assert recipe["model"] == wire_model
+    assert recipe["simple_agent"]["litellm"] == {"model": "openai/" + wire_model, "api": "responses"}
+    assert recipe["temperature"] is None and recipe["simple_agent"]["tool_choice"] == "auto"
+    assert "reasoning_effort" not in recipe and "reasoning" not in recipe
+    assert notebook["_selected_tool_choice"]("native") == "required"
 
 
 @pytest.mark.parametrize("backend,wire_model,default,override,expected", [
@@ -234,6 +258,83 @@ def test_tool_choice_explicit_default_and_environment_override_are_authored_befo
                                     max_completion_tokens=30000)
     recipe = yaml.safe_load(notebook["CONFIG_PATH"].read_text())["models"][0]
     assert recipe["simple_agent"]["tool_choice"] == expected
+
+
+@pytest.mark.parametrize("default,override,expected", [
+    ("chat_completions", None, "chat_completions"),
+    ("chat_completions", "responses", "responses"),
+    ("responses", "chat_completions", "chat_completions"),
+])
+def test_api_constant_and_environment_override_choose_first_request(notebook, monkeypatch, default, override, expected):
+    notebook["DEFAULT_LITELLM_API"] = default
+    if override is not None:
+        monkeypatch.setenv("AGENTARK_KAGGLE_LITELLM_API", override)
+    notebook["_write_eval_config"](task_name="Snake", seed_start=1, seed_end=2, env_id=0,
+                                    model="arbitrary-future-model", base_url="https://proxy.example",
+                                    max_completion_tokens=30000)
+    recipe = yaml.safe_load(notebook["CONFIG_PATH"].read_text())["models"][0]
+    assert recipe["simple_agent"]["litellm"]["api"] == expected
+
+
+@pytest.mark.parametrize("entry_point", ["writer", "runner"])
+@pytest.mark.parametrize("backend,default,override,explicit,expected", [
+    ("litellm", "default", None, {}, None),
+    ("native", "default", None, {}, 1.0),
+    ("litellm", 0.25, None, {}, 0.25),
+    ("litellm", None, None, {}, None),
+    ("litellm", 0.25, "default", {}, None),
+    ("native", 0.25, "default", {}, 1.0),
+    ("litellm", 0.25, "null", {}, None),
+    ("native", 1.0, "none", {}, None),
+    ("litellm", 0.25, "0.75", {}, 0.75),
+    ("litellm", 0.25, "0.75", {"temperature": None}, None),
+    ("litellm", 0.25, "0.75", {"temperature": 0.5}, 0.5),
+    ("native", 1.0, "0.75", {"temperature": None}, None),
+])
+def test_temperature_resolution_is_shared_and_explicit_none_wins(
+        notebook, monkeypatch, entry_point, backend, default, override, explicit, expected):
+    monkeypatch.setenv("AGENTARK_KAGGLE_BACKEND", backend)
+    notebook["DEFAULT_TEMPERATURE"] = default
+    if override is not None:
+        monkeypatch.setenv("AGENTARK_KAGGLE_TEMPERATURE", override)
+    kwargs = dict(task_name="Snake", seed_start=1, seed_end=1, env_id=0,
+                  model="arbitrary-future-model", base_url="https://proxy.example", max_completion_tokens=30000)
+    if entry_point == "writer":
+        notebook["_write_eval_config"](**kwargs, **explicit)
+    else:
+        def run(*args, **kwargs):
+            notebook["RESULT_PATH"].write_text(json.dumps({"status": "ok", "requested_group_seed": 1}) + "\n")
+            return SimpleNamespace(returncode=0, stdout="")
+        notebook["subprocess"] = SimpleNamespace(run=run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT)
+        notebook["_run_agentark_eval"]({}, max_attempts=1, **kwargs, **explicit)
+    recipe = yaml.safe_load(notebook["CONFIG_PATH"].read_text())["models"][0]
+    assert recipe["temperature"] == expected
+
+
+@pytest.mark.parametrize("source", ["default", "environment", "argument"])
+@pytest.mark.parametrize("invalid", ["", "true", "nan", "inf", "-Infinity", "automatic"])
+def test_invalid_temperature_fails_before_config_output(notebook, monkeypatch, source, invalid):
+    explicit = {}
+    if source == "default":
+        notebook["DEFAULT_TEMPERATURE"] = invalid
+    elif source == "environment":
+        monkeypatch.setenv("AGENTARK_KAGGLE_TEMPERATURE", invalid)
+    else:
+        explicit["temperature"] = invalid
+    with pytest.raises(ValueError, match="TEMPERATURE.*finite number"):
+        notebook["_write_eval_config"](task_name="Snake", seed_start=1, seed_end=2, env_id=0,
+                                        model="arbitrary-model", base_url="https://proxy.example",
+                                        max_completion_tokens=30000, **explicit)
+    assert not notebook["CONFIG_PATH"].exists()
+
+
+@pytest.mark.parametrize("invalid", [True, False, float("nan"), float("inf"), {}, []])
+def test_temperature_rejects_boolean_nonfinite_and_non_numeric_python_values(notebook, invalid):
+    with pytest.raises(ValueError, match="TEMPERATURE.*finite number"):
+        notebook["_write_eval_config"](task_name="Snake", seed_start=1, seed_end=2, env_id=0,
+                                        model="arbitrary-model", base_url="https://proxy.example",
+                                        max_completion_tokens=30000, temperature=invalid)
+    assert not notebook["CONFIG_PATH"].exists()
 
 
 @pytest.mark.parametrize("source", ["default", "environment"])
@@ -313,16 +414,33 @@ def test_invalid_backend_or_protocol_is_rejected_during_config_authoring(noteboo
                                         max_completion_tokens=30000)
 
 
+@pytest.mark.parametrize("source", ["default", "environment"])
+@pytest.mark.parametrize("invalid", ["", "automatic", "chat", "none"])
+def test_invalid_api_has_no_implicit_route(notebook, monkeypatch, source, invalid):
+    if source == "default":
+        notebook["DEFAULT_LITELLM_API"] = invalid
+    else:
+        monkeypatch.setenv("AGENTARK_KAGGLE_LITELLM_API", invalid)
+    with pytest.raises(ValueError, match="LITELLM_API.*chat_completions or responses"):
+        notebook["_write_eval_config"](task_name="Snake", seed_start=1, seed_end=2, env_id=0,
+                                        model="arbitrary-model", base_url="https://proxy.example",
+                                        max_completion_tokens=30000)
+    assert not notebook["CONFIG_PATH"].exists()
+
+
 
 @pytest.mark.parametrize("wire_model,expected_temperature,override,tool_choice,error", [
-    ("openai/gpt-6-astra", None, None, "required", "temperature is unsupported"),
-    ("selected-model", 1.0, None, "required", "temperature is unsupported"),
-    ("anthropic/claude-opus-5-5@default", 1.0, None, "auto", "tool choice is unsupported"),
-    ("anthropic/claude-opus-5-5@default", 1.0, "required", "required", "tool_choice type tool and any not supported"),
+    ("openai/gpt-6.1-sol", None, None, "auto", "temperature is unsupported"),
+    ("selected-model", 0.6, None, "auto", "temperature is unsupported"),
+    ("selected-model", None, None, "auto", "Responses API is unsupported"),
+    ("google/gemini-2.5-flash", None, None, "auto", "Multiple tools are supported only when they are all search tools"),
+    ("anthropic/claude-opus-5-5@default", None, "required", "required", "tool_choice type tool and any not supported"),
 ])
 def test_litellm_authors_first_request_policy_without_parameter_fallback(
         notebook, monkeypatch, wire_model, expected_temperature, override, tool_choice, error):
     monkeypatch.setenv("AGENTARK_KAGGLE_BACKEND", "litellm")
+    if expected_temperature is not None:
+        monkeypatch.setenv("AGENTARK_KAGGLE_TEMPERATURE", str(expected_temperature))
     if override is not None:
         monkeypatch.setenv("AGENTARK_KAGGLE_TOOL_CHOICE", override)
     path = notebook["RESULT_PATH"]
@@ -348,5 +466,36 @@ def test_litellm_authors_first_request_policy_without_parameter_fallback(
     assert len(configs) == 1
     assert configs[0]["temperature"] == expected_temperature and configs[0]["max_retries"] == 0
     assert configs[0]["simple_agent"]["tool_choice"] == tool_choice
+    assert configs[0]["simple_agent"]["litellm"]["api"] == "responses"
     assert not notebook["_ok_seeds"](results)
     assert not list(notebook["EXPORTED_RESULT_PATH"].parent.glob("*_before_temperature_retry.jsonl"))
+
+
+def test_native_selection_keeps_its_existing_unsupported_temperature_retry(notebook, monkeypatch):
+    monkeypatch.setenv("AGENTARK_KAGGLE_BACKEND", "native")
+    # A native retry's explicit None must win over this environment setting.
+    monkeypatch.setenv("AGENTARK_KAGGLE_TEMPERATURE", "1")
+    configs = []
+    real_write = notebook["_write_eval_config"]
+
+    def write_config(**kwargs):
+        real_write(**kwargs)
+        configs.append(yaml.safe_load(notebook["CONFIG_PATH"].read_text())["models"][0])
+
+    def run(*args, **kwargs):
+        rows = [{"status": "error", "requested_group_seed": 1, "error": "temperature is unsupported"}]
+        if len(configs) == 2:
+            rows = [{"status": "ok", "requested_group_seed": 1, "score_reward": 1.0}]
+        notebook["RESULT_PATH"].write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        return SimpleNamespace(returncode=0 if len(configs) == 2 else 1, stdout="")
+
+    notebook["_write_eval_config"] = write_config
+    notebook["subprocess"] = SimpleNamespace(run=run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT)
+    results = notebook["_run_agentark_eval"]({}, task_name="Snake", seed_start=1, seed_end=1, env_id=0,
+                                            max_attempts=2, model="arbitrary-model",
+                                            base_url="https://proxy.example/openapi", max_completion_tokens=30000)
+    assert [config["temperature"] for config in configs] == [1.0, None]
+    assert all(config["simple_agent"]["tool_choice"] == "required" and config["max_retries"] == 1
+               and "backend" not in config["simple_agent"] for config in configs)
+    assert notebook["_ok_seeds"](results) == {1}
+    assert len(list(notebook["EXPORTED_RESULT_PATH"].parent.glob("*_before_temperature_retry.jsonl"))) == 1

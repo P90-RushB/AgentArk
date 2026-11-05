@@ -165,38 +165,72 @@ simple_agent:
 
 Use [agentark_litellm_task.ipynb](../benchmarks/kaggle/agentark_litellm_task.ipynb)
 for a separate LiteLLM notebook. Its generic default is MarbleStop seeds 1–10;
-the opening instructions also provide the tested Door (`DoorSpin3Turns`) seeds 1–2 recipe and its
+the opening instructions also provide a Door (`DoorSpin3Turns`) seeds 1–2 recipe and its
 score range of −1 to 1. The environment remains `env-1.0.6`. The notebook pins
 the AgentArk wrapper source to its fixed commit; retain that pin with published
 benchmark conditions. Existing native notebooks retain their own pins and behavior.
 See [Kaggle benchmark instructions](../benchmarks/kaggle/README.md) for execution.
 
-The notebook helper explicitly selects Responses for Kaggle model IDs
-`openai/gpt-6-astra` and `gpt-6-astra`, and Chat Completions for other models.
-Override this with `DEFAULT_LITELLM_API` or `AGENTARK_KAGGLE_LITELLM_API` when
-needed; it writes the selected API into the ordinary AgentArk config.
+The current notebook and shared Kaggle template use one LiteLLM policy for every
+selected model: Responses, `tool_choice: auto`, omitted temperature, and omitted
+optional reasoning settings. Model names do not choose an API or parameters.
+This policy belongs to the Kaggle helpers; the core LiteLLM configuration still
+defaults to Chat Completions and `required` when those fields are omitted.
 
-The new notebook and shared Kaggle template expose `DEFAULT_TOOL_CHOICE = None`.
-In LiteLLM mode, this authors `tool_choice: auto` from the first request for
-Kaggle Opus 5.5 aliases whose final slash-separated name is exactly
-`claude-opus-5-5` or `claude-opus-5.5`, optionally followed by `-default` or
-`@default`. Kaggle's CLI slug `claude-opus-5-5-default` selects wire model
-`anthropic/claude-opus-5-5@default`; its nested LiteLLM route is
-`openai/anthropic/claude-opus-5-5@default`.
-Native mode, Astra, Gemini and unknown model names keep `required`.
-Set `DEFAULT_TOOL_CHOICE` or `AGENTARK_KAGGLE_TOOL_CHOICE` to `required` or `auto`
-to choose explicitly; the environment override wins. Invalid choices fail during
-config authoring. This mapping belongs to the Kaggle notebook/template, not the
-core LiteLLM adapter. [Anthropic documents](https://platform.claude.com/docs/en/api/errors)
-that Opus 5.5 does not support forced tool choice; disabling thinking does not
-remove that restriction.
+| Notebook/template constant | Environment override | Values and default |
+| --- | --- | --- |
+| `DEFAULT_LITELLM_API = "responses"` | `AGENTARK_KAGGLE_LITELLM_API` | `responses` or `chat_completions` |
+| `DEFAULT_TOOL_CHOICE = None` | `AGENTARK_KAGGLE_TOOL_CHOICE` | `auto` or `required`; `None` selects `auto` for LiteLLM and `required` for native |
+| `DEFAULT_TEMPERATURE = "default"` | `AGENTARK_KAGGLE_TEMPERATURE` | `default` selects omitted temperature for LiteLLM and `1.0` for native; `null`/`none` omits it; a finite number sets it explicitly |
+
+Environment overrides take precedence over constants. An explicit `temperature`
+argument to `_write_eval_config` or `_run_agentark_eval`, including `None`, takes
+precedence over the temperature environment override. Python constants also
+accept `None` to omit temperature or a finite numeric temperature; booleans and
+nonfinite values are rejected. Invalid settings fail before the first request. These controls
+author that first request, with no exception-driven API or parameter fallback.
+The model config records omitted temperature as `temperature: null`. Reasoning
+remains optional; the helper does not force `reasoning_effort: none`.
+
+Native generation retains Chat Completions, `required`, temperature `1.0`, and
+its existing temperature-error retry. LiteLLM uses zero SDK retries and leaves
+unsupported-parameter errors visible. Older imported notebooks retain their
+original model-name rules: manually choosing Responses and null temperature
+does not change their old Opus-only automatic tool-choice mapping. Set the tool
+choice explicitly or import the newly generated notebook for the uniform policy.
 
 `auto` still exposes function tools and the model remains instructed to use
 `submit_action`, but it does not force a tool call. Existing SimpleAgent behavior
 ends a decision on a prose-only response, which can become an invalid environment
 action. This change adds no reminder, retry or exception-based fallback. The
-selected tool choice is already part of the evaluation fingerprint; use a new
-benchmark name for the changed conditions.
+selected API and tool choice participate in the evaluation fingerprint. The new
+default benchmark name ends in `-litellm-responses-auto`; use a new benchmark name
+and output path when changing these conditions. A single policy reduces hidden
+differences between models, but does not guarantee that every current or future
+model supports the chosen API, images, tools, and parameters.
+
+For example, generating `Snake` with `--backend litellm` creates
+`agentark_snake_litellm_responses_auto.py`, defines the CLI-discovered function
+`agentark_snake_litellm_responses_auto`, and uses benchmark slug
+`agentark-snake-litellm-responses-auto`. An explicit `--output` may override the
+filename; the generated function and benchmark identity still identify the new
+conditions.
+
+One known limitation is Kaggle Gemini 2.5 Flash (`google/gemini-2.5-flash`): a
+production-adapter Responses request containing two function tools returned
+HTTP 400 `invalid_prompt`: "Multiple tools are supported only when they are all
+search tools". Select Chat Completions explicitly with
+`DEFAULT_LITELLM_API = "chat_completions"` or
+`AGENTARK_KAGGLE_LITELLM_API=chat_completions` for that configuration. This is a
+manual evaluation condition; the helper does not recognize model names or retry
+with another API. The successful production-adapter Gemini 3 Flash Preview
+probe does not establish support for Gemini 2.5 Flash.
+
+The tested Grok 4.6 Responses route (`xai/grok-4.6`) returned HTTP 404
+"requested model not found" on its first production-adapter request. Chat
+Completions is also an explicit configurable alternative for this route, but
+has not been live-verified here. The child probe receipt, rather than the outer
+benchmark's completion status, determines the probe outcome.
 
 The notebook returns `normalized_mean_score_reward`: each case's raw final-attempt
 `score_reward` is normalized as `(score - min) / (max - min)` and averaged across
@@ -225,7 +259,7 @@ models:
       litellm:
         model: openai/openai/gpt-6-astra
         api: responses
-      tool_choice: required
+      tool_choice: auto
       context:
         output_reserve_tokens: 30000
       tools:
@@ -236,8 +270,8 @@ models:
 The first `openai/` in the nested model selects LiteLLM's OpenAI adapter. The
 remaining `openai/gpt-6-astra` is Kaggle's wire model, so the doubled prefix is
 intentional. Direct OpenAI instead uses top-level `gpt-6-astra` and nested
-`openai/gpt-6-astra`. Use `temperature: null` for Astra; common
-`reasoning_effort` is optional. Do not send the proxy's `/genai` endpoint to this
+`openai/gpt-6-astra`. The Kaggle policy omits temperature for every model; common
+`reasoning_effort` is optional and omitted by default. Do not send the proxy's `/genai` endpoint to this
 OpenAPI route or append `/chat/completions` to a Responses base URL.
 
 ## Credentials, parameters and budgets
@@ -325,13 +359,21 @@ remote model behavior or scores.
 
 ## Validation scope
 
+The evidence types below establish different scopes. Historical packaged runs
+predate the uniform Kaggle Responses/auto policy and do not certify that new
+policy across vendors. A provider probe is not a packaged task evaluation.
+
 | Check | Established scope |
 | --- | --- |
-| Offline fake-SDK and local HTTP loopback | Chat and Responses requests, multimodal/tool continuation, signatures/state validation, ordered Responses items including phases, retries, limits, compaction, trace and evaluation-identity behavior. |
-| Real Kaggle Astra / Responses / packaged `DoorSpin3Turns`, seeds 1–2 | Both cases completed 10 Unity actions with raw final-attempt reward 1. Total: 20 action calls, 14 summary calls, zero model-call errors and zero SDK retries. |
+| Synthetic: offline fake-SDK and local HTTP loopback | Chat and Responses requests, multimodal/tool continuation, signatures/state validation, ordered Responses items including phases, retries, limits, compaction, trace and evaluation-identity behavior. These controlled responses do not certify provider support. |
+| Production-adapter v2 probes / Responses | Sol 6.1 (`openai/gpt-6.1-sol`, run 6231754), Opus 5.5 (`anthropic/claude-opus-5-5@default`, run 6231755), and Gemini 3 Flash Preview (`google/gemini-3-flash-preview`, run 6231756) passed. Each probe made three actual production `aresponses` calls: two image turns covering a host echo result, native continuation and action submission, then a third tool-free image summary. All used `auto`, omitted temperature and reasoning effort, and zero retries. These are small protocol smokes, not Unity or full `DoorSpin3Turns` evaluations. |
+| Production-adapter probe: Kaggle Gemini 2.5 Flash (`google/gemini-2.5-flash`) / Responses | A request with two function tools returned HTTP 400 `invalid_prompt`: "Multiple tools are supported only when they are all search tools". Use the explicit Chat API override when configuring this route; no automatic fallback is added. |
+| Production-adapter v2 probe: Kaggle Grok 4.6 (`xai/grok-4.6`) / Responses | The first request returned HTTP 404 "requested model not found". The child receipt records failure even though the outer benchmark reported completion. Chat is an explicit configurable alternative, not a live-verified result. |
+| Raw OpenAI SDK probe: Kaggle Gemini 3 Flash Preview / Responses | A direct SDK call to `/models/openapi/responses` passed two tools and two turns, with 2,700 tokens reported. `/models/openapi/v1/responses` returned HTTP 405. This is transport-only evidence, not a production-adapter or packaged-task pass. |
+| Historical real Kaggle Astra / Responses / `tool_choice: required` / `temperature: null` / packaged `DoorSpin3Turns`, seeds 1–2 | Both cases completed 10 Unity actions with raw final-attempt reward 1. Total: 20 action calls, 14 summary calls, zero model-call errors and zero SDK retries. |
 | Reasoning audit in that real run | Seven returned reasoning items: four were replayed in six later requests; three were cleared by existing compaction before first replay. No additional unexplained omission was found. |
 | Limits of the real run | Returned message phases were absent; phase preservation and intermediate host-tool continuations were covered by controlled loopback, not that run. Every real action directly submitted `submit_action`. |
-| Real Kaggle Opus 5.5 / Chat Completions / `tool_choice: auto` / `DoorSpin3Turns`, run 5800062 | Seed 1 completed 10 environment turns with raw final-attempt score 1.0 and final success. Seed 2 completed 4 environment turns, then an APIError stopped the run because the next request's estimated $0.647248 exceeded remaining Kaggle quota. The original forced-tool-choice HTTP 400 was resolved; this is partial two-seed validation interrupted by quota, not a task code error. The raw-output audit matched all 14 accepted native `submit_action` calls to environment actions; two mixed batches were rejected and corrected through existing behavior. |
+| Historical real Kaggle Opus 5.5 / Chat Completions / `tool_choice: auto` / `temperature: 1.0` / `DoorSpin3Turns`, run 5800062 | Seed 1 completed 10 environment turns with raw final-attempt score 1.0 and final success. Seed 2 completed 4 environment turns, then an APIError stopped the run because the next request's estimated $0.647248 exceeded remaining Kaggle quota. The original forced-tool-choice HTTP 400 was resolved; this is partial two-seed validation interrupted by quota, not a task code error. The raw-output audit matched all 14 accepted native `submit_action` calls to environment actions; two mixed batches were rejected and corrected through existing behavior. |
 | Unverified claims | No direct native-Responses A/B comparison, performance-parity result, all-vendor signature validation or blanket live certification of the provider recipes above. |
 
 Evidence paths relative to the outer repository root are
@@ -343,15 +385,22 @@ These reports and raw records, images and logs are local-only ignored evidence,
 unavailable in a fresh clone. Their absence does not turn logical SDK traces
 into wire captures.
 
+The current v2 protocol-smoke receipts are summarized in the local-only
+[verified probe report](../../local_save/task_validation/SimpleAgent/unified_kaggle_20261105/verified_v2_probes.json).
+Per-run receipts are under
+`local_save/task_validation/SimpleAgent/unified_kaggle_20261105/v2_outputs/`,
+relative to the outer repository root. These are also unavailable in a fresh
+clone and establish only the probe conditions listed above.
+
 ## Troubleshooting
 
 | Symptom | Check |
 | --- | --- |
 | Missing LiteLLM / MCP / tenacity import | Install the pinned `.[litellm]` extra with the same Python executable used to run evaluation, then run `python -m pip check`. |
-| Function-tool HTTP 400 | Verify the selected model and API route support function tools. If only required tool choice is unsupported, set `tool_choice: auto` under `simple_agent` in manual YAML or `AGENTARK_KAGGLE_TOOL_CHOICE=auto` in the new Kaggle template. Known LiteLLM Kaggle Opus 5.5 aliases already default to auto; other routes require an explicit choice. Do not enable global parameter dropping. |
+| Function-tool HTTP 400 | Verify the selected model and API route support function tools. The current LiteLLM Kaggle helper defaults every model to `auto`; manual YAML can set `tool_choice: auto` under `simple_agent`. Check explicit overrides and old imported notebook versions. Do not enable global parameter dropping. |
 | Wrong model or model-not-found | Check the required nested provider prefix, top-level wire model, API mode and endpoint. Kaggle Astra needs nested `openai/openai/gpt-6-astra`; direct OpenAI needs `openai/gpt-6-astra`. |
 | `openai/responses/` configuration error | Select `api: responses`; use the ordinary `openai/` route for new configs. Responses currently rejects other SDK vendor prefixes. |
-| Unsupported temperature / thinking | Use `temperature: null` for Astra and remove native `thinking`. Add `reasoning_effort` only where supported. |
+| Unsupported temperature / thinking | Use `temperature: null` and remove native `thinking`. The current LiteLLM Kaggle helper already omits temperature and optional reasoning. Check explicit overrides; add `reasoning_effort` only where supported. |
 | Unexpected credential or endpoint | Set `api_key_env` explicitly and inspect the logical trace's endpoint. Omitted `base_url` means the SDK provider default; an unset named key is an error. |
 | Global modification/fallback error | Clear SDK-wide automatic dropping, modification, fallback and retry settings in the calling process; choose conditions explicitly in AgentArk config. |
 | Reasoning absent after a summary | Inspect compaction events and archived native state; successful compaction intentionally clears all working native state. |

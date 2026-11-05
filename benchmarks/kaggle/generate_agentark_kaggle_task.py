@@ -61,7 +61,7 @@ def build_litellm_notebook(*, wrapper_commit: str | None = None) -> dict:
     text = _backend_template("litellm", wrapper_commit)
     text = _replace_once(text,
         'DEFAULT_BENCHMARK_TASK_NAME_FALLBACK = f"agentark-{DEFAULT_TASK_SLUG.replace(\'_\', \'-\')}"',
-        'DEFAULT_BENCHMARK_TASK_NAME_FALLBACK = f"agentark-{DEFAULT_TASK_SLUG.replace(\'_\', \'-\')}-litellm"')
+        'DEFAULT_BENCHMARK_TASK_NAME_FALLBACK = f"agentark-{DEFAULT_TASK_SLUG.replace(\'_\', \'-\')}-litellm-responses-auto"')
     notebook = json.loads(NATIVE_NOTEBOOK_PATH.read_text(encoding="utf-8"))
     _, *chunks = text.split("# %%\n")
     cells = [cell for cell in notebook["cells"] if cell["cell_type"] == "code"]
@@ -85,27 +85,46 @@ the published wrapper with optional LiteLLM support. The separate native
 notebook and existing benchmark definitions retain their original conditions.
 
 The generic defaults evaluate **MarbleStop seeds 1–10**, normalizing its 0–1
-final-attempt reward. The selected Model Proxy model remains unchanged. Verified
-`openai/gpt-6-astra` / `gpt-6-astra` models default to the Responses API with
-`temperature: null`; other models default to Chat Completions. Set
-`DEFAULT_LITELLM_API` or `AGENTARK_KAGGLE_LITELLM_API` to choose either API
-explicitly. Only LiteLLM Responses canonicalizes `/openapi/v1` to `/openapi`.
+final-attempt reward. Every LiteLLM model uses the same first-request policy:
+**Responses API, `tool_choice: auto`, omitted temperature and optional reasoning**.
+The selected Model Proxy model remains unchanged; there is no model-name routing.
+Only LiteLLM Responses canonicalizes `/openapi/v1` to `/openapi`.
 
-`DEFAULT_TOOL_CHOICE = None` selects `auto` for the known Kaggle Opus 5.5
-aliases (last model segment `claude-opus-5-5` or `claude-opus-5.5`, optionally
-ending in `-default` or `@default`) in LiteLLM mode. Other models and native mode keep
-`required`. Set `DEFAULT_TOOL_CHOICE` or `AGENTARK_KAGGLE_TOOL_CHOICE` to
-`required` or `auto` to override this before the first request. This mapping is
-limited to the Kaggle template; the wrapper pin and core defaults are unchanged.
+Edit `DEFAULT_LITELLM_API = "responses"` (`chat_completions` is also supported),
+`DEFAULT_TOOL_CHOICE = None` (`auto` for LiteLLM, `required` for native), or
+`DEFAULT_TEMPERATURE = "default"` (omitted for LiteLLM, `1.0` for native).
+Matching `AGENTARK_KAGGLE_LITELLM_API`, `AGENTARK_KAGGLE_TOOL_CHOICE`, and
+`AGENTARK_KAGGLE_TEMPERATURE` environment settings override those constants.
+Temperature accepts `default`, `null`/`none`, or a finite number; explicit Python
+`None` also omits it. An explicit `temperature=` argument to the config writer or
+evaluation runner takes precedence over the environment, including `None`.
+Native defaults and its existing unsupported-temperature retry remain unchanged.
+
+This policy is limited to the Kaggle template; the wrapper pin and core defaults
+are unchanged. It is a separate evaluation condition, reflected in the new
+`-litellm-responses-auto` benchmark name. It does not guarantee that every current
+or future proxy model supports these settings; cloud compatibility must be checked
+for the selected model and endpoint.
+
+Known limitation: `google/gemini-2.5-flash` rejects Responses requests containing
+multiple function tools with HTTP 400 (`Multiple tools are supported only when
+they are all search tools`). For that model, explicitly choose
+`DEFAULT_LITELLM_API = "chat_completions"` or
+`AGENTARK_KAGGLE_LITELLM_API=chat_completions` before running. No automatic
+model-name rule or API fallback is applied; use a new benchmark name for Chat.
+The tested `xai/grok-4.6` Responses route also returned HTTP 404 (`requested
+model not found`). Chat is available as the same explicit API alternative; this
+probe did not live-validate Grok Chat support.
+
 `auto` enables function tools without forcing a call. The model is still
 instructed to finish with `submit_action`; a prose-only response ends the
 decision under the existing runtime behavior and can be an invalid task action.
-There is no new retry or exception-based fallback. Tool choice is already part
+There is no API or parameter fallback for LiteLLM. Tool choice is already part
 of the evaluation fingerprint. For a manual YAML evaluation on any compatible
 endpoint, explicitly set `simple_agent.tool_choice: auto` when required tool
 choice is unsupported.
 
-## Reproduce the DoorSpin3Turns Astra evaluation
+## Reproduce the historical DoorSpin3Turns Astra evaluation
 
 Before running the configuration cell, edit these defaults (or use the matching
 `AGENTARK_KAGGLE_` environment overrides) and select Astra in Kaggle:
@@ -116,6 +135,7 @@ Before running the configuration cell, edit these defaults (or use the matching
 | `DEFAULT_SEED_START` / `DEFAULT_SEED_END` | `1` / `2` |
 | `DEFAULT_TASK_SCORE_SCALE_MIN` / `DEFAULT_TASK_SCORE_SCALE_MAX` | `-1.0` / `1.0` |
 | `DEFAULT_BENCHMARK_TASK_NAME_FALLBACK` | `agentark-door-spin-3-turns-litellm-astra-s1-2` |
+| API / tool choice / temperature | `responses` / `required` / `None` |
 
 For the tested Door/Astra conditions, copy this block to the beginning of the
 configuration cell, before its defaults are evaluated:
@@ -130,6 +150,9 @@ os.environ.update({
     "AGENTARK_KAGGLE_TASK_SCORE_SCALE_MAX": "1.0",
     "AGENTARK_KAGGLE_BENCHMARK_NAME": "agentark-door-spin-3-turns-litellm-astra-s1-2",
     "AGENTARK_KAGGLE_MODEL": "openai/gpt-6-astra",
+    "AGENTARK_KAGGLE_LITELLM_API": "responses",
+    "AGENTARK_KAGGLE_TOOL_CHOICE": "required",
+    "AGENTARK_KAGGLE_TEMPERATURE": "null",
 })
 ```
 
@@ -166,7 +189,7 @@ def generate(
         raise ValueError("require 0 <= seed_start <= seed_end and env_id >= 0")
     text = _backend_template(backend, wrapper_commit)
     task_slug = _slugify(task_name)
-    slug = f"agentark-{task_slug}" + ("-litellm" if backend == "litellm" else "")
+    slug = f"agentark-{task_slug}" + ("-litellm-responses-auto" if backend == "litellm" else "")
     func_name = _function_name(slug)
     output_path = output or ROOT / f"{func_name}.py"
     if output_path.exists():
