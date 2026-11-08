@@ -95,7 +95,9 @@ def test_real_wrapper_templates_adapt_in_preview_forward_and_model_readable_reco
         assert not agent._states
         result, trace = agent.forward_with_trace({0: {"messages": messages}})
         actual = backend.requests[0].messages
-        assert preview[0] == chat_messages(actual) == trace[0]["model_requests"][0]["request_messages"]
+        assert preview[0] == chat_messages(actual[:-1])
+        assert chat_messages(actual) == trace[0]["model_requests"][0]["request_messages"]
+        assert actual[-1].role == "user" and "Runtime decision-budget snapshot" in text_of(actual[-1:])
         assert result[0]["action"] == ACTION
         assert messages == original
         assert agent._states[0].env_pins == (Message.text("system", original_system),)

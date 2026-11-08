@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import struct
 import zlib
@@ -1022,7 +1023,7 @@ def test_rejected_archive_input_does_not_supersede_notes_scope(tmp_path):
     async def run():
         workspace = FileWorkspace(tmp_path)
         runtime = SimpleRuntime(CallableModel(lambda r: asyncio.sleep(0, result=ModelCompletion("ok"))),
-                                SimpleRuntimeConfig(max_archive_entries=2), tools=workspace)
+                                SimpleRuntimeConfig(max_archive_entries=3), tools=workspace)
         await runtime.complete(request())
         original_generation = workspace._generation
         with pytest.raises(AgentLimitError, match="archive"):
@@ -1102,9 +1103,10 @@ def test_completed_tool_result_is_archived_before_later_batch_budget_failure(tmp
         runtime = SimpleRuntime(CallableModel(model), tools=workspace)
         with pytest.raises(AgentLimitError):
             await runtime.complete(request())
-        audits = [entry for entry in runtime.history_snapshot if entry.kind == "event"]
-        assert [entry.sequence for entry in audits] == [2, 3]
-        assert [entry.event_id for entry in audits] == ["tool-result-2", "tool-result-3"]
+        audits = [entry for entry in runtime.history_snapshot if entry.event_id and entry.event_id.startswith("tool-result-")]
+        assert [entry.sequence for entry in audits] == [3, 4]
+        assert [entry.event_id for entry in audits] == ["tool-result-3", "tool-result-4"]
+        assert json.loads(runtime.history_snapshot[1].text)["kind"] == "round_budget"
         assert json.loads(audits[0].text) == {"kind": "tool_result", "call_id": "write",
                                              "name": "write_note", "success": True, "result_returned": True}
         exact_result = json.loads(audits[0].messages[1].parts[0].text)
@@ -1132,11 +1134,12 @@ def test_archive_capacity_is_reserved_before_note_side_effect(tmp_path):
         async def model(value):
             return ModelCompletion("", tool_calls=(ToolCall("write", "write_note",
                                     '{"path":"notes/own.md","content":"must not be written"}'),))
-        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(max_archive_entries=1), tools=workspace)
+        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(max_archive_entries=2), tools=workspace)
         with pytest.raises(AgentLimitError, match="before operation"):
             await runtime.complete(request())
         assert workspace._root is None
-        assert len(runtime.history_snapshot) == 1
+        assert len(runtime.history_snapshot) == 2
+        assert json.loads(runtime.history_snapshot[-1].text)["kind"] == "round_budget"
         assert not any(message.tool_calls for message in runtime.working_snapshot)
     asyncio.run(run())
 
@@ -1148,10 +1151,10 @@ def test_tool_result_survives_full_batch_archive_exhaustion(tmp_path):
         async def model(value):
             return ModelCompletion("", tool_calls=(ToolCall("write", "write_note",
                                     '{"path":"notes/own.md","content":"retained"}'),))
-        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(max_archive_entries=2), tools=workspace)
+        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(max_archive_entries=3), tools=workspace)
         with pytest.raises(AgentLimitError, match="archive"):
             await runtime.complete(request())
-        assert runtime.history_snapshot[-1].event_id == "tool-result-2"
+        assert runtime.history_snapshot[-1].event_id == "tool-result-3"
         assert "retained" not in texts(runtime.working_snapshot)
         assert not any(message.tool_calls or message.role == "tool" for message in runtime.working_snapshot)
         assert next(workspace._root.rglob("own.md")).read_bytes() == b"retained"

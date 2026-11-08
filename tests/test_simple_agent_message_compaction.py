@@ -394,7 +394,7 @@ def test_custom_nonmonotonic_counter_cannot_make_one_image_a_false_impossibility
     asyncio.run(run())
 
 
-async def completed_tool_batch(calls, *, input_characters=20, result_characters=700):
+async def completed_tool_batch(calls, *, input_characters=20, result_characters=700, round_budget_policy="visible_v1"):
     registry = ToolRegistry()
     registry.register(ToolSpec("echo", "Return only visible own text.", '{"type":"object"}'),
         lambda args, session: (TextPart(f"RESULT_{args['index']}_" + "r" * result_characters),))
@@ -408,7 +408,8 @@ async def completed_tool_batch(calls, *, input_characters=20, result_characters=
         return next(replies, ModelCompletion("new action", USAGE))
 
     runtime = SimpleRuntime(CallableModel(model), message_chunk_config(
-        recent_turns=1, max_context_characters=100_000, output_reserve_tokens=64), tools=registry)
+        recent_turns=1, max_context_characters=100_000, output_reserve_tokens=64,
+        round_budget_policy=round_budget_policy), tools=registry)
     await runtime.complete(request(1, text="O" * input_characters))
     return runtime, batch
 
@@ -416,7 +417,9 @@ async def completed_tool_batch(calls, *, input_characters=20, result_characters=
 def test_oversized_closed_tool_batch_is_indivisible_and_rejected_without_summary_calls():
     async def run():
         calls = []
-        runtime, _ = await completed_tool_batch(calls)
+        # Keep the historical indivisible-batch failure boundary and immutable
+        # before/after snapshots independent of newly visible budget events.
+        runtime, _ = await completed_tool_batch(calls, round_budget_policy="legacy_v1")
         current = request(2, text="current")
         runtime.accept_input(current)
         runtime.config = replace(runtime.config, max_context_characters=1000,

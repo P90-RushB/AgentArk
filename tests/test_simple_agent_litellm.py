@@ -415,8 +415,9 @@ def test_native_host_tools_and_submission_replay_all_provider_state_into_next_en
         assert result[0]["action"] == ACTION
         assert PRIVATE not in result[0]["assistant"]
         assert sdk.requests[1]["messages"][:len(sdk.requests[0]["messages"])] == sdk.requests[0]["messages"]
-        assert sdk.requests[1]["messages"][-2] == first["choices"][0]["message"]
-        assert sdk.requests[1]["messages"][-1]["tool_call_id"] == opaque_id
+        assert sdk.requests[1]["messages"][-3] == first["choices"][0]["message"]
+        assert sdk.requests[1]["messages"][-2]["tool_call_id"] == opaque_id
+        assert "Runtime decision-budget snapshot" in str(sdk.requests[1]["messages"][-1]["content"])
         assert all(tool["function"]["name"] for tool in sdk.requests[0]["tools"])
         assert sdk.requests[0]["tool_choice"] == "required"
         assert traces[0]["usage"] == {"input_tokens": 10, "output_tokens": 14, "total_tokens": 24}
@@ -447,8 +448,9 @@ def test_invalid_submission_preserves_entire_batch_and_recovers_without_host_sid
         assert result[0]["action"] == "a"
         continuation = sdk.requests[1]["messages"][len(sdk.requests[0]["messages"]):]
         assert continuation[0] == original["choices"][0]["message"]
-        assert [message["tool_call_id"] for message in continuation[1:]] == [host.call_id, bad.call_id]
-        assert all(json.loads(message["content"])["executed"] is False for message in continuation[1:])
+        assert [message["tool_call_id"] for message in continuation[1:-1]] == [host.call_id, bad.call_id]
+        assert all(json.loads(message["content"])["executed"] is False for message in continuation[1:-1])
+        assert continuation[-1]["role"] == "user" and "Runtime decision-budget snapshot" in str(continuation[-1]["content"])
         assert [record["status"] for record in traces[0]["model_requests"]] == ["rejected", "completed"]
         assert traces[0]["usage"]["total_tokens"] == 24
         assert not list(tmp_path.rglob("forbidden.txt"))

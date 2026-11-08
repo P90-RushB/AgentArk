@@ -285,11 +285,34 @@ token costs are estimated locally, not an exact count of server-restored tokens.
 No marker parsing, ID rewriting, model-name routing or provider-specific quota
 exception is used. Saved native records remain byte-for-byte unchanged.
 
+With a tool registry, the default `round_budget_policy: visible_v1` appends a
+runtime budget notice before each action-model response. It gives the current
+round, total round limit, remaining rounds **including this response**, and
+used/remaining host-tool calls. The default 16 model rounds include the final
+action submission; the separate 32-call allowance counts host-tool calls. A
+parallel batch uses one model round and multiple host calls. Summary requests
+use their separate allowance. The final-round notice tells the model to finish
+with its final action using the existing response protocol, without more host
+tools. No extra response slot or automatic retry is granted if it ignores that
+instruction; the existing hard limits still apply.
+
+Notices are appended without rewriting any previously sent native prefix. The
+current notice participates in context/token/archive limits and is protected
+during compaction. Runtime budget snapshots are excluded from summary inputs;
+older snapshots can retire at a fresh-context restart while current counters
+continue. A new environment-action decision resets the per-decision counters.
+Operation without a tool registry sends no notice. `round_budget_policy: legacy_v1`
+preserves pre-notice requests and their historical identity; the new default
+has a distinct fingerprint. This changes SimpleAgent only, including its native
+HTTP, LiteLLM and Codex SDK transports.
+
 Each policy has a distinct fingerprint. The new `tool_rounds_v1` default
 intentionally changes SimpleAgent's evaluation identity. Explicitly select
 `message_chunks_v1` or `whole_turn_v1` to reproduce that older compaction policy.
 Also set `output_budget_policy: legacy_v1` to reproduce its pre-separation output
-checks, fingerprint and completed-case resume checks. The inactive protocol
+checks. Also select `round_budget_policy: legacy_v1` when reproducing conditions
+before round notices, including their fingerprint and completed-case resume
+checks. The inactive protocol
 budget does not affect legacy identities. New output accounting has a distinct
 fingerprint and cannot reuse completed results from older conditions. APIAgent and CodexAgent are
 unaffected. Saved-action replay does not

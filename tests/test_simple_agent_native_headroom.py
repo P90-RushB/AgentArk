@@ -1,4 +1,8 @@
-"""Legacy message-chunk native headroom; no HTTP, Player, SDK or model access."""
+"""Legacy message-chunk native headroom; no HTTP, Player, SDK or model access.
+
+Historical exact pressure fixtures explicitly select legacy round-budget wire
+behavior so their original measured boundaries remain independently reproducible.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -91,7 +95,7 @@ def test_recorded_pressure_values_compact_before_valid_native_host_rounds(
             return next(replies)
 
         runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
-            compaction_policy="message_chunks_v1"), tools=registry(results))
+            round_budget_policy="legacy_v1", compaction_policy="message_chunks_v1"), tools=registry(results))
         image = ImagePart(b"i" * image_bytes) if image_bytes else None
         # Rehydrate only complete old decisions under their original admission
         # policy. No failed partial tool prefix enters the new decision.
@@ -166,7 +170,7 @@ def test_protected_first_input_above_watermark_falls_back_without_summary(summar
             seen.append(value)
             return ModelCompletion("done")
         runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
-            compaction_policy="message_chunks_v1", max_summary_calls=summary_calls), tools=registry())
+            round_budget_policy="legacy_v1", compaction_policy="message_chunks_v1", max_summary_calls=summary_calls), tools=registry())
         current = request(1, "p" * 800)
         exact = metrics(runtime, current.messages)[0]
         runtime.config = replace(runtime.config, max_context_characters=exact)
@@ -185,7 +189,7 @@ def test_soft_summary_allowance_is_best_effort_but_hard_overflow_still_fails(sum
             seen.append(value.purpose)
             return ModelCompletion("" if value.purpose == "summary" else "done")
         runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
-            compaction_policy="message_chunks_v1", max_summary_calls=summary_calls, recent_turns=1), tools=registry())
+            round_budget_policy="legacy_v1", compaction_policy="message_chunks_v1", max_summary_calls=summary_calls, recent_turns=1), tools=registry())
         with patch.object(runtime, "_fresh_decision_fits", runtime._fits):
             await runtime.complete(request(1, "old " + "o" * 1_000))
         current = request(2, "current " + "c" * 1_000)
@@ -237,7 +241,7 @@ def test_native_continuation_crosses_soft_watermark_without_compaction_or_prefix
             assert value.purpose == "action"
             return next(replies)
         runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
-            compaction_policy="message_chunks_v1"), tools=registry({0: result}))
+            round_budget_policy="legacy_v1", compaction_policy="message_chunks_v1"), tools=registry({0: result}))
         current = request(1)
         initial_cost = metrics(runtime, current.messages)[0]
         runtime.config = replace(runtime.config, max_context_characters=initial_cost + 1_010)

@@ -60,6 +60,9 @@ models:
         # legacy_v1: old combined accounting. Both count full replay in context.
         output_budget_policy: separate_native_v1
         max_protocol_output_bytes: 1048576
+        # visible_v1: per-request round/host-call budget notice and final-round reminder.
+        # legacy_v1: historical requests without budget notices.
+        round_budget_policy: visible_v1
         output_reserve_tokens: 30000
       tools:
         enabled: true

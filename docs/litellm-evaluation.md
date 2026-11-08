@@ -369,7 +369,7 @@ Responses alias normalizes to the same SDK-model identity.
 Omitting `backend` and explicitly selecting `backend: native` retain the native
 transport. SimpleAgent's new `tool_rounds_v1` default intentionally changes its
 fingerprint; explicitly select `message_chunks_v1` or `whole_turn_v1`, together
-with `output_budget_policy: legacy_v1`, to reproduce pre-separation behavior and
+with `output_budget_policy: legacy_v1` and `round_budget_policy: legacy_v1`, to reproduce pre-separation behavior and
 identity. The default separate accounting has its own fingerprint. APIAgent, CodexAgent,
 SimpleAgent's native OpenRouter transport handling and RL integration retain their
 existing behavior.
@@ -428,5 +428,5 @@ clone and establish only the probe conditions listed above.
 | Unexpected credential or endpoint | Set `api_key_env` explicitly and inspect the logical trace's endpoint. Omitted `base_url` means the SDK provider default; an unset named key is an error. |
 | Global modification/fallback error | Clear SDK-wide automatic dropping, modification, fallback and retry settings in the calling process; choose conditions explicitly in AgentArk config. |
 | Reasoning absent after a summary | Inspect compaction events and archived native state; successful compaction intentionally clears all working native state. |
-| `model tool round budget exhausted` | Inspect `simple_agent.tools.limits.max_model_rounds` (default 16 action-generation rounds per decision). This includes host-tool choices and final submission, but excludes summary calls. It is an exploration-budget limit, not an ID/context overflow. If authoring a larger allowance, publish it as a new evaluation condition; compaction does not reset counters. |
+| `model tool round budget exhausted` | Inspect `simple_agent.tools.limits.max_model_rounds` (default 16 action-generation rounds per decision). This includes host-tool choices and final submission, but excludes summary calls. The default `context.round_budget_policy: visible_v1` shows remaining rounds and host calls before each main-model response and requests submission on the final round. Ignoring that reminder still reaches the existing hard limit; no extra response is granted. This is an exploration-budget limit, not an ID/context overflow. Publish a larger allowance as a new evaluation condition; compaction does not reset counters. |
 | Old results are not skipped | Check backend/API/model/harness fingerprints and use a separate output path for the intended condition. Saved-action replay remains available. |

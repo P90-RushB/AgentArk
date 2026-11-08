@@ -310,7 +310,8 @@ HumanView／回放可以展示保存的调用、摘要和事件，不能重建�
 
 省略 `backend` 或显式填写 `backend: native` 均保留原生传输。SimpleAgent 默认改为
 `tool_rounds_v1` 会有意改变其指纹；显式选择 `message_chunks_v1` 或 `whole_turn_v1`，并设置
-`output_budget_policy: legacy_v1`，可复现分账前的行为和身份。默认分账计量具有独立指纹。
+`output_budget_policy: legacy_v1` 和 `round_budget_policy: legacy_v1`，可复现分账前的行为和身份。
+默认分账计量和轮数提示具有独立指纹。
 APIAgent、CodexAgent、SimpleAgent 原生 OpenRouter 传输处理和 RL
 集成保留原有行为，旧记录继续可读。
 保存动作的回放使用 `ReplayAgent`，不调用模型后端，因此不需要 LiteLLM extra，也不恢复模型
@@ -363,5 +364,5 @@ APIAgent、CodexAgent、SimpleAgent 原生 OpenRouter 传输处理和 RL
 | 凭据或端点与预期不同 | 显式设置 `api_key_env`，查看逻辑 trace 端点。省略 `base_url` 表示 SDK 供应商默认地址；已指定但未设置的 key 会报错。 |
 | 全局参数修改／fallback 报错 | 在调用进程中关闭 SDK 全局丢参数、自动修改、fallback 和重试设置，在 AgentArk 配置里显式选择条件。 |
 | 摘要之后看不到推理 | 检查压缩事件和归档原生状态；成功压缩会按既有策略清除全部工作原生状态。 |
-| `model tool round budget exhausted` | 检查 `simple_agent.tools.limits.max_model_rounds`（默认每决策 16 轮动作生成请求），包括宿主工具选择与最终提交，不含摘要调用。这是探索预算限制，不是 ID／context 超限；需要更大额度时应作为新的评测条件发布，压缩不会重置计数。 |
+| `model tool round budget exhausted` | 检查 `simple_agent.tools.limits.max_model_rounds`（默认每决策 16 轮动作生成请求），包括宿主工具选择与最终提交，不含摘要调用。默认 `context.round_budget_policy: visible_v1` 会在每次主模型回复前显示剩余轮数和宿主工具额度，末轮提醒提交动作；忽略提示仍会触及既有硬限额，不额外增加回复。这是探索预算限制，不是 ID／context 超限；需要更大额度时应作为新的评测条件发布，压缩不会重置计数。 |
 | 已有结果没有跳过 | 对照 backend／API／模型／harness 指纹，为目标条件使用独立输出路径；仍可回放已保存动作。 |

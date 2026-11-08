@@ -229,7 +229,13 @@ def test_workspace_guidance_is_absent_without_filesystem_tools(custom_tool):
 
         runtime = SimpleRuntime(CallableModel(model), tools=registry)
         assert (await runtime.complete(request())).text == "done"
-        assert seen[0].messages == request().messages
+        assert seen[0].messages[:len(request().messages)] == request().messages
+        if custom_tool:
+            assert seen[0].messages[-1].role == "user"
+            assert "Runtime decision-budget snapshot" in seen[0].messages[-1].parts[0].text
+            assert "records/" not in seen[0].messages[-1].parts[0].text
+        else:
+            assert seen[0].messages == request().messages
         assert {spec.name for spec in seen[0].tools} == ({"echo"} if custom_tool else set())
         assert not FILE_TOOLS.intersection(spec.name for spec in seen[0].tools)
         assert "records/" not in json.dumps(tool_declarations(seen[0].tools))

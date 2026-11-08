@@ -455,7 +455,8 @@ def test_fresh_soft_watermark_summary_failure_falls_back_only_when_original_hard
             actions.append(req)
             if len(actions) == 1:
                 return ModelCompletion("x", USAGE, native_assistant=original)
-            assert req.messages == before
+            assert req.messages[:-1] == before
+            assert req.messages[-1].role == "user" and "Runtime decision-budget snapshot" in text(req.messages[-1:])
             assert any(message.native_assistant is original for message in req.messages)
             return ModelCompletion("done", USAGE)
         runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=10000, recent_turns=1,
@@ -479,7 +480,8 @@ def test_fresh_soft_watermark_summary_failure_falls_back_only_when_original_hard
         else:
             with pytest.raises(AgentLimitError, match="summary call bound"):
                 await runtime.complete(current)
-            assert runtime.working_snapshot == before
+            assert runtime.working_snapshot[:-1] == before
+            assert "Runtime decision-budget snapshot" in text(runtime.working_snapshot[-1:])
         assert len(summaries) == runtime.usage.summary_calls == 2
         assert runtime.usage.summary_usage == (USAGE, USAGE)
         assert len(actions) == (2 if pressure == "soft" else 1)
@@ -500,8 +502,9 @@ def test_below_pressure_keeps_native_continuation_prefix_and_ids_exact():
             if len(requests) == 1:
                 return ModelCompletion("", tool_calls=(call,), native_assistant=native)
             assert req.messages[:len(requests[0].messages)] == requests[0].messages
-            assert req.messages[-2].native_assistant is native
-            assert req.messages[-1].tool_call_id == call.call_id
+            assert req.messages[-3].native_assistant is native
+            assert req.messages[-2].tool_call_id == call.call_id
+            assert "Runtime decision-budget snapshot" in text(req.messages[-1:])
             return ModelCompletion("done")
         runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=10000), tools=registry(handler))
         assert (await runtime.complete(request())).text == "done"
@@ -580,7 +583,9 @@ def test_compaction_does_not_reset_model_or_tool_budgets(bound):
             return ModelCompletion("", tool_calls=(call,), native_assistant=state((call,)))
         limits = ToolLimits(max_model_rounds=3) if bound == "rounds" else ToolLimits(max_calls=2) if bound == "calls" else None
         updates = {"max_model_calls": 3} if bound == "lifetime" else {}
-        runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=3500, **updates),
+        # Include visible snapshots while retaining pressure after two host
+        # operations, before the third main response; quota assertions stay exact.
+        runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=4000, **updates),
                                 tools=registry(handler, limits=limits))
         expected = {"rounds": "model tool round budget", "calls": "tool call/time budget",
                     "lifetime": "lifetime model call budget"}[bound]
@@ -604,7 +609,7 @@ def test_summary_allowance_is_cumulative_across_restarts_within_one_decision():
             actions.append(req)
             call = ToolCall(f"operation-{len(actions)}", "host_operation", json.dumps({"number": len(actions)}))
             return ModelCompletion("", tool_calls=(call,), native_assistant=state((call,)))
-        runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=3500,
+        runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=4000,
             max_summary_calls=1), tools=registry(handler))
         with pytest.raises(AgentLimitError, match="summary call bound"):
             await runtime.complete(request())
@@ -636,7 +641,7 @@ def test_failed_restart_leaves_original_working_batch_and_side_effects_intact(fa
             action_round += 1
             call = ToolCall(f"once-{action_round}", "host_operation", json.dumps({"number": action_round}))
             return ModelCompletion("", USAGE, (call,), native_assistant=state((call,)))
-        runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=3500,
+        runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=4000,
             max_summary_calls=2, summary_output_characters=100), tools=registry(handler))
         error = asyncio.CancelledError if failure == "cancelled" else AgentLimitError
         with pytest.raises(error):
@@ -665,7 +670,7 @@ def test_decision_deadline_covers_summary_and_keeps_original_working_batch():
             action_round += 1
             call = ToolCall(f"deadline-{action_round}", "host_operation", json.dumps({"number": action_round}))
             return ModelCompletion("", tool_calls=(call,), native_assistant=state((call,)))
-        runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=3500,
+        runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=4000,
             timeout_seconds=0.02), tools=registry(handler))
         with pytest.raises(AgentLimitError, match="decision time budget"):
             await runtime.complete(request())

@@ -247,7 +247,9 @@ def test_host_continuations_submission_step_history_and_records_replay_native_fi
         assert [m for m in following if m.get("tool_calls")] == expected[:3]
         assert any(m["role"] == "tool" and m["tool_call_id"] == submit.call_id
                    and "not executed yet" in m["content"] for m in following)
-        assert following[-1]["role"] == "user" and "actual environment feedback" in str(following[-1]["content"])
+        assert following[-1]["role"] == "user" and "Runtime decision-budget snapshot" in str(following[-1]["content"])
+        assert any(message.get("role") == "user" and "actual environment feedback" in str(message.get("content"))
+                   for message in following)
         assert records["calls"][0]["message"] == expected[0]
     finally:
         agent.close()

@@ -244,7 +244,8 @@ def test_context_images_batch_order_and_unknown_usage(tmp_path):
                     call("view_image", {"path": "records/match01/frame.png"}),
                     call("read_file", read("records/match01/events.jsonl"), 2)))
             wire = chat_messages(req.messages)
-            assert [m["role"] for m in wire[-3:]] == ["tool", "tool", "user"]
+            assert [m["role"] for m in wire[-4:-1]] == ["tool", "tool", "user"]
+            assert wire[-1]["role"] == "user" and "Runtime decision-budget snapshot" in str(wire[-1]["content"])
             return ModelCompletion('{"payload":"ok"}')
         result = await SimpleRuntime(CallableModel(model), tools=tools).complete(request())
         assert result.usage == ModelUsage()
@@ -310,7 +311,7 @@ def test_complete_tool_groups_survive_compaction_without_orphan_calls():
             if action_round % 2:
                 return ModelCompletion("", tool_calls=(call("echo", {"text": "x" * 400}, action_round),))
             return ModelCompletion('{"payload":"ok"}')
-        config = SimpleRuntimeConfig(max_context_characters=2200, max_context_tokens=2000,
+        config = SimpleRuntimeConfig(max_context_characters=4000, max_context_tokens=4000,
                                      output_reserve_tokens=32, recent_turns=0, summary_output_tokens=128)
         harness = SimpleRuntime(CallableModel(model), config, tools=registry)
         for n in range(1, 6):

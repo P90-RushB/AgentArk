@@ -322,7 +322,8 @@ def test_real_sdk_responses_wire_preserves_output_order_phase_encryption_and_too
         assert next_step["input"][first_start:first_start + len(outputs[0])] == outputs[0]
         assert next_step["input"][second_start:second_start + len(outputs[1])] == outputs[1]
         assert any(item.get("type") == "function_call_output" and item.get("call_id") == call_ids[1] for item in next_step["input"])
-        assert "Environment feedback: selected." in json.dumps(next_step["input"][-1])
+        assert "Environment feedback: selected." in json.dumps(next_step["input"][-2])
+        assert "Runtime decision-budget snapshot" in json.dumps(next_step["input"][-1])
         assert traces[0]["usage"] == {"input_tokens": 10, "output_tokens": 14, "total_tokens": 24}
         assert PRIVATE not in result[0]["assistant"]
         assert "synthetic-local-key" not in json.dumps(traces)

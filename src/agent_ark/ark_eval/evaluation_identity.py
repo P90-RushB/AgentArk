@@ -110,6 +110,12 @@ def build_evaluation_identity(config: Mapping[str, Any]) -> dict[str, Any]:
         if fields['context'].get('output_budget_policy') == 'legacy_v1':
             fields['context'].pop('output_budget_policy')
             fields['context'].pop('max_protocol_output_bytes')
+        # Explicitly disabling runtime budget notices reproduces the prior
+        # prompt contract, including output-separation-era fingerprints.
+        # Keep the selected new policy even when built-in tools are disabled:
+        # a trusted Python tool_setup callback may still create a registry.
+        if fields['context'].get('round_budget_policy') == 'legacy_v1':
+            fields['context'].pop('round_budget_policy')
         tools = options.get('tools', {})
         tools = tools if isinstance(tools, Mapping) else {}
         limits = tools.get('limits', {})

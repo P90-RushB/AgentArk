@@ -466,8 +466,8 @@ class SimpleAgentTests(unittest.TestCase):
             self.assertTrue(any(tool["function"]["name"] == "list_files" for tool in request["tools"]))
             self.assertEqual(request["response_metadata"]["finish_reason"], "tool_calls")
             self.assertEqual(request["response_metadata"]["assistant_raw"], "start list_files")
-            self.assertEqual(trace["agent_events"], [])
-            self.assertEqual([entry.kind for entry in agent._states[0].runtime.history_snapshot], ["input"])
+            self.assertEqual([json.loads(event["text"])["kind"] for event in trace["agent_events"]], ["round_budget"])
+            self.assertEqual([entry.kind for entry in agent._states[0].runtime.history_snapshot], ["input", "event"])
 
     def test_summary_events_and_usage_remain_when_later_action_fails(self):
         class Model(FakeModel):
@@ -640,7 +640,8 @@ class SimpleAgentTests(unittest.TestCase):
                 self.assertEqual(agent.last_trace_by_agent[0]["action_extracted"], ACTION)
                 self.assertEqual([item["status"] for item in agent.last_trace_by_agent[0]["model_requests"]],
                                  ["rejected", "completed"])
-                original, *feedback = backend.requests[1].messages[-len(completion.tool_calls) - 1:]
+                self.assertIn("Runtime decision-budget snapshot", backend.requests[1].messages[-1].parts[0].text)
+                original, *feedback = backend.requests[1].messages[-len(completion.tool_calls) - 2:-1]
                 self.assertEqual(original.tool_calls, completion.tool_calls)
                 self.assertEqual([message.tool_call_id for message in feedback],
                                  [call.call_id for call in completion.tool_calls])
@@ -669,7 +670,7 @@ class SimpleAgentTests(unittest.TestCase):
             tool_chars = len(json.dumps(tool_declarations((*FileWorkspace(directory).specs, SUBMISSION_SPEC)), ensure_ascii=False))
             # Reserve a fixed message allowance in addition to tool help. The
             # declarations are still budgeted and repeated inputs must compact.
-            agent = self.agent(backend, simple_agent_config={"context": {"max_context_characters": tool_chars + 4000,
+            agent = self.agent(backend, simple_agent_config={"context": {"max_context_characters": tool_chars + 6000,
                 "recent_turns": 1, "output_reserve_tokens": 64, "max_context_tokens": 20000},
                 "tools": {"enabled": True, "workspace_parent": directory}})
             found = False

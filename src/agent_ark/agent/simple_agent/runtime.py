@@ -103,6 +103,7 @@ class SimpleRuntimeConfig:
     # in full to working-context, token-estimate and immutable-archive budgets.
     max_protocol_output_bytes: int = 1024 * 1024
     output_budget_policy: str = "separate_native_v1"
+    round_budget_policy: str = "visible_v1"
 
     def __post_init__(self) -> None:
         for name in self.__dataclass_fields__:
@@ -114,6 +115,10 @@ class SimpleRuntimeConfig:
             if name == "output_budget_policy":
                 if value not in ("legacy_v1", "separate_native_v1"):
                     raise ValueError("unsupported output budget policy")
+                continue
+            if name == "round_budget_policy":
+                if value not in ("legacy_v1", "visible_v1"):
+                    raise ValueError("unsupported round budget policy")
                 continue
             if name == "timeout_seconds":
                 if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
@@ -486,6 +491,41 @@ class SimpleRuntime:
     def _tool_budget_message(self) -> Message:
         return Message.text("developer", json.dumps(tool_declarations(self.tools.specs), ensure_ascii=False))
 
+    def _append_round_budget(self, identity: AgentInputIdentity, session, current_round: int) -> _WorkingEntry:
+        """Append a truthful upcoming-response snapshot without rewriting a prefix."""
+        if self._deadline is not None:
+            self._deadline.check()
+        total = self.tools.limits.max_model_rounds
+        remaining = total - current_round + 1
+        value = {"kind": "round_budget", "policy": "visible_v1", "current_round": current_round,
+                 "total_rounds": total, "remaining_rounds_including_this_response": remaining,
+                 "host_calls_used": session.calls, "host_calls_limit": self.tools.limits.max_calls,
+                 "host_calls_remaining": max(0, self.tools.limits.max_calls - session.calls),
+                 "final_response_required": remaining == 1}
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        instruction = (
+            "Runtime decision-budget snapshot for the upcoming main-model response; earlier snapshots are historical.\n"
+            + encoded + "\nEvery main-model response consumes one round, including the final action. "
+            "Host-tool calls do not advance the environment. Summary requests do not consume these rounds. "
+            "The separate host-call budget counts charged attempts, including rejected batches.")
+        if remaining == 1:
+            if any(spec.name == "submit_action" for spec in self.tools.specs):
+                instruction += (" This is the final available main-model response. Submit the final action now using "
+                                "the exposed submit_action tool and its current schema; do not spend it on host exploration.")
+            else:
+                instruction += (" This is the final available main-model response. Return the final response now in "
+                                "the task's required response format; do not spend it on another host-tool call.")
+        else:
+            instruction += " Reserve a remaining main-model round for the final action in the currently required format."
+        message = Message.text("user", instruction)
+        sequence = len(self._archive) + 1
+        self._append_archive(ArchiveEntry(sequence, "event", identity, (message,), text=encoded,
+                                         event_id=f"round-budget-{sequence}"))
+        entry = _WorkingEntry(sequence, "round_budget", identity, (message,), (sequence,))
+        if self._current is not None and _scope(identity) == _scope(self._current):
+            self._working.append(entry)
+        return entry
+
     async def _call_model(self, model: AsyncModel, request: ModelRequest) -> ModelCompletion:
         if self._deadline is not None:
             self._deadline.check()
@@ -536,6 +576,7 @@ class SimpleRuntime:
     def _summary_messages(self, span: tuple[_WorkingEntry, ...], *,
                           retry_instruction: str | None = None) -> tuple[Message, ...]:
         config = self.config
+        span = tuple(entry for entry in span if entry.kind != "round_budget")
         sources = [number for entry in span for number in entry.source_sequences]
         instruction_text = (
             "Summarize this agent's earlier complete conversation turns. Preserve concrete facts, decisions, feedback, "
@@ -781,6 +822,8 @@ class SimpleRuntime:
         """Flatten ordinary parts, keeping each closed tool batch indivisible."""
         records = []
         for entry in span:
+            if entry.kind == "round_budget":
+                continue
             sequence = entry.origin_sequence or entry.sequence
             archived = self._archive[sequence - 1] if 0 < sequence <= len(self._archive) else None
             if entry.kind == "summary" and archived is not None and archived.kind == "summary_completion":
@@ -1039,6 +1082,8 @@ class SimpleRuntime:
         """
         atoms = []
         for entry in span:
+            if entry.kind == "round_budget":
+                continue
             if entry.kind == "tool_history":
                 # Projected wrappers have a different layout. Resolve exact
                 # text/image/argument references against immutable originals.
@@ -1145,7 +1190,9 @@ class SimpleRuntime:
         initial = pinned + tuple(message for entry in original for message in entry.messages)
         if target_fits(initial):
             return initial, original
-        projected = tuple(self._tool_round_projection(entry) for entry in original)
+        projected = tuple(replace(entry, messages=())
+                          if entry.kind == "round_budget" and entry.sequence not in required_events
+                          else self._tool_round_projection(entry) for entry in original)
         projected_indices = {index for index, entry in enumerate(projected) if entry != original[index]}
         inputs = [entry for entry in original if entry.kind == "input"]
         protected = {entry.identity for entry in inputs[-max(1, self.config.recent_turns):]}
@@ -1445,19 +1492,28 @@ class SimpleRuntime:
     async def _complete_decision(self, request: AgentRequest, session) -> AgentResponse:
         included_events = self._required_events.copy()
         pinned = self._pinned or ()
-        messages, local_working = await self._compact(request.identity, fresh_decision=True)
+        visible_budget = self.tools is not None and self.config.round_budget_policy == "visible_v1"
+        budget_entry = self._append_round_budget(request.identity, session, 1) if visible_budget else None
+        round_events = included_events | ({budget_entry.sequence} if budget_entry is not None else set())
+        messages, local_working = await self._compact(request.identity, fresh_decision=True,
+            **({"required_events": frozenset(round_events)} if visible_budget else {}))
         self._action_attempted.add(request.identity)
         usages: list[ModelUsage] = []
         native_tool_turn = False
         rounds = self.tools.limits.max_model_rounds if self.tools is not None else 1
-        for _ in range(rounds):
+        for round_index in range(rounds):
+            if visible_budget and round_index:
+                budget_entry = self._append_round_budget(request.identity, session, round_index + 1)
+                messages += budget_entry.messages
+                local_working += (budget_entry,)
+                round_events = included_events | {budget_entry.sequence}
             if not self._fits(messages):
                 if native_tool_turn and self.config.compaction_policy != "tool_rounds_v1":
                     # The tool result continues the same assistant turn. Do
                     # not rewrite a prefix used to generate its native blocks.
                     raise AgentLimitError("native tool continuation cannot fit context bounds without changing its prefix")
                 messages, local_working = await self._compact(request.identity, original=local_working,
-                    pinned=pinned, required_events=frozenset(included_events))
+                    pinned=pinned, required_events=frozenset(round_events))
             if session is not None and session.generation != self.tools._generation:
                 raise AgentSupersededError("tool scope was superseded")
             submission_failure = None

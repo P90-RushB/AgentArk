@@ -230,9 +230,11 @@ def test_feedback_does_not_extend_model_rounds_or_native_context_hard_limits(bou
                             ToolLimits(max_image_bytes=1, max_model_rounds=2), fresh=True)
         runtime = SimpleRuntime(CallableModel(model), tools=tools)
         if bound == "context":
+            # Keep the original exact native-prefix cap; the rounds variant
+            # exercises the default visible budget policy independently.
             initial = _metrics(request().messages + (runtime._tool_budget_message(),))[0]
             runtime.config = replace(runtime.config, compaction_policy="message_chunks_v1",
-                                     max_context_characters=initial)
+                                     round_budget_policy="legacy_v1", max_context_characters=initial)
         with patch.object(runtime, "_compact", wraps=runtime._compact) as compact:
             with pytest.raises(AgentLimitError, match=("model tool round budget exhausted" if bound == "rounds"
                                                       else "native tool continuation cannot fit")):

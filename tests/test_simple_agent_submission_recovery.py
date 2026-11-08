@@ -115,8 +115,9 @@ def test_entire_mixed_batch_is_charged_before_any_feedback_or_host_dispatch():
 
 def test_recovery_context_limit_does_not_compact_or_issue_another_request():
     async def run():
+        # Reproduce the historical exact native-message admission boundary.
         agent, backend, state = make_agent([invalid(), valid()],
-            context={"compaction_policy": "message_chunks_v1"})
+            context={"compaction_policy": "message_chunks_v1", "round_budget_policy": "legacy_v1"})
         runtime = state.runtime
         first_cost = _metrics(request().messages + (runtime._tool_budget_message(),))[0]
         # Preserve all other bounds while fitting exactly the initial request.
@@ -157,12 +158,13 @@ def test_rejected_native_protocol_limit_stops_before_feedback_and_keeps_original
 
 def test_archive_limit_stops_recovery_without_issuing_another_request():
     async def run():
-        agent, backend, state = make_agent([invalid(), valid()], context={"max_archive_entries": 1})
+        agent, backend, state = make_agent([invalid(), valid()], context={"max_archive_entries": 2})
         try:
             with pytest.raises(AgentLimitError, match="immutable archive bound exhausted"):
                 await state.runtime.complete(request())
             assert len(backend.requests) == 1
-            assert [entry.kind for entry in state.runtime.history_snapshot] == ["input"]
+            assert [entry.kind for entry in state.runtime.history_snapshot] == ["input", "event"]
+            assert json.loads(state.runtime.history_snapshot[-1].text)["kind"] == "round_budget"
         finally:
             agent.close()
     asyncio.run(run())

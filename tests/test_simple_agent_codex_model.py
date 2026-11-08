@@ -696,7 +696,8 @@ def test_codex_invalid_submission_retries_with_original_batch_and_paired_feedbac
                   if item.get("type") == "text" and item["text"].startswith("BEGIN SUPPLIED MESSAGE ")]
         assert labels[0]["tool_calls"] == [{"call_id": item["id"], "name": item["name"],
                                            "arguments_json": item["arguments_json"]} for item in calls]
-        assert [label["tool_call_id"] for label in labels[1:]] == [item["id"] for item in calls]
+        assert [label["tool_call_id"] for label in labels[1:-1]] == [item["id"] for item in calls]
+        assert labels[-1]["role"] == "user" and "Runtime decision-budget snapshot" in continuation
         assert "Original rationale." in continuation and "invalid_action_submission" in continuation
         exchange = next(entry for entry in agent._states[0].runtime.history_snapshot if entry.kind == "tool_exchange")
         assert [message.tool_call_id for message in exchange.messages[1:]] == [item["id"] for item in calls]

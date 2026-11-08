@@ -70,6 +70,9 @@ models:
         # legacy_v1: reproduce the old combined text/native action accounting.
         output_budget_policy: separate_native_v1
         max_protocol_output_bytes: 1048576
+        # visible_v1: append exact round/host-call budgets to each tool decision request.
+        # legacy_v1: keep the historical prompt and request path without notices.
+        round_budget_policy: visible_v1
         # Total local estimate (256 * 1024), including the output reserve; not a model limit.
         max_context_tokens: 262144
         output_reserve_tokens: 20480

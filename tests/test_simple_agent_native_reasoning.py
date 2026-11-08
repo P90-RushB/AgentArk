@@ -101,7 +101,8 @@ def test_api_invalid_submission_recovers_with_entire_native_batch_and_prefix_unc
         original = {"role": "assistant", "content": " original content \n",
                     "tool_calls": [wire_call(call) for call in calls], **deepcopy(reasoning)}
         assert retry[len(first)] == original
-        feedback = retry[len(first) + 1:]
+        feedback = retry[len(first) + 1:-1]
+        assert retry[-1]["role"] == "user" and "Runtime decision-budget snapshot" in str(retry[-1]["content"])
         assert [item["tool_call_id"] for item in feedback] == [call.call_id for call in calls]
         assert all(json.loads(item["content"])["executed"] is False for item in feedback)
         exchange = next(entry for entry in agent._states[0].runtime.history_snapshot if entry.kind == "tool_exchange")
@@ -348,7 +349,9 @@ def test_fake_api_host_tool_and_submission_replay_exact_details_across_env_steps
         assert assistant_calls == [expected_host, expected_submission]
         assert all("reasoning" not in m and "reasoning_content" not in m for m in assistant_calls)
         assert final_messages[-1]["role"] == "user"
-        assert "actual environment feedback" in str(final_messages[-1]["content"])
+        assert "Runtime decision-budget snapshot" in str(final_messages[-1]["content"])
+        assert any(message.get("role") == "user" and "actual environment feedback" in str(message.get("content"))
+                   for message in final_messages)
         assert any(m["role"] == "tool" and m["tool_call_id"] == submit.call_id
                    and "not executed yet" in m["content"] for m in final_messages)
         archive = agent._states[0].runtime.history_snapshot
@@ -538,7 +541,8 @@ def test_published_native_records_and_trace_preserve_both_host_and_submission(pu
     assert PRIVATE.encode("utf-8") not in files["messages.json"]
     assert [call["request_messages"] for call in trace["model_requests"]] == [
         call["messages"] for call in client.requests]
-    assert trace["model_requests"][1]["request_messages"][-2] == records["calls"][0]["message"]
+    assert trace["model_requests"][1]["request_messages"][-3] == records["calls"][0]["message"]
+    assert "Runtime decision-budget snapshot" in str(trace["model_requests"][1]["request_messages"][-1]["content"])
     snapshot_event = next(event for event in trace["agent_events"] if event["kind"] == "snapshot")
     assert snapshot_event["bytes"] == agent._states[0].published_bytes == sum(map(len, files.values()))
     assert snapshot_event["file_count"] == len(files) == 4
