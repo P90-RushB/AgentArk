@@ -6,7 +6,7 @@ tools, and context compaction, with generic MarbleStop seeds 1–10 defaults:
 | Notebook | Default backend | Wrapper pin |
 | --- | --- | --- |
 | `new-benchmark-task-f8fdd.ipynb` | Native HTTP | Frozen `b37efe0b692b29a16c42e31b19aecbd3472271cf` |
-| `agentark_litellm_task.ipynb` | LiteLLM SDK | `7822a18b60d2798572d16cab844dce7295181efe` |
+| `agentark_litellm_task.ipynb` | LiteLLM SDK | `5343aa7557591dce6d3b0a5bf733821ec577d5e8` |
 
 The native notebook is retained byte-for-byte for its existing evaluation
 conditions. The LiteLLM notebook uses separate benchmark names, result names,
@@ -30,12 +30,13 @@ historical `agentark_marble_stop_seeds_1_10.py` remain unchanged. An old task's
 immutable wrapper commit continues to select its original harness. Its saved
 actions can still be replayed independently of the model harness.
 
-The native wrapper pin includes the SimpleAgent defaults, trace/resume and replay
-compatibility improvements, compaction failure handling, and HumanView updates.
-It also accepts opaque provider tool-call IDs up to 64 KiB of UTF-8 without
-rewriting them, fixing the prior 256-character rejection on Kaggle Gemini calls.
+The frozen native notebook's `b37efe0` wrapper includes the SimpleAgent defaults,
+trace/resume and replay compatibility improvements, compaction failure handling,
+and HumanView updates. That historical version accepts opaque provider tool-call
+IDs up to 64 KiB of UTF-8 without rewriting them, fixing the earlier
+256-character rejection on Kaggle Gemini calls.
 The current LiteLLM notebook, shared Python template and both fresh generator
-backends pin `7822a18b60d2798572d16cab844dce7295181efe`, explicitly using
+backends pin `5343aa7557591dce6d3b0a5bf733821ec577d5e8`, explicitly using
 `compaction_policy: tool_rounds_v1` and
 `output_budget_policy: separate_native_v1`, with
 `round_budget_policy: visible_v1`. Closed tool batches may restart
@@ -44,11 +45,15 @@ history may be summarized. Opaque signatures leave working context only at a
 fresh-context boundary, while immutable records retain their originals.
 
 Visible text/full tool arguments and protocol replay have separate single-output
-limits. `max_protocol_output_bytes: 1048576` bounds the aggregate replay data;
-the existing per-ID 64 KiB and per-native-state 1 MiB limits remain. All replay
-data still counts toward context characters, bytes, token estimates and archive
-limits. This does not make encrypted state free or provide an exact count of
-server-restored tokens. To reproduce pre-separation checks, explicitly select
+limits. A tool-call ID's structural ceiling now uses the existing native-envelope
+ceiling of 1 MiB (1,048,576 UTF-8 bytes); native states retain that same ceiling.
+The unchanged `max_protocol_output_bytes: 1048576` independently bounds aggregate
+replay data, including repeated IDs, acknowledgements and serialized native JSON.
+That aggregate can reject a response before its individual ID reaches the
+structural ceiling. All replay data still counts toward context characters,
+bytes, token estimates and archive limits. Encrypted-state token costs are local
+estimates rather than exact counts of server-restored tokens. To reproduce
+pre-separation checks, explicitly select
 `output_budget_policy: legacy_v1` together with the historical compaction policy.
 For evaluations predating visible round-budget snapshots, also select
 `round_budget_policy: legacy_v1`; retain the output-budget and compaction
@@ -149,10 +154,23 @@ means the model kept exploring without submitting within that allowance. It is
 different from an ID, output or context limit. Change the YAML only for a new
 evaluation condition; compaction keeps the current counters rather than resetting them.
 
-The targeted Gemini 3.8 Flash validation accepted three native submissions above
+Kaggle's account daily model quota is shared across benchmark tasks and runs.
+Creating a new task or splitting seeds into another run does not restore that
+allowance. Quota errors remain explicit failed runs with saved diagnostics;
+the template does not return a zero score or silently lower token budgets.
+Once sufficient quota is available, rerun only the interrupted seeds under the
+same conditions and report that execution separately, retaining the original
+quota-interrupted evidence.
+
+An earlier targeted Gemini 3.8 Flash validation accepted three native submissions above
 the old 120k action cap and continued through five context restarts. Both seeds
 ultimately stopped at the unchanged 16-round tool budget after 5/3 environment
-steps, so this is not a full-case pass. See the
+steps, so that run was not a full-case pass. Subsequent validation of the current
+ID fix completed ten actions per seed in separate runs: seed 1 in run 6501040
+(final reward +1), and seed 2 in Notebook scriptVersion 366874176 (final reward
+-1, no model-call errors). The latter admitted an actual 67,366-byte ID unchanged
+and continued through compression and tool calls. This establishes complete
+technical execution; the model did not solve seed 2. See the
 [English validation scope](../../docs/litellm-evaluation.md#validation-scope) or
 [中文验证范围](../../docs/litellm-evaluation.zh-CN.md#验证范围) for the evidence and limits.
 

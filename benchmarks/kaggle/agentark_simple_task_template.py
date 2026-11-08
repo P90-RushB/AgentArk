@@ -28,7 +28,7 @@ import kaggle_benchmarks as kbench
 
 
 AGENTARK_REPO_URL = "https://github.com/P90-RushB/AgentArk.git"
-AGENTARK_COMMIT = "7822a18b60d2798572d16cab844dce7295181efe"
+AGENTARK_COMMIT = "5343aa7557591dce6d3b0a5bf733821ec577d5e8"
 ENV_VERSION = "1.0.6"
 HF_REVISION = "6a16c98e262abd760b09ef007a49118d0b1b0cb9"
 HF_BASE_URL = f"https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/{HF_REVISION}"
@@ -546,8 +546,10 @@ models:
         # visible_v1: append remaining main-response/host-call budgets; warn on the final round.
         # legacy_v1: retain the historical request format without round-budget snapshots.
         round_budget_policy: visible_v1
-        # Aggregate replay-state byte limit; ID/signature/native data still count
-        # toward context/token estimates, compaction thresholds and archive limits.
+        # An ID's structural ceiling shares the existing 1 MiB native envelope.
+        # This unchanged aggregate replay cap also counts repeated IDs,
+        # acknowledgements and native JSON. All replay data still counts toward
+        # context/token estimates, compaction thresholds and archive limits.
         max_protocol_output_bytes: 1048576
         # Tune this estimate for the selected proxy model before publishing.
         max_context_tokens: 262144

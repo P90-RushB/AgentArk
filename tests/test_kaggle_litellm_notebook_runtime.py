@@ -39,7 +39,7 @@ def notebook(tmp_path, monkeypatch):
 
 
 def test_formal_litellm_notebook_import_keeps_generic_defaults_and_distinct_artifacts(notebook):
-    assert notebook["AGENTARK_COMMIT"] == "7822a18b60d2798572d16cab844dce7295181efe"
+    assert notebook["AGENTARK_COMMIT"] == "5343aa7557591dce6d3b0a5bf733821ec577d5e8"
     assert notebook["DEFAULT_MODEL_BACKEND"] == "litellm"
     assert notebook["DEFAULT_TOOL_CHOICE"] is None
     assert notebook["DEFAULT_LITELLM_API"] == "responses"

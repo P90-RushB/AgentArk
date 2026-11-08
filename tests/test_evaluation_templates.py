@@ -140,7 +140,7 @@ def test_historical_native_generated_task_keeps_its_published_bytes():
 
 def test_fresh_generator_backend_defaults_share_published_compaction_budget_revision():
     module = generator()
-    assert module.DEFAULT_WRAPPER_COMMIT == module.DEFAULT_LITELLM_WRAPPER_COMMIT == "7822a18b60d2798572d16cab844dce7295181efe"
+    assert module.DEFAULT_WRAPPER_COMMIT == module.DEFAULT_LITELLM_WRAPPER_COMMIT == "5343aa7557591dce6d3b0a5bf733821ec577d5e8"
     for backend in ("native", "litellm"):
         source = module._backend_template(backend, None)
         assert f'AGENTARK_COMMIT = "{module.DEFAULT_WRAPPER_COMMIT}"' in source
@@ -156,7 +156,7 @@ def test_litellm_notebook_is_generated_from_shared_template_and_published_backen
     module = generator()
     pin = module.DEFAULT_LITELLM_WRAPPER_COMMIT
     assert isinstance(pin, str) and re.fullmatch(r"[0-9a-f]{40}", pin)
-    assert pin == module.DEFAULT_WRAPPER_COMMIT == "7822a18b60d2798572d16cab844dce7295181efe"
+    assert pin == module.DEFAULT_WRAPPER_COMMIT == "5343aa7557591dce6d3b0a5bf733821ec577d5e8"
     notebook = json.loads((KAGGLE / "agentark_litellm_task.ipynb").read_text(encoding="utf-8"))
     assert notebook == module.build_litellm_notebook()
     source = "\n\n".join("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code")

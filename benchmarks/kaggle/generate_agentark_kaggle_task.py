@@ -12,9 +12,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 TEMPLATE_PATH = ROOT / "agentark_simple_task_template.py"
 NATIVE_NOTEBOOK_PATH = ROOT / "new-benchmark-task-f8fdd.ipynb"
-# Fresh native and LiteLLM tasks share the published compaction/output-budget fix.
+# Fresh native and LiteLLM tasks share the published protocol and budget fixes.
 # The historical native notebook and generated benchmarks remain frozen separately.
-DEFAULT_WRAPPER_COMMIT = "7822a18b60d2798572d16cab844dce7295181efe"
+DEFAULT_WRAPPER_COMMIT = "5343aa7557591dce6d3b0a5bf733821ec577d5e8"
 DEFAULT_LITELLM_WRAPPER_COMMIT = DEFAULT_WRAPPER_COMMIT
 
 
@@ -108,10 +108,14 @@ The authored configuration explicitly uses `compaction_policy: tool_rounds_v1`
 and `output_budget_policy: separate_native_v1`. Complete tool batches can become
 ordinary visible history at a fresh context boundary; older visible content may
 then be summarized. Raw IDs and native signatures stay intact in records.
-Visible replies and complete tool arguments use action-output limits, while
-replay data has `max_protocol_output_bytes: 1048576`. Replay data still counts
-toward context size, local token estimates, compaction thresholds, and archive
-limits. `legacy_v1` selects the previous combined output-budget behavior;
+Visible replies and complete tool arguments use action-output limits. An opaque
+tool-call ID's structural ceiling shares the existing 1 MiB native envelope.
+The unchanged `max_protocol_output_bytes: 1048576` bounds aggregate replay data,
+including repeated IDs, acknowledgements, and serialized native JSON. The
+aggregate can reject a response below the individual ID ceiling. Replay data
+still counts toward context size, local token estimates, compaction thresholds,
+and archive limits. `legacy_v1` selects the previous combined output-budget
+behavior;
 `message_chunks_v1` and `whole_turn_v1` select older compaction policies.
 
 Tool exploration remains bounded per decision: `tools.limits.max_model_rounds: 16`
@@ -193,6 +197,13 @@ os.environ.update({
 Use a new benchmark name for new conditions. When choosing the model through an
 environment override, use `AGENTARK_KAGGLE_MODEL=openai/gpt-6-astra`. This recipe
 does not change other tasks or their scoring rules.
+
+Kaggle's account daily model quota is shared across tasks and runs. A new task
+or a seed-specific run does not restore it. Quota errors fail visibly with saved
+diagnostics; the notebook does not return a zero score or silently reduce token
+budgets. Once sufficient quota is available, rerun interrupted seeds under the
+same conditions and report that execution separately, preserving the original
+quota-interrupted run.
 
 With `BENCHMARK_MODE=CREATE` (and full evaluation disabled), importing and running
 the notebook produces `evaluation_status: creation_smoke` without installing
