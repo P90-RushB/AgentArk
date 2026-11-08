@@ -6,7 +6,7 @@ tools, and context compaction, with generic MarbleStop seeds 1–10 defaults:
 | Notebook | Default backend | Wrapper pin |
 | --- | --- | --- |
 | `new-benchmark-task-f8fdd.ipynb` | Native HTTP | Frozen `b37efe0b692b29a16c42e31b19aecbd3472271cf` |
-| `agentark_litellm_task.ipynb` | LiteLLM SDK | `b6cdf375f32a02c875cecc9258484b4b606c2dbe` |
+| `agentark_litellm_task.ipynb` | LiteLLM SDK | `7822a18b60d2798572d16cab844dce7295181efe` |
 
 The native notebook is retained byte-for-byte for its existing evaluation
 conditions. The LiteLLM notebook uses separate benchmark names, result names,
@@ -35,9 +35,10 @@ compatibility improvements, compaction failure handling, and HumanView updates.
 It also accepts opaque provider tool-call IDs up to 64 KiB of UTF-8 without
 rewriting them, fixing the prior 256-character rejection on Kaggle Gemini calls.
 The current LiteLLM notebook, shared Python template and both fresh generator
-backends pin `b6cdf375f32a02c875cecc9258484b4b606c2dbe`, explicitly using
+backends pin `7822a18b60d2798572d16cab844dce7295181efe`, explicitly using
 `compaction_policy: tool_rounds_v1` and
-`output_budget_policy: separate_native_v1`. Closed tool batches may restart
+`output_budget_policy: separate_native_v1`, with
+`round_budget_policy: visible_v1`. Closed tool batches may restart
 context within a decision; visible arguments/results remain available and older
 history may be summarized. Opaque signatures leave working context only at a
 fresh-context boundary, while immutable records retain their originals.
@@ -49,6 +50,10 @@ data still counts toward context characters, bytes, token estimates and archive
 limits. This does not make encrypted state free or provide an exact count of
 server-restored tokens. To reproduce pre-separation checks, explicitly select
 `output_budget_policy: legacy_v1` together with the historical compaction policy.
+For evaluations predating visible round-budget snapshots, also select
+`round_budget_policy: legacy_v1`; retain the output-budget and compaction
+policies recorded for that evaluation when reproducing its identity. Saved
+records remain replayable without changing their historical prompts or actions.
 The frozen native notebook retains its `message_chunks_v1` conditions and old pin.
 Change strategy and budgets in `_write_eval_config` before creating a new version.
 For later wrapper revisions, generate with
@@ -129,7 +134,17 @@ optional, with no forced `reasoning_effort: none`.
 The authored YAML also shows the existing host-tool budgets explicitly:
 `simple_agent.tools.limits.max_model_rounds: 16` and `max_calls: 32` per decision.
 Action-generation requests, including host-tool selection and final submission,
-consume rounds; summary requests do not. `model tool round budget exhausted`
+consume rounds; summary requests do not. Parallel host calls consume their
+individual host-call slots within one main-model round. With explicit
+`round_budget_policy: visible_v1`, every main request receives an append-only
+snapshot of its current/total/remaining rounds, including that response, and
+the separate remaining host-call slots. The last available main response is
+prompted to submit the final action through the currently exposed schema.
+Earlier snapshots are historical; old request prefixes are preserved, and
+compaction does not reset the counters. No tools are removed or tool choice
+forced. Ignoring the final-round hint still reaches the same hard stop.
+`round_budget_policy: legacy_v1` disables these snapshots for historical
+request/identity reproduction. `model tool round budget exhausted`
 means the model kept exploring without submitting within that allowance. It is
 different from an ID, output or context limit. Change the YAML only for a new
 evaluation condition; compaction keeps the current counters rather than resetting them.
@@ -152,8 +167,9 @@ mapping. Choose tool choice explicitly or import the new generated notebook.
 `auto` continues to expose function tools and instruct the model to
 `submit_action`, without forcing a tool call. A prose-only response ends the
 decision under existing SimpleAgent behavior and can become an invalid
-environment action. There is no added reminder, retry or exception-based
-fallback. Tool choice is already included in the evaluation fingerprint.
+environment action. The round-budget hint does not add a retry for a prose-only
+response or an exception-based fallback. Tool choice and the round-budget policy
+are included in the evaluation fingerprint.
 Local manual YAML can also set `tool_choice: auto` under `simple_agent`.
 
 LiteLLM mode uses zero SDK retries and keeps unsupported-parameter errors

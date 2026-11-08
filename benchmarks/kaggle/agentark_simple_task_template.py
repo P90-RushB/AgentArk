@@ -28,7 +28,7 @@ import kaggle_benchmarks as kbench
 
 
 AGENTARK_REPO_URL = "https://github.com/P90-RushB/AgentArk.git"
-AGENTARK_COMMIT = "b6cdf375f32a02c875cecc9258484b4b606c2dbe"
+AGENTARK_COMMIT = "7822a18b60d2798572d16cab844dce7295181efe"
 ENV_VERSION = "1.0.6"
 HF_REVISION = "6a16c98e262abd760b09ef007a49118d0b1b0cb9"
 HF_BASE_URL = f"https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/{HF_REVISION}"
@@ -543,6 +543,9 @@ models:
         # separate_native_v1: visible text and full tool arguments use action limits (default).
         # legacy_v1: count the complete native replay package as action output, as before.
         output_budget_policy: separate_native_v1
+        # visible_v1: append remaining main-response/host-call budgets; warn on the final round.
+        # legacy_v1: retain the historical request format without round-budget snapshots.
+        round_budget_policy: visible_v1
         # Aggregate replay-state byte limit; ID/signature/native data still count
         # toward context/token estimates, compaction thresholds and archive limits.
         max_protocol_output_bytes: 1048576
@@ -560,6 +563,8 @@ models:
         limits:
           # Per decision: main-model rounds selecting host tools or submit_action.
           # Summary calls use their separate budget and do not consume these rounds.
+          # visible_v1 shows remaining rounds before every request; ignoring the
+          # final-round submission hint still stops at this unchanged hard limit.
           max_model_rounds: 16
           # Maximum host calls per decision; changing either limit changes eval conditions.
           max_calls: 32

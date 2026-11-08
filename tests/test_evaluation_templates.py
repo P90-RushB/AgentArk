@@ -94,6 +94,7 @@ def test_generated_task_uses_generic_simple_template_and_immutable_pin(tmp_path,
     assert model["simple_agent"]["context"]["output_reserve_tokens"] == 30000
     assert model["simple_agent"]["context"]["compaction_policy"] == "tool_rounds_v1"
     assert model["simple_agent"]["context"]["output_budget_policy"] == "separate_native_v1"
+    assert model["simple_agent"]["context"]["round_budget_policy"] == "visible_v1"
     assert model["simple_agent"]["context"]["max_protocol_output_bytes"] == 1048576
     assert model["simple_agent"]["tools"]["limits"] == {"max_model_rounds": 16, "max_calls": 32}
     budget = SimpleRuntimeConfig(**model["simple_agent"]["context"])
@@ -139,12 +140,13 @@ def test_historical_native_generated_task_keeps_its_published_bytes():
 
 def test_fresh_generator_backend_defaults_share_published_compaction_budget_revision():
     module = generator()
-    assert module.DEFAULT_WRAPPER_COMMIT == module.DEFAULT_LITELLM_WRAPPER_COMMIT == "b6cdf375f32a02c875cecc9258484b4b606c2dbe"
+    assert module.DEFAULT_WRAPPER_COMMIT == module.DEFAULT_LITELLM_WRAPPER_COMMIT == "7822a18b60d2798572d16cab844dce7295181efe"
     for backend in ("native", "litellm"):
         source = module._backend_template(backend, None)
         assert f'AGENTARK_COMMIT = "{module.DEFAULT_WRAPPER_COMMIT}"' in source
         assert "compaction_policy: tool_rounds_v1" in source
         assert "output_budget_policy: separate_native_v1" in source
+        assert "round_budget_policy: visible_v1" in source
         assert "max_protocol_output_bytes: 1048576" in source
         assert "legacy_v1:" in source
         assert "max_model_rounds: 16" in source and "max_calls: 32" in source
@@ -154,7 +156,7 @@ def test_litellm_notebook_is_generated_from_shared_template_and_published_backen
     module = generator()
     pin = module.DEFAULT_LITELLM_WRAPPER_COMMIT
     assert isinstance(pin, str) and re.fullmatch(r"[0-9a-f]{40}", pin)
-    assert pin == module.DEFAULT_WRAPPER_COMMIT == "b6cdf375f32a02c875cecc9258484b4b606c2dbe"
+    assert pin == module.DEFAULT_WRAPPER_COMMIT == "7822a18b60d2798572d16cab844dce7295181efe"
     notebook = json.loads((KAGGLE / "agentark_litellm_task.ipynb").read_text(encoding="utf-8"))
     assert notebook == module.build_litellm_notebook()
     source = "\n\n".join("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code")
@@ -172,6 +174,9 @@ def test_litellm_notebook_is_generated_from_shared_template_and_published_backen
     assert "DoorSpin3Turns" in "".join(notebook["cells"][0]["source"])
     introduction = "".join(notebook["cells"][0]["source"])
     assert "model tool round budget exhausted" in introduction
+    assert "round_budget_policy: visible_v1" in introduction
+    assert "round_budget_policy: legacy_v1" in introduction
+    assert "ignoring the final-round hint still hits" in introduction
     assert "summary requests do not consume" in introduction
     assert "wrapper pin and core defaults\nare unchanged" not in introduction
     ast.parse(source)

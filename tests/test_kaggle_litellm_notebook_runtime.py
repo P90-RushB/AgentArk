@@ -39,7 +39,7 @@ def notebook(tmp_path, monkeypatch):
 
 
 def test_formal_litellm_notebook_import_keeps_generic_defaults_and_distinct_artifacts(notebook):
-    assert notebook["AGENTARK_COMMIT"] == "b6cdf375f32a02c875cecc9258484b4b606c2dbe"
+    assert notebook["AGENTARK_COMMIT"] == "7822a18b60d2798572d16cab844dce7295181efe"
     assert notebook["DEFAULT_MODEL_BACKEND"] == "litellm"
     assert notebook["DEFAULT_TOOL_CHOICE"] is None
     assert notebook["DEFAULT_LITELLM_API"] == "responses"
@@ -141,6 +141,7 @@ def test_uniform_responses_recipe_uses_real_sdk_images_host_continuation_and_sub
         assert agent.tool_choice == recipe["simple_agent"]["tool_choice"] == "auto"
         assert agent.context_config.compaction_policy == "tool_rounds_v1"
         assert agent.context_config.output_budget_policy == "separate_native_v1"
+        assert agent.context_config.round_budget_policy == "visible_v1"
         assert agent.context_config.max_protocol_output_bytes == 1048576
         assert agent.tool_limits.max_model_rounds == 16 and agent.tool_limits.max_calls == 32
         assert recipe["simple_agent"]["litellm"] == {"model": "openai/" + wire_model, "api": "responses"}
@@ -212,6 +213,7 @@ def test_backend_selection_preserves_wire_model_and_authors_explicit_sdk_route(
     assert model["simple_agent"]["tool_choice"] == tool_choice
     assert model["simple_agent"]["context"]["compaction_policy"] == "tool_rounds_v1"
     assert model["simple_agent"]["context"]["output_budget_policy"] == "separate_native_v1"
+    assert model["simple_agent"]["context"]["round_budget_policy"] == "visible_v1"
     assert model["simple_agent"]["context"]["max_protocol_output_bytes"] == 1048576
     assert model["simple_agent"]["tools"]["limits"] == {"max_model_rounds": 16, "max_calls": 32}
     if backend == "litellm":

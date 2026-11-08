@@ -14,7 +14,7 @@ TEMPLATE_PATH = ROOT / "agentark_simple_task_template.py"
 NATIVE_NOTEBOOK_PATH = ROOT / "new-benchmark-task-f8fdd.ipynb"
 # Fresh native and LiteLLM tasks share the published compaction/output-budget fix.
 # The historical native notebook and generated benchmarks remain frozen separately.
-DEFAULT_WRAPPER_COMMIT = "b6cdf375f32a02c875cecc9258484b4b606c2dbe"
+DEFAULT_WRAPPER_COMMIT = "7822a18b60d2798572d16cab844dce7295181efe"
 DEFAULT_LITELLM_WRAPPER_COMMIT = DEFAULT_WRAPPER_COMMIT
 
 
@@ -117,12 +117,22 @@ limits. `legacy_v1` selects the previous combined output-budget behavior;
 Tool exploration remains bounded per decision: `tools.limits.max_model_rounds: 16`
 counts main-model requests, including host-tool selection and the final
 `submit_action`; summary requests do not consume those rounds. `max_calls: 32`
-limits host calls. `model tool round budget exhausted` means this exploration
+separately limits host calls. Explicit `round_budget_policy: visible_v1` appends
+the total/current/remaining main-response rounds and remaining host-call slots
+before every main request. The final available response is prompted to submit
+the action using the exposed schema. These snapshots are historical once a
+new one is appended; compaction does not reset the decision counters.
+The tools remain available, and ignoring the final-round hint still hits the
+unchanged hard stop. `model tool round budget exhausted` means this exploration
 budget ended before a final action was selected; it is distinct from an ID,
 signature, or context-size error. Edit these explicit YAML limits in the config
 writer if required, and use a new benchmark name for changed evaluation conditions.
+For evaluations predating these visible snapshots, select
+`round_budget_policy: legacy_v1` and retain their recorded compaction and
+output-budget policies; exact historical reproduction still requires its
+original source revision and other evaluation settings.
 
-The new wrapper pin and authored compaction/output-budget policies define new
+The new wrapper pin and authored compaction/output/round-budget policies define new
 evaluation conditions. This notebook does not guarantee that every current or
 future proxy model supports its transport settings; check cloud compatibility
 for the selected model and endpoint.
