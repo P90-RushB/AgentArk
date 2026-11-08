@@ -12,9 +12,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 TEMPLATE_PATH = ROOT / "agentark_simple_task_template.py"
 NATIVE_NOTEBOOK_PATH = ROOT / "new-benchmark-task-f8fdd.ipynb"
-DEFAULT_WRAPPER_COMMIT = "b37efe0b692b29a16c42e31b19aecbd3472271cf"
-# Published optional SDK source; native generation keeps its original pin.
-DEFAULT_LITELLM_WRAPPER_COMMIT = "3465fc850634204da24f82813a22541e7cf7eb00"
+# Fresh native and LiteLLM tasks share the published compaction/output-budget fix.
+# The historical native notebook and generated benchmarks remain frozen separately.
+DEFAULT_WRAPPER_COMMIT = "b6cdf375f32a02c875cecc9258484b4b606c2dbe"
+DEFAULT_LITELLM_WRAPPER_COMMIT = DEFAULT_WRAPPER_COMMIT
 
 
 def _slugify(value: str) -> str:
@@ -81,8 +82,10 @@ def build_litellm_notebook(*, wrapper_commit: str | None = None) -> dict:
 Import this notebook as a **new** Kaggle Benchmark task. It defaults to
 `DEFAULT_MODEL_BACKEND = "litellm"`, native function tools, and context
 compaction. The immutable `AGENTARK_COMMIT` in the configuration cell selects
-the published wrapper with optional LiteLLM support. The separate native
-notebook and existing benchmark definitions retain their original conditions.
+the published wrapper with generic tool-round compaction and separate output
+budgets. Fresh native and LiteLLM generation share this revision. The frozen
+native notebook and existing benchmark definitions retain their original bytes
+and conditions.
 
 The generic defaults evaluate **MarbleStop seeds 1–10**, normalizing its 0–1
 final-attempt reward. Every LiteLLM model uses the same first-request policy:
@@ -98,12 +101,30 @@ Matching `AGENTARK_KAGGLE_LITELLM_API`, `AGENTARK_KAGGLE_TOOL_CHOICE`, and
 Temperature accepts `default`, `null`/`none`, or a finite number; explicit Python
 `None` also omits it. An explicit `temperature=` argument to the config writer or
 evaluation runner takes precedence over the environment, including `None`.
-Native defaults and its existing unsupported-temperature retry remain unchanged.
+Native HTTP transport retains its existing parameter defaults and
+unsupported-temperature retry.
 
-This policy is limited to the Kaggle template; the wrapper pin and core defaults
-are unchanged. It is a separate evaluation condition, reflected in the new
-`-litellm-responses-auto` benchmark name. It does not guarantee that every current
-or future proxy model supports these settings; cloud compatibility must be checked
+The authored configuration explicitly uses `compaction_policy: tool_rounds_v1`
+and `output_budget_policy: separate_native_v1`. Complete tool batches can become
+ordinary visible history at a fresh context boundary; older visible content may
+then be summarized. Raw IDs and native signatures stay intact in records.
+Visible replies and complete tool arguments use action-output limits, while
+replay data has `max_protocol_output_bytes: 1048576`. Replay data still counts
+toward context size, local token estimates, compaction thresholds, and archive
+limits. `legacy_v1` selects the previous combined output-budget behavior;
+`message_chunks_v1` and `whole_turn_v1` select older compaction policies.
+
+Tool exploration remains bounded per decision: `tools.limits.max_model_rounds: 16`
+counts main-model requests, including host-tool selection and the final
+`submit_action`; summary requests do not consume those rounds. `max_calls: 32`
+limits host calls. `model tool round budget exhausted` means this exploration
+budget ended before a final action was selected; it is distinct from an ID,
+signature, or context-size error. Edit these explicit YAML limits in the config
+writer if required, and use a new benchmark name for changed evaluation conditions.
+
+The new wrapper pin and authored compaction/output-budget policies define new
+evaluation conditions. This notebook does not guarantee that every current or
+future proxy model supports its transport settings; check cloud compatibility
 for the selected model and endpoint.
 
 Known limitation: `google/gemini-2.5-flash` rejects Responses requests containing
@@ -124,10 +145,13 @@ of the evaluation fingerprint. For a manual YAML evaluation on any compatible
 endpoint, explicitly set `simple_agent.tool_choice: auto` when required tool
 choice is unsupported.
 
-## Reproduce the historical DoorSpin3Turns Astra evaluation
+## Configure DoorSpin3Turns with Astra
 
-Before running the configuration cell, edit these defaults (or use the matching
-`AGENTARK_KAGGLE_` environment overrides) and select Astra in Kaggle:
+These task/model/score settings come from an earlier Astra evaluation. This
+notebook uses the newly pinned compaction/output-budget conditions; exact
+historical reproduction requires the original notebook and source revision.
+Before running the configuration cell, edit these defaults (or use matching
+`AGENTARK_KAGGLE_` environment overrides), select Astra, and use a new task name:
 
 | Setting | Value |
 | --- | --- |
@@ -137,7 +161,7 @@ Before running the configuration cell, edit these defaults (or use the matching
 | `DEFAULT_BENCHMARK_TASK_NAME_FALLBACK` | `agentark-door-spin-3-turns-litellm-astra-s1-2` |
 | API / tool choice / temperature | `responses` / `required` / `None` |
 
-For the tested Door/Astra conditions, copy this block to the beginning of the
+For this Door/Astra task/model selection, copy this block to the beginning of the
 configuration cell, before its defaults are evaluated:
 
 ```python

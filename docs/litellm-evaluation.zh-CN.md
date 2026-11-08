@@ -324,6 +324,7 @@ APIAgent、CodexAgent、SimpleAgent 原生 OpenRouter 传输处理和 RL
 
 | 验证 | 已建立的范围 |
 | --- | --- |
+| 独立零模型打包配置 smoke，run 6479201 | 使用同一 env／task artifact 和源码 overlay，seeds 1–2 reset，模型请求为零。在实际 Mods 目录抓取的 YAML／JSON 结构相等，任务／seed／func 模式正确，不可变 baseline 哈希与 run 6475894 一致。这是后续配置材料化检查，不是追补该次评测未抓到的配置对。 |
 | Kaggle Gemini 3.8 Flash／Responses／auto／打包 `DoorSpin3Turns`，seeds 1–2，run 6475894 | 使用 `tool_rounds_v1` 与 `separate_native_v1`：63 次模型请求全部完成（59 action、4 summary），5 次上下文重启；3 次 125,169–195,906 字符的原生提交被接纳并执行，最大 ID 为 65,129 字符。两 case 分别执行 5／3 个环境步后触及既有 16 轮动作请求上限。最后决策的请求前缀、工具结果和图片哈希完整。这是定向长状态／压缩证据，不是完整 case 通过；本次未抓取有效 YAML／JSON 配置对。 |
 | 合成证据：离线 fake SDK 与本地 HTTP loopback | Chat／Responses 请求、多模态和工具续轮、签名及状态校验、包含 phase 的 Responses 条目顺序、重试、预算、压缩、trace 和评测身份。这些受控响应不认证供应商支持。 |
 | 生产适配器 v2 探测／Responses | Sol 6.1（`openai/gpt-6.1-sol`，run 6231754）、Opus 5.5（`anthropic/claude-opus-5-5@default`，run 6231755）和 Gemini 3 Flash Preview（`google/gemini-3-flash-preview`，run 6231756）均通过。每次探测实际调用生产 `aresponses` 三次：前两个图像轮次覆盖宿主 echo 结果、原生状态续传和动作提交，第三次为不带工具的图像摘要。统一使用 `auto`，省略温度和 reasoning effort，重试为零。这些是小型协议 smoke，不是 Unity 或完整 `DoorSpin3Turns` 评测。 |
@@ -362,4 +363,5 @@ APIAgent、CodexAgent、SimpleAgent 原生 OpenRouter 传输处理和 RL
 | 凭据或端点与预期不同 | 显式设置 `api_key_env`，查看逻辑 trace 端点。省略 `base_url` 表示 SDK 供应商默认地址；已指定但未设置的 key 会报错。 |
 | 全局参数修改／fallback 报错 | 在调用进程中关闭 SDK 全局丢参数、自动修改、fallback 和重试设置，在 AgentArk 配置里显式选择条件。 |
 | 摘要之后看不到推理 | 检查压缩事件和归档原生状态；成功压缩会按既有策略清除全部工作原生状态。 |
+| `model tool round budget exhausted` | 检查 `simple_agent.tools.limits.max_model_rounds`（默认每决策 16 轮动作生成请求），包括宿主工具选择与最终提交，不含摘要调用。这是探索预算限制，不是 ID／context 超限；需要更大额度时应作为新的评测条件发布，压缩不会重置计数。 |
 | 已有结果没有跳过 | 对照 backend／API／模型／harness 指纹，为目标条件使用独立输出路径；仍可回放已保存动作。 |

@@ -6,7 +6,7 @@ tools, and context compaction, with generic MarbleStop seeds 1–10 defaults:
 | Notebook | Default backend | Wrapper pin |
 | --- | --- | --- |
 | `new-benchmark-task-f8fdd.ipynb` | Native HTTP | Frozen `b37efe0b692b29a16c42e31b19aecbd3472271cf` |
-| `agentark_litellm_task.ipynb` | LiteLLM SDK | `3465fc850634204da24f82813a22541e7cf7eb00` |
+| `agentark_litellm_task.ipynb` | LiteLLM SDK | `b6cdf375f32a02c875cecc9258484b4b606c2dbe` |
 
 The native notebook is retained byte-for-byte for its existing evaluation
 conditions. The LiteLLM notebook uses separate benchmark names, result names,
@@ -34,19 +34,23 @@ The native wrapper pin includes the SimpleAgent defaults, trace/resume and repla
 compatibility improvements, compaction failure handling, and HumanView updates.
 It also accepts opaque provider tool-call IDs up to 64 KiB of UTF-8 without
 rewriting them, fixing the prior 256-character rejection on Kaggle Gemini calls.
-The notebook and generated tasks explicitly use
-`compaction_policy: message_chunks_v1`. Oversized old ordinary text/multi-image messages can be
-summarized in bounded pieces and their notes merged; tool-call batches and all
-their results remain intact. Leaves, merges, and retries share the configured
-summary-call budget. `whole_turn_v1` selects the legacy strategy and preserves
-its historical evaluation fingerprint. Current source defaults SimpleAgent to
-`tool_rounds_v1` for completed batches within a decision, with a distinct
-fingerprint. The published notebook pins still select older wrapper code and
-their explicit `message_chunks_v1` conditions remain unchanged; those notebooks
-do not yet enable the new default. Change the strategy and budgets in
-`_write_eval_config` before creating a new benchmark version.
-Using `tool_rounds_v1` also requires a published wrapper revision containing that
-policy; changing the policy value alone in an existing notebook is insufficient.
+The current LiteLLM notebook, shared Python template and both fresh generator
+backends pin `b6cdf375f32a02c875cecc9258484b4b606c2dbe`, explicitly using
+`compaction_policy: tool_rounds_v1` and
+`output_budget_policy: separate_native_v1`. Closed tool batches may restart
+context within a decision; visible arguments/results remain available and older
+history may be summarized. Opaque signatures leave working context only at a
+fresh-context boundary, while immutable records retain their originals.
+
+Visible text/full tool arguments and protocol replay have separate single-output
+limits. `max_protocol_output_bytes: 1048576` bounds the aggregate replay data;
+the existing per-ID 64 KiB and per-native-state 1 MiB limits remain. All replay
+data still counts toward context characters, bytes, token estimates and archive
+limits. This does not make encrypted state free or provide an exact count of
+server-restored tokens. To reproduce pre-separation checks, explicitly select
+`output_budget_policy: legacy_v1` together with the historical compaction policy.
+The frozen native notebook retains its `message_chunks_v1` conditions and old pin.
+Change strategy and budgets in `_write_eval_config` before creating a new version.
 For later wrapper revisions, generate with
 `--wrapper-commit <full-published-commit>`. Never replace a formal benchmark pin
 with `main` or an unpublished local commit.
@@ -62,7 +66,7 @@ and Opus validation conditions are recorded separately in the
 Its runnable defaults remain generic MarbleStop seeds 1–10 with score range 0–1.
 
 The shared Python template `agentark_simple_task_template.py` still defaults to
-native HTTP, including Gemini. The generator selects a backend-specific
+native HTTP, including Gemini. Both fresh generator backends select the current
 immutable wrapper pin; `--backend litellm` gives the default generated filename
 and Python function a `_litellm_responses_auto` suffix and the benchmark slug
 a `-litellm-responses-auto` suffix. For example:
@@ -83,9 +87,9 @@ kaggle b t push agentark-snake-litellm-responses-auto -f benchmarks/kaggle/agent
 kaggle b t run agentark-snake-litellm-responses-auto -m your-model-slug --wait
 ```
 
-Omitting `--backend` preserves native generation and its original pin. An
+Omitting `--backend` preserves native generation with the current pin. An
 explicit `--wrapper-commit <full-published-commit>` overrides the selected pin.
-The older native pin does not contain LiteLLM; setup rejects a missing backend
+The frozen notebook's older native pin does not contain LiteLLM; setup rejects a missing backend
 feature instead of silently changing transport. Environment overrides
 `AGENTARK_KAGGLE_BACKEND`, `AGENTARK_KAGGLE_LITELLM_API`,
 `AGENTARK_KAGGLE_TOOL_CHOICE` and `AGENTARK_KAGGLE_TEMPERATURE` remain available in
@@ -121,6 +125,21 @@ rejected. Invalid settings fail during config authoring. The selected settings
 apply to the first request; no API or parameter fallback is triggered by errors.
 Omitted temperature is recorded as `temperature: null`; reasoning remains
 optional, with no forced `reasoning_effort: none`.
+
+The authored YAML also shows the existing host-tool budgets explicitly:
+`simple_agent.tools.limits.max_model_rounds: 16` and `max_calls: 32` per decision.
+Action-generation requests, including host-tool selection and final submission,
+consume rounds; summary requests do not. `model tool round budget exhausted`
+means the model kept exploring without submitting within that allowance. It is
+different from an ID, output or context limit. Change the YAML only for a new
+evaluation condition; compaction keeps the current counters rather than resetting them.
+
+The targeted Gemini 3.8 Flash validation accepted three native submissions above
+the old 120k action cap and continued through five context restarts. Both seeds
+ultimately stopped at the unchanged 16-round tool budget after 5/3 environment
+steps, so this is not a full-case pass. See the
+[English validation scope](../../docs/litellm-evaluation.md#validation-scope) or
+[中文验证范围](../../docs/litellm-evaluation.zh-CN.md#验证范围) for the evidence and limits.
 
 This is a Kaggle notebook/shared-template policy. Core LiteLLM configs continue
 to default to Chat Completions and `required`. Native generation retains Chat

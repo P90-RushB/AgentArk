@@ -28,7 +28,7 @@ import kaggle_benchmarks as kbench
 
 
 AGENTARK_REPO_URL = "https://github.com/P90-RushB/AgentArk.git"
-AGENTARK_COMMIT = "b37efe0b692b29a16c42e31b19aecbd3472271cf"
+AGENTARK_COMMIT = "b6cdf375f32a02c875cecc9258484b4b606c2dbe"
 ENV_VERSION = "1.0.6"
 HF_REVISION = "6a16c98e262abd760b09ef007a49118d0b1b0cb9"
 HF_BASE_URL = f"https://huggingface.co/datasets/P90-RushB/AgentArk/resolve/{HF_REVISION}"
@@ -536,13 +536,20 @@ models:
 {backend_yaml}      tool_choice: {tool_choice}
       output_token_parameter: max_completion_tokens
       context:
-        # message_chunks_v1: bounded message chunks (default).
+        # tool_rounds_v1: restart at closed tool batches; compact older visible history (default).
+        # message_chunks_v1: previous bounded-message policy.
         # whole_turn_v1: legacy complete-turn compaction.
-        compaction_policy: message_chunks_v1
+        compaction_policy: tool_rounds_v1
+        # separate_native_v1: visible text and full tool arguments use action limits (default).
+        # legacy_v1: count the complete native replay package as action output, as before.
+        output_budget_policy: separate_native_v1
+        # Aggregate replay-state byte limit; ID/signature/native data still count
+        # toward context/token estimates, compaction thresholds and archive limits.
+        max_protocol_output_bytes: 1048576
         # Tune this estimate for the selected proxy model before publishing.
         max_context_tokens: 262144
         output_reserve_tokens: {int(max_completion_tokens)}
-        # A complete video turn can exceed the runtime's default 48k summary input.
+        # Older multimodal history can exceed the runtime's default 48k summary input.
         # Budget summary input + output within the same authored context cap.
         summary_input_tokens: 229376
         summary_output_tokens: 32768
@@ -550,6 +557,12 @@ models:
       tools:
         enabled: true
         workspace_parent: tmp/kaggle_simple_agent_workspaces
+        limits:
+          # Per decision: main-model rounds selecting host tools or submit_action.
+          # Summary calls use their separate budget and do not consume these rounds.
+          max_model_rounds: 16
+          # Maximum host calls per decision; changing either limit changes eval conditions.
+          max_calls: 32
     provider: openai
     model: {json.dumps(model)}
     base_url: {json.dumps(openai_base_url)}

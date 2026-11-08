@@ -92,7 +92,10 @@ def test_generated_task_uses_generic_simple_template_and_immutable_pin(tmp_path,
     assert model["simple_agent"]["tool_choice"] == "required"
     assert model["temperature"] == 1.0 and "reasoning_effort" not in model
     assert model["simple_agent"]["context"]["output_reserve_tokens"] == 30000
-    assert model["simple_agent"]["context"]["compaction_policy"] == "message_chunks_v1"
+    assert model["simple_agent"]["context"]["compaction_policy"] == "tool_rounds_v1"
+    assert model["simple_agent"]["context"]["output_budget_policy"] == "separate_native_v1"
+    assert model["simple_agent"]["context"]["max_protocol_output_bytes"] == 1048576
+    assert model["simple_agent"]["tools"]["limits"] == {"max_model_rounds": 16, "max_calls": 32}
     budget = SimpleRuntimeConfig(**model["simple_agent"]["context"])
     assert budget.summary_input_tokens + budget.summary_output_tokens <= budget.max_context_tokens
     assert budget.summary_input_characters == budget.max_context_characters
@@ -118,7 +121,6 @@ def test_generator_protects_existing_benchmark_and_validates_identifiers(tmp_pat
 
 
 def test_native_notebook_keeps_its_published_bytes_and_wrapper_pin():
-    assert generator().DEFAULT_WRAPPER_COMMIT == "b37efe0b692b29a16c42e31b19aecbd3472271cf"
     raw = (KAGGLE / "new-benchmark-task-f8fdd.ipynb").read_bytes()
     # Git may materialize this frozen text file with CRLF on Windows.
     assert sha256(raw.replace(b"\r\n", b"\n")).hexdigest() == "d44f410405d0e83c96afeca340867a4b19eb66ff4690488b5a3df2e019b4a86c"
@@ -129,12 +131,30 @@ def test_native_notebook_keeps_its_published_bytes_and_wrapper_pin():
     ast.parse(source)
 
 
+def test_historical_native_generated_task_keeps_its_published_bytes():
+    raw = (KAGGLE / "agentark_marble_stop_seeds_1_10.py").read_bytes()
+    assert sha256(raw.replace(b"\r\n", b"\n")).hexdigest() == "764e42f00907ee8bbf8d97a0a2916a12d9c94de54adfa2f6d0b7a706a7d7e91a"
+    assert b'AGENTARK_COMMIT = "3cc987164c591f7548a542de334d1e9dab7de725"' in raw
+
+
+def test_fresh_generator_backend_defaults_share_published_compaction_budget_revision():
+    module = generator()
+    assert module.DEFAULT_WRAPPER_COMMIT == module.DEFAULT_LITELLM_WRAPPER_COMMIT == "b6cdf375f32a02c875cecc9258484b4b606c2dbe"
+    for backend in ("native", "litellm"):
+        source = module._backend_template(backend, None)
+        assert f'AGENTARK_COMMIT = "{module.DEFAULT_WRAPPER_COMMIT}"' in source
+        assert "compaction_policy: tool_rounds_v1" in source
+        assert "output_budget_policy: separate_native_v1" in source
+        assert "max_protocol_output_bytes: 1048576" in source
+        assert "legacy_v1:" in source
+        assert "max_model_rounds: 16" in source and "max_calls: 32" in source
+
+
 def test_litellm_notebook_is_generated_from_shared_template_and_published_backend_pin():
     module = generator()
     pin = module.DEFAULT_LITELLM_WRAPPER_COMMIT
     assert isinstance(pin, str) and re.fullmatch(r"[0-9a-f]{40}", pin)
-    assert pin == "3465fc850634204da24f82813a22541e7cf7eb00"
-    assert pin != module.DEFAULT_WRAPPER_COMMIT
+    assert pin == module.DEFAULT_WRAPPER_COMMIT == "b6cdf375f32a02c875cecc9258484b4b606c2dbe"
     notebook = json.loads((KAGGLE / "agentark_litellm_task.ipynb").read_text(encoding="utf-8"))
     assert notebook == module.build_litellm_notebook()
     source = "\n\n".join("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code")
@@ -150,6 +170,10 @@ def test_litellm_notebook_is_generated_from_shared_template_and_published_backen
     assert '"MarbleStop"' in source and '"DoorSpin3Turns"' not in source
     assert all(cell["execution_count"] is None and not cell["outputs"] for cell in notebook["cells"] if cell["cell_type"] == "code")
     assert "DoorSpin3Turns" in "".join(notebook["cells"][0]["source"])
+    introduction = "".join(notebook["cells"][0]["source"])
+    assert "model tool round budget exhausted" in introduction
+    assert "summary requests do not consume" in introduction
+    assert "wrapper pin and core defaults\nare unchanged" not in introduction
     ast.parse(source)
 
 
