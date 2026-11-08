@@ -19,7 +19,7 @@ from agent_ark.agent.simple_agent.types import (
 )
 
 
-ID_BYTE_LIMIT = 64 * 1024
+ID_BYTE_LIMIT = 1024 * 1024
 TOOLS = (ToolSpec("list_files", "List available own records.", '{"type":"object"}'),)
 
 
@@ -65,8 +65,8 @@ def model_for(adapter, reply):
 
 
 @pytest.mark.parametrize("adapter", ["simple", "generic"])
-@pytest.mark.parametrize("call_id", ["call-old-1", opaque_id(364), opaque_id(4096)],
-                         ids=["legacy-short", "opaque-364-bytes", "opaque-4096-bytes"])
+@pytest.mark.parametrize("call_id", ["call-old-1", opaque_id(364), opaque_id(4096), opaque_id(95221)],
+                         ids=["legacy-short", "opaque-364-bytes", "opaque-4096-bytes", "opaque-above-64k"])
 def test_provider_ids_parse_and_encode_without_changes(adapter, call_id):
     call = wire_call(call_id)
     model, _ = model_for(adapter, response([call]))
@@ -115,8 +115,8 @@ def test_other_tool_call_bounds_are_unchanged():
         ToolCall("call-old", "list_files", "x" * 131073)
 
 
-@pytest.mark.parametrize("call_id", [opaque_id(364), "密" * (ID_BYTE_LIMIT // 3) + "x"],
-                         ids=["opaque-364-bytes", "utf8-exact-boundary"])
+@pytest.mark.parametrize("call_id", [opaque_id(95221), "密" * (71838 // 3)],
+                         ids=["opaque-above-64k", "utf8-above-64k"])
 def test_native_reasoning_reuses_opaque_id_validation_and_exact_replay(call_id):
     call = wire_call(call_id)
     reasoning = {"reasoning_details": [{"type": "reasoning.encrypted", "data": "SYNTHETIC-ONLY+/="}]}

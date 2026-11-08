@@ -9,7 +9,11 @@ import re
 from typing import Literal, Protocol, runtime_checkable
 
 
-_MAX_TOOL_CALL_ID_BYTES = 64 * 1024
+# Opaque provider IDs may carry continuation state. Their structural ceiling
+# shares the existing native replay envelope. The runtime separately bounds
+# the aggregate protocol packet, including repeated IDs and native JSON.
+_MAX_NATIVE_REPLAY_BYTES = 1024 * 1024
+_MAX_TOOL_CALL_ID_BYTES = _MAX_NATIVE_REPLAY_BYTES
 
 
 def _compaction_metadata(value: str | None) -> None:
@@ -129,7 +133,7 @@ class NativeAssistantState:
     def __post_init__(self) -> None:
         _text(self.scope, "native assistant scope")
         _text(self.message_json, "native assistant JSON")
-        if len(self.scope) > 256 or len(self.message_json.encode("utf-8")) > 1024 * 1024:
+        if len(self.scope) > 256 or len(self.message_json.encode("utf-8")) > _MAX_NATIVE_REPLAY_BYTES:
             raise ValueError("native assistant state exceeds its bound")
 
         def pairs(items):
@@ -228,7 +232,7 @@ class LiteLLMAssistantState:
     def __post_init__(self) -> None:
         _text(self.scope, "LiteLLM assistant scope")
         _text(self.message_json, "LiteLLM assistant JSON")
-        if len(self.scope) > 256 or len(self.message_json.encode("utf-8")) > 1024 * 1024:
+        if len(self.scope) > 256 or len(self.message_json.encode("utf-8")) > _MAX_NATIVE_REPLAY_BYTES:
             raise ValueError("LiteLLM assistant state exceeds its bound")
 
         def pairs(items):

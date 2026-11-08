@@ -273,10 +273,15 @@ Single-response admission is independent of context compaction. The default
 `output_budget_policy: separate_native_v1` counts visible assistant text and full
 tool names/arguments against the existing action character/byte limits, without
 charging duplicate native/translated representations. IDs and native replay
-packets have a separate aggregate `max_protocol_output_bytes: 1048576` limit;
-the existing 64 KiB per-ID and 1 MiB per-native-state bounds also apply. These
-are UTF-8 byte bounds, not model token limits. An over-limit response fails
-before any host tool executes, with the original completion kept in the archive.
+packets have a separate aggregate `max_protocol_output_bytes: 1048576` limit.
+Opaque IDs share the existing 1 MiB structural ceiling with each native-state
+JSON envelope. This replaces the smaller 64 KiB ID guard; it does not guarantee
+that a 1 MiB ID fits a response. Repeated IDs, tool-result IDs, native JSON and
+scope all consume the aggregate allowance. These are UTF-8 byte bounds, not
+model token limits. The runtime rejects excess protocol data before any host
+tool executes or final action returns, preserving the parsed completion within
+the existing archive bounds. Structural validation can reject a response earlier in the adapter,
+before a completion is available for runtime archival.
 
 All IDs, signatures and native state still count toward working-context
 characters, bytes and token estimates, and toward archive limits. They can
@@ -319,6 +324,13 @@ unaffected. Saved-action replay does not
 run compaction. Loading a trajectory history prefix is not restoration of the
 private model working context or its compaction state. Existing Kaggle tasks
 keep their immutable wrapper pin and evaluation conditions.
+
+The ID structural-ceiling fix changes no prompts, record schema or evaluation
+fingerprints. Previously valid inputs and saved actions retain their behavior;
+previously rejected larger IDs can now reach the existing runtime checks.
+`output_budget_policy: legacy_v1` retains its historical accounting algorithm (without the separate
+protocol allowance), not every older structural rejection. Use the original
+source revision when reproducing the old 64 KiB rejection boundary exactly.
 
 SimpleAgent's native HTTP backend preserves the supported OpenRouter reasoning fields
 and Volcengine's original `reasoning_content` / `encrypted_content` pair in

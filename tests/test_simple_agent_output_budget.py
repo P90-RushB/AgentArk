@@ -247,7 +247,7 @@ def test_expanding_submission_bounds_each_complete_representation_once(native, r
 
 def test_existing_type_bounds_reject_oversized_ids_and_native_packets():
     with pytest.raises(ValueError, match="tool call exceeds"):
-        ToolCall("x" * (64 * 1024 + 1), "host_operation", ARGUMENTS)
+        ToolCall("x" * (1024 * 1024 + 1), "host_operation", ARGUMENTS)
     with pytest.raises(ValueError, match="state exceeds"):
         NativeAssistantState(SCOPE, json.dumps({"role": "assistant", "content": "done",
                                                "reasoning": "x" * 1024 * 1024}))

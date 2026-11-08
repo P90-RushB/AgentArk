@@ -41,7 +41,9 @@ summaries used for verification are disposable test data and must not become
 production resume state.
 When constructing `SimpleRuntimeConfig` from a historical saved context that
 predates output-budget separation, explicitly add
-`output_budget_policy="legacy_v1"` for exact old admission behavior. Also set
+`output_budget_policy="legacy_v1"` for the historical combined output-accounting
+algorithm. Exact reproduction of an older structural ID bound requires its
+original source revision. Also set
 `round_budget_policy="legacy_v1"` when reconstructing requests from before runtime
 round notices were added. These settings are only for offline reconstruction;
 normal new evaluations keep the new defaults.

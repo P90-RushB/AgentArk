@@ -379,14 +379,28 @@ model working state. Compatible task/runtime artifacts, seeds and parameters are
 still required for replay. Dependency upgrades alone do not prove identical
 remote model behavior or scores.
 
+SimpleAgent's shared opaque-ID structural ceiling is now aligned with its
+existing 1 MiB native-state envelope. The runtime's separate aggregate protocol
+budget still counts every ID/native representation, and all replay data still
+counts toward context, compaction and archives. This compatibility fix changes
+no prompts, record schema or fingerprints; existing valid records remain
+compatible. Legacy policies preserve their accounting and prompts, while exact
+reproduction of the former 64 KiB ID rejection requires the older source pin.
+
 ## Validation scope
 
 The evidence types below establish different scopes. Historical packaged runs
 predate the uniform Kaggle Responses/auto policy and do not certify that new
 policy across vendors. A provider probe is not a packaged task evaluation.
+Raw traces from the private runs below are local-only evidence, not distributed
+fixtures or public reasoning-state dumps.
 
 | Check | Established scope |
 | --- | --- |
+| Former 64 KiB ID guard, Kaggle Gemini 3.8 Flash / DoorSpin3Turns, run 6483969 | Both seeds stopped after two environment actions. The provider completed `submit_action` responses with IDs of 95,221 and 71,838 UTF-8 bytes; the old structural guard rejected them with 13/14 model rounds still available, including that response. Offline production-parser regressions now accept both synthetic lengths without rewriting IDs; aggregate/context/archive guards remain enforced. |
+| Shared 1 MiB structural envelope candidate, run 6501040 | A hash-verified `types.py`-only overlay retained the published model/API, 16/32 quotas and 1 MiB aggregate protocol budget. Seed 1 completed ten actions with final reward +1. Seed 2 completed seven actions before shared daily Kaggle quota denied a subsequent action-generation request. All 96 SDK inputs, 95 returned responses, selected actions, native continuations, context projections and image hashes passed independent audits; the denied request has no response body. Largest ID 57,718 bytes and protocol package 289,608 bytes. This run contained no live ID above 64 KiB. This is not a complete two-seed pass. |
+| Same candidate, separate seed-2 run 6504366 | Completed one environment action, then the same shared daily quota denied a subsequent action-generation request. Two responses and three request inputs passed protocol audits; largest ID 6,265 bytes. A new task/run does not restore account daily quota, and these independent partial rollouts cannot be added together. |
+| Same candidate, complete seed-2 Notebook validation, scriptVersion 366874176 | Completed ten environment actions and all 114 model requests (107 action, 7 summary), with zero model-call errors. Final score reward was -1 and total reward -10: the model did not solve this seed. An actual 67,366-byte ID passed the production parser and runtime unchanged; its native JSON was 202,459 bytes and aggregate protocol cost 269,904 bytes, within the unchanged 1 MiB budget. Independent audits matched every SDK input and selected action, 97 host exchanges, 86 native continuations, 11 fresh projections and 691 saved image payload hashes. Two decisions submitted on round 16 after the final-round reminder. No protocol or compaction transfer fault was found; this establishes technical completion, not model success. |
 | Separate no-model packaged config smoke, run 6479201 | The same env/task artifacts and source overlay reset seeds 1–2 with zero model requests. Captured active Mods YAML/JSON pairs are structurally equal, task/seed/func mode match, and the immutable baseline hash matches run 6475894. This is a later configuration-materialization check, not retrospective capture of that evaluation's missing pairs. |
 | Kaggle Gemini 3.8 Flash / Responses / auto / packaged `DoorSpin3Turns`, seeds 1–2, run 6475894 | `tool_rounds_v1` and `separate_native_v1`: 63 completed model requests (59 action, 4 summary), five context restarts, and three native submissions of 125,169–195,906 characters accepted and executed; largest ID 65,129 characters. Both cases subsequently exhausted the existing 16 action-round limit after 5/3 environment steps. Final-decision request prefixes, tool results and image hashes were preserved. This is targeted long-state/compaction evidence, not a complete case pass; effective YAML/JSON pairs were not captured in this run. |
 | Synthetic: offline fake-SDK and local HTTP loopback | Chat and Responses requests, multimodal/tool continuation, signatures/state validation, ordered Responses items including phases, retries, limits, compaction, trace and evaluation-identity behavior. These controlled responses do not certify provider support. |
