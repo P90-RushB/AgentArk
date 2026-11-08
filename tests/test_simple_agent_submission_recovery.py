@@ -134,7 +134,7 @@ def test_recovery_context_limit_does_not_compact_or_issue_another_request():
     asyncio.run(run())
 
 
-def test_rejected_native_output_limit_stops_before_feedback_and_keeps_original_audit():
+def test_rejected_native_protocol_limit_stops_before_feedback_and_keeps_original_audit():
     async def run():
         calls = invalid().tool_calls
         original = {"role": "assistant", "content": None, "reasoning": "opaque" * 100,
@@ -142,9 +142,9 @@ def test_rejected_native_output_limit_stops_before_feedback_and_keeps_original_a
                 "name": calls[0].name, "arguments": calls[0].arguments_json}}]}
         native = NativeAssistantState("test", json.dumps(original))
         bad = invalid(native_assistant=native)
-        agent, backend, state = make_agent([bad, valid()], context={"max_action_output_characters": 200})
+        agent, backend, state = make_agent([bad, valid()], context={"max_protocol_output_bytes": 200})
         try:
-            with pytest.raises(AgentLimitError, match="action output exceeds its hard bounds"):
+            with pytest.raises(AgentLimitError, match="protocol output exceeds its hard byte bound"):
                 await state.runtime.complete(request())
             assert len(backend.requests) == 1
             assert state.runtime.history_snapshot[-1].messages[0].native_assistant is native

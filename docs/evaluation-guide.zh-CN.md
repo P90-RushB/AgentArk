@@ -231,13 +231,22 @@ simple_agent:
 重建后继续使用同一工具 session，保持恰好执行一次的语义、调用预算和决策时限。审计
 trace 区分协议重启与模型生成的摘要。上述数值默认不变。
 
-该策略不解决单个响应因原生调用 ID 过长而超过动作输出上限的问题；动作输出、
-原生状态和字节限制均不变。这里不宣称新增云端 Gemini 或完整打包任务验证；历史供应商
-证据不能证明这些结果。
+单次响应接纳与上下文压缩分别检查。默认 `output_budget_policy: separate_native_v1`
+将可见 assistant 文字及完整工具名称／参数计入原有动作字符／字节限额，不重复计算
+原生或动作转换的不同表示。ID 和原生回传包另受总计 `max_protocol_output_bytes: 1048576`
+限制；既有的单 ID 64 KiB、单原生状态 1 MiB 限制也继续生效。这些是 UTF-8 字节限制，
+不是模型 token 上限。超限响应在任何宿主工具执行前失败，原始完成输出保留在归档中。
+
+全部 ID、签名和原生状态仍计入工作上下文的字符数、字节数和 token 估算，以及归档限额，
+因此接纳后仍能触发 `tool_rounds_v1` 压缩。密文状态的本地估算不等于服务端恢复后的
+精确 token 数。没有解析 marker、改写 ID、按模型名路由或增加供应商特例。
+原生记录仍逐字节保留。
 
 三种策略使用不同配置指纹。默认改为 `tool_rounds_v1` 会有意改变 SimpleAgent 的评测身份。
-显式选择 `message_chunks_v1` 或 `whole_turn_v1` 可复现对应旧策略的行为、指纹及完成 case
-的续跑检查；APIAgent 与 CodexAgent 不受影响。保存动作的纯回放不会执行压缩。
+显式选择 `message_chunks_v1` 或 `whole_turn_v1` 可复现对应旧压缩策略；复现分账前的
+输出检查、配置指纹及完成 case 续跑检查时，还需设置 `output_budget_policy: legacy_v1`。
+旧模式下不生效的协议预算不影响旧指纹。新计量有独立指纹，不会复用旧条件的完成结果。
+APIAgent 与 CodexAgent 不受影响。保存动作的纯回放不会执行压缩。
 载入 trajectory 历史前缀不等于恢复模型私有工作上下文和压缩状态。已有 Kaggle 任务继续
 使用其固定 wrapper commit 和原来的评测条件。
 

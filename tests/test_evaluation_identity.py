@@ -147,6 +147,7 @@ def test_omitted_simple_settings_equal_explicit_effective_defaults():
 def test_explicit_whole_turn_policy_preserves_pre_policy_fingerprint(config, old_hash):
     legacy = deepcopy(config)
     legacy.setdefault('simple_agent', {}).setdefault('context', {})['compaction_policy'] = 'whole_turn_v1'
+    legacy['simple_agent']['context']['output_budget_policy'] = 'legacy_v1'
     identity = build_evaluation_identity(legacy)
     assert identity == {'version': 1, 'agent_type': 'simple', 'config_sha256': old_hash}
     assert build_evaluation_identity(config)['config_sha256'] != old_hash
@@ -161,6 +162,7 @@ def test_old_simple_fingerprint_resumes_only_with_legacy_policy_and_survives_new
     save(path, [old])
     legacy = deepcopy(SIMPLE)
     legacy['simple_agent']['context']['compaction_policy'] = 'whole_turn_v1'
+    legacy['simple_agent']['context']['output_budget_policy'] = 'legacy_v1'
     for config, expected in [(legacy, 1), (SIMPLE, 0)]:
         if parallel:
             pending, existing = filter_existing_parallel_jobs(build_parallel_eval_jobs([CASE], [config]), str(path))
@@ -204,6 +206,9 @@ def test_sequential_and_parallel_creation_record_same_identity():
      '8d953341101e328c32882dd86ff92dd17d9ff6fdd6080f6833f2c16d4d50e69e'),
 ])
 def test_optional_litellm_does_not_change_existing_identity(config, expected):
+    config = deepcopy(config)
+    if config.get('agent_type') == 'simple':
+        config['simple_agent'] = {'context': {'output_budget_policy': 'legacy_v1'}}
     assert build_evaluation_identity(config)['config_sha256'] == expected
     if config.get('agent_type') == 'simple':
         explicit = deepcopy(config)
@@ -219,9 +224,33 @@ def test_optional_litellm_does_not_change_existing_identity(config, expected):
 ])
 def test_explicit_message_chunks_retains_its_identity_after_default_migration(config, old_hash):
     historical = deepcopy(config)
-    historical['simple_agent'] = {'context': {'compaction_policy': 'message_chunks_v1'}}
+    historical['simple_agent'] = {'context': {'compaction_policy': 'message_chunks_v1',
+                                            'output_budget_policy': 'legacy_v1'}}
     assert build_evaluation_identity(historical)['config_sha256'] == old_hash
     assert build_evaluation_identity(config)['config_sha256'] != old_hash
+
+
+@pytest.mark.parametrize('compaction,old_hash', [
+    ('whole_turn_v1', 'e57a2f3f5b16b81648ce586f423e2356f61f6ae3c798826094dfa06284ac9bc8'),
+    ('message_chunks_v1', '047216dbe08c318aec600d7b3903e8f3d22bb7d5bc41f8007199527ffa4a6694'),
+    ('tool_rounds_v1', 'a39bc9d739968a2564b029e6a3f9bba984b066e5c0a47cf616309e82306a8fb2'),
+])
+def test_legacy_output_budget_preserves_each_previous_compaction_identity(compaction, old_hash):
+    config = {'agent_type': 'simple', 'provider': 'openai', 'model': 'test-model',
+              'simple_agent': {'context': {'compaction_policy': compaction,
+                                           'output_budget_policy': 'legacy_v1'}}}
+    assert build_evaluation_identity(config)['config_sha256'] == old_hash
+    # This limit is inactive under legacy accounting and must not fork its identity.
+    config['simple_agent']['context']['max_protocol_output_bytes'] = 17
+    assert build_evaluation_identity(config)['config_sha256'] == old_hash
+    config['simple_agent']['context']['output_budget_policy'] = 'separate_native_v1'
+    assert build_evaluation_identity(config)['config_sha256'] != old_hash
+
+
+def test_separate_native_protocol_budget_is_an_evaluation_condition():
+    config = {'agent_type': 'simple', 'provider': 'openai', 'model': 'test-model'}
+    changed = {**config, 'simple_agent': {'context': {'max_protocol_output_bytes': 500_000}}}
+    assert build_evaluation_identity(config) != build_evaluation_identity(changed)
 
 
 def test_litellm_identity_distinguishes_protocol_model_and_provider_default_url():

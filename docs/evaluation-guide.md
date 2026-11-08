@@ -269,15 +269,29 @@ deadline continue. Audit traces
 distinguish the protocol restart from any model-generated summaries. All numeric
 defaults above remain unchanged.
 
-This policy does not fix a single response rejected by the action-output
-cap because of a long native call ID. Action-output, native-state and byte limits
-are unchanged. Cloud Gemini and full packaged-task validation of this policy
-have not been established by the historical provider evidence.
+Single-response admission is independent of context compaction. The default
+`output_budget_policy: separate_native_v1` counts visible assistant text and full
+tool names/arguments against the existing action character/byte limits, without
+charging duplicate native/translated representations. IDs and native replay
+packets have a separate aggregate `max_protocol_output_bytes: 1048576` limit;
+the existing 64 KiB per-ID and 1 MiB per-native-state bounds also apply. These
+are UTF-8 byte bounds, not model token limits. An over-limit response fails
+before any host tool executes, with the original completion kept in the archive.
+
+All IDs, signatures and native state still count toward working-context
+characters, bytes and token estimates, and toward archive limits. They can
+therefore trigger `tool_rounds_v1` compaction after admission. Encrypted-state
+token costs are estimated locally, not an exact count of server-restored tokens.
+No marker parsing, ID rewriting, model-name routing or provider-specific quota
+exception is used. Saved native records remain byte-for-byte unchanged.
 
 Each policy has a distinct fingerprint. The new `tool_rounds_v1` default
 intentionally changes SimpleAgent's evaluation identity. Explicitly select
-`message_chunks_v1` or `whole_turn_v1` to reproduce that older policy's behavior,
-fingerprint and completed-case resume checks. APIAgent and CodexAgent are
+`message_chunks_v1` or `whole_turn_v1` to reproduce that older compaction policy.
+Also set `output_budget_policy: legacy_v1` to reproduce its pre-separation output
+checks, fingerprint and completed-case resume checks. The inactive protocol
+budget does not affect legacy identities. New output accounting has a distinct
+fingerprint and cannot reuse completed results from older conditions. APIAgent and CodexAgent are
 unaffected. Saved-action replay does not
 run compaction. Loading a trajectory history prefix is not restoration of the
 private model working context or its compaction state. Existing Kaggle tasks

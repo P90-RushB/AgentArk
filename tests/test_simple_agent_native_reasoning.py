@@ -643,16 +643,36 @@ def test_native_state_enforces_archive_hard_bound(bound):
 
 
 @pytest.mark.parametrize("bound", ["max_action_output_characters", "max_action_output_bytes"])
-def test_action_output_limit_counts_native_state_and_preserves_original_archive(bound):
+def test_legacy_action_output_limit_counts_native_state_and_preserves_original_archive(bound):
     async def run():
         native = state("answer", reasoning=PRIVATE * 20)
         async def model(req):
             return ModelCompletion("answer", native_assistant=native)
         amount = len(native.message_json) if bound.endswith("characters") else len(native.message_json.encode("utf-8"))
-        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(**{bound: len("answer") + amount - 1}))
+        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
+            output_budget_policy="legacy_v1", **{bound: len("answer") + amount - 1}))
         with pytest.raises(AgentLimitError, match="action output"):
             await runtime.complete(request())
         completion = runtime.history_snapshot[-1]
+        assert completion.kind == "completion" and completion.text == "answer"
+        assert completion.messages[0].native_assistant == native
+    asyncio.run(run())
+
+
+def test_native_replay_budget_is_separate_and_preserves_original_archive_on_failure():
+    async def run():
+        native = state("answer", reasoning=PRIVATE * 20)
+        async def model(req):
+            return ModelCompletion("answer", native_assistant=native)
+        amount = len(native.message_json.encode("utf-8")) + len(native.scope.encode("utf-8"))
+        cfg = SimpleRuntimeConfig(max_action_output_characters=6, max_action_output_bytes=6,
+                                  max_protocol_output_bytes=amount)
+        exact = SimpleRuntime(CallableModel(model), cfg)
+        assert (await exact.complete(request())).text == "answer"
+        below = SimpleRuntime(CallableModel(model), replace(cfg, max_protocol_output_bytes=amount - 1))
+        with pytest.raises(AgentLimitError, match="protocol output"):
+            await below.complete(request())
+        completion = below.history_snapshot[-1]
         assert completion.kind == "completion" and completion.text == "answer"
         assert completion.messages[0].native_assistant == native
     asyncio.run(run())

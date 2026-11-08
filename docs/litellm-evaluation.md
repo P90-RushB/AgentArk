@@ -341,13 +341,15 @@ including original arguments, result text and images, while retiring opaque
 provider state with an audit event. The latest unread batch reaches the next main
 model request intact; only older eligible history may be summarized. A restart
 may require no model-summary call. Protected inputs/events plus new results that cannot
-fit fail explicitly. This evaluation condition leaves the action-output,
-native-state and byte caps unchanged; an individually oversized response or call
-ID can still fail. See the
+fit fail explicitly. Single-response admission defaults to
+`output_budget_policy: separate_native_v1`: visible text and full tool arguments
+use action limits, while IDs/native replay use a separate bounded protocol
+allowance. All replay data still contributes to context/token estimates and
+archive limits. Oversized IDs or packets can still fail their own bounds. See the
 [three-policy comparison and configuration snippet](evaluation-guide.md#recommended-simpleagent-context-compaction-and-host-tools)
 for the session, budget and immutable-record guarantees.
-The provider evidence below does not validate this new policy on cloud Gemini
-or a full packaged task.
+The Gemini evidence below validates targeted admission and continuation paths
+in a packaged task; its cases did not complete and it is not a performance-parity result.
 
 Saved model requests identify `request_transport.kind: logical_sdk_request` and the
 `acompletion` or `aresponses` method. They show what AgentArk supplied to LiteLLM,
@@ -366,9 +368,10 @@ Responses alias normalizes to the same SDK-model identity.
 
 Omitting `backend` and explicitly selecting `backend: native` retain the native
 transport. SimpleAgent's new `tool_rounds_v1` default intentionally changes its
-fingerprint; explicitly select `message_chunks_v1` or `whole_turn_v1` to reproduce
-the corresponding older behavior and identity. APIAgent, CodexAgent,
-SimpleAgent's native OpenRouter handling and RL integration retain their
+fingerprint; explicitly select `message_chunks_v1` or `whole_turn_v1`, together
+with `output_budget_policy: legacy_v1`, to reproduce pre-separation behavior and
+identity. The default separate accounting has its own fingerprint. APIAgent, CodexAgent,
+SimpleAgent's native OpenRouter transport handling and RL integration retain their
 existing behavior.
 Historical records remain readable. Saved-action replay uses `ReplayAgent` and
 calls no model backend; it does not require the LiteLLM extra or restore private
@@ -384,6 +387,7 @@ policy across vendors. A provider probe is not a packaged task evaluation.
 
 | Check | Established scope |
 | --- | --- |
+| Kaggle Gemini 3.8 Flash / Responses / auto / packaged `DoorSpin3Turns`, seeds 1–2, run 6475894 | `tool_rounds_v1` and `separate_native_v1`: 63 completed model requests (59 action, 4 summary), five context restarts, and three native submissions of 125,169–195,906 characters accepted and executed; largest ID 65,129 characters. Both cases subsequently exhausted the existing 16 action-round limit after 5/3 environment steps. Final-decision request prefixes, tool results and image hashes were preserved. This is targeted long-state/compaction evidence, not a complete case pass; effective YAML/JSON pairs were not captured in this run. |
 | Synthetic: offline fake-SDK and local HTTP loopback | Chat and Responses requests, multimodal/tool continuation, signatures/state validation, ordered Responses items including phases, retries, limits, compaction, trace and evaluation-identity behavior. These controlled responses do not certify provider support. |
 | Production-adapter v2 probes / Responses | Sol 6.1 (`openai/gpt-6.1-sol`, run 6231754), Opus 5.5 (`anthropic/claude-opus-5-5@default`, run 6231755), and Gemini 3 Flash Preview (`google/gemini-3-flash-preview`, run 6231756) passed. Each probe made three actual production `aresponses` calls: two image turns covering a host echo result, native continuation and action submission, then a third tool-free image summary. All used `auto`, omitted temperature and reasoning effort, and zero retries. These are small protocol smokes, not Unity or full `DoorSpin3Turns` evaluations. |
 | Production-adapter probe: Kaggle Gemini 2.5 Flash (`google/gemini-2.5-flash`) / Responses | A request with two function tools returned HTTP 400 `invalid_prompt`: "Multiple tools are supported only when they are all search tools". Use the explicit Chat API override when configuring this route; no automatic fallback is added. |

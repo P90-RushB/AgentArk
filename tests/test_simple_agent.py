@@ -649,10 +649,11 @@ class SimpleAgentTests(unittest.TestCase):
                 self.assertFalse(list(Path(directory).rglob("forbidden.txt")))
                 agent.close()
 
-    def test_native_decoded_action_limit_rejects_instead_of_truncating(self):
+    def test_legacy_native_decoded_action_limit_rejects_instead_of_truncating(self):
         backend = FakeModel([submission("code", "x" * 100)])
         with tempfile.TemporaryDirectory() as directory:
-            agent = self.agent(backend, simple_agent_config={"context": {"max_action_output_bytes": 64},
+            agent = self.agent(backend, simple_agent_config={"context": {
+                "max_action_output_bytes": 64, "output_budget_policy": "legacy_v1"},
                 "tools": {"enabled": True, "workspace_parent": directory}})
             self.assertEqual(agent.forward(obs())[0], ACTION)
             self.assertEqual(json.loads(agent.last_trace_by_agent[0]["model_requests"][0]["tool_calls"][0]["arguments_json"])["content"], "x" * 100)

@@ -290,10 +290,12 @@ Chat 已支持的状态包括 `reasoning_items`、`thinking_blocks`、`reasoning
 工具调用批次及全部结果边界重启，无需等待 `submit_action`。先保留含原始参数、结果文本
 和原图的可见工具历史，再退役不透明供应商状态并记录审计事件。最新未读批次完整送达
 下一次主模型请求，仅更早的可压缩历史可被摘要；重启也可能不调用摘要模型。受保护输入／事件
-加新结果仍放不下时明确失败。这属于独立评测条件，不改变动作输出／原生状态／字节上限，
-单个超限响应或调用 ID 仍可能失败。session、预算及不可变记录的
+加新结果仍放不下时明确失败。单次响应默认采用 `output_budget_policy: separate_native_v1`：
+可见文字及完整工具参数使用动作限额，ID／原生回传使用独立且有界的协议预算；全部回传数据
+仍参与 context／token 估算和归档限额。单个 ID 或状态包超过自身限额时仍可能失败。session、预算及不可变记录的
 保证见[三策略比较及配置示例](evaluation-guide.zh-CN.md#推荐-simpleagent上下文压缩与宿主工具)。
-下方供应商证据不代表该新策略已在云端 Gemini 或完整打包任务中验证通过。
+下方 Gemini 证据验证了打包任务中的定向接纳与续轮路径；case 未全部完成，
+也不代表压缩前后的性能或效果相同。
 
 保存的模型请求通过 `request_transport.kind: logical_sdk_request` 标明逻辑 SDK 请求及所用的
 `acompletion` 或 `aresponses` 方法，表示 AgentArk 交给 LiteLLM 的输入，不冒充最终供应商
@@ -307,8 +309,9 @@ HumanView／回放可以展示保存的调用、摘要和事件，不能重建�
 接受的 Responses 别名会规范化为同一 SDK 模型身份。
 
 省略 `backend` 或显式填写 `backend: native` 均保留原生传输。SimpleAgent 默认改为
-`tool_rounds_v1` 会有意改变其指纹；显式选择 `message_chunks_v1` 或 `whole_turn_v1` 可复现
-对应旧策略的行为和身份。APIAgent、CodexAgent、SimpleAgent 原生 OpenRouter 处理和 RL
+`tool_rounds_v1` 会有意改变其指纹；显式选择 `message_chunks_v1` 或 `whole_turn_v1`，并设置
+`output_budget_policy: legacy_v1`，可复现分账前的行为和身份。默认分账计量具有独立指纹。
+APIAgent、CodexAgent、SimpleAgent 原生 OpenRouter 传输处理和 RL
 集成保留原有行为，旧记录继续可读。
 保存动作的回放使用 `ReplayAgent`，不调用模型后端，因此不需要 LiteLLM extra，也不恢复模型
 私有工作上下文。回放仍要求兼容任务／运行时、种子和参数；依赖升级本身不证明远端模型行为
@@ -321,6 +324,7 @@ HumanView／回放可以展示保存的调用、摘要和事件，不能重建�
 
 | 验证 | 已建立的范围 |
 | --- | --- |
+| Kaggle Gemini 3.8 Flash／Responses／auto／打包 `DoorSpin3Turns`，seeds 1–2，run 6475894 | 使用 `tool_rounds_v1` 与 `separate_native_v1`：63 次模型请求全部完成（59 action、4 summary），5 次上下文重启；3 次 125,169–195,906 字符的原生提交被接纳并执行，最大 ID 为 65,129 字符。两 case 分别执行 5／3 个环境步后触及既有 16 轮动作请求上限。最后决策的请求前缀、工具结果和图片哈希完整。这是定向长状态／压缩证据，不是完整 case 通过；本次未抓取有效 YAML／JSON 配置对。 |
 | 合成证据：离线 fake SDK 与本地 HTTP loopback | Chat／Responses 请求、多模态和工具续轮、签名及状态校验、包含 phase 的 Responses 条目顺序、重试、预算、压缩、trace 和评测身份。这些受控响应不认证供应商支持。 |
 | 生产适配器 v2 探测／Responses | Sol 6.1（`openai/gpt-6.1-sol`，run 6231754）、Opus 5.5（`anthropic/claude-opus-5-5@default`，run 6231755）和 Gemini 3 Flash Preview（`google/gemini-3-flash-preview`，run 6231756）均通过。每次探测实际调用生产 `aresponses` 三次：前两个图像轮次覆盖宿主 echo 结果、原生状态续传和动作提交，第三次为不带工具的图像摘要。统一使用 `auto`，省略温度和 reasoning effort，重试为零。这些是小型协议 smoke，不是 Unity 或完整 `DoorSpin3Turns` 评测。 |
 | 生产适配器探测：Kaggle Gemini 2.5 Flash（`google/gemini-2.5-flash`）／Responses | 包含两个函数工具的请求返回 HTTP 400 `invalid_prompt`："Multiple tools are supported only when they are all search tools"。配置此路由时应显式覆盖为 Chat API；没有自动回退。 |

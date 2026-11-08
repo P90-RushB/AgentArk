@@ -45,8 +45,8 @@ models:
     base_url: https://openrouter.ai/api/v1
     api_key_env: OPENROUTER_API_KEY
     temperature: 0.2
-    # Reasoning shares the completion budget. Raise the output caps below
-    # before selecting a more expensive reasoning profile.
+    # Reasoning shares the provider completion budget. Opaque replay remains
+    # subject to the protocol, context and archive budgets below.
     reasoning_effort: low
     max_completion_tokens: 20480
     max_retries: 0
@@ -65,6 +65,11 @@ models:
         # tool_rounds_v1: default, completed tool batches within a decision.
         # message_chunks_v1: prior message chunks; whole_turn_v1: legacy turns.
         compaction_policy: tool_rounds_v1
+        # separate_native_v1: text/full tool arguments use action limits;
+        # IDs/native replay use a separate byte cap. All still count in context.
+        # legacy_v1: reproduce the old combined text/native action accounting.
+        output_budget_policy: separate_native_v1
+        max_protocol_output_bytes: 1048576
         # Total local estimate (256 * 1024), including the output reserve; not a model limit.
         max_context_tokens: 262144
         output_reserve_tokens: 20480

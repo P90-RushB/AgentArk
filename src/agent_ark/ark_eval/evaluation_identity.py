@@ -104,6 +104,12 @@ def build_evaluation_identity(config: Mapping[str, Any]) -> dict[str, Any]:
         # conditions and must never reuse those completed results.
         if fields['context'].get('compaction_policy') == 'whole_turn_v1':
             fields['context'].pop('compaction_policy')
+        # The legacy output policy executes the pre-separation checks exactly;
+        # these new, inactive fields must not invalidate its historical hashes.
+        # New output accounting remains a distinct live evaluation condition.
+        if fields['context'].get('output_budget_policy') == 'legacy_v1':
+            fields['context'].pop('output_budget_policy')
+            fields['context'].pop('max_protocol_output_bytes')
         tools = options.get('tools', {})
         tools = tools if isinstance(tools, Mapping) else {}
         limits = tools.get('limits', {})

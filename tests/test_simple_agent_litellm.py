@@ -577,7 +577,7 @@ def test_litellm_state_is_frozen_detached_bounded_and_keeps_native_contract_sepa
         AgentRequest(request().identity, (Message("assistant", (TextPart("answer"),), native_assistant=native),))
 
 
-def test_litellm_state_counts_toward_context_archive_tokens_and_output_limits():
+def test_litellm_state_counts_toward_context_archive_tokens_and_protocol_limits():
     async def run():
         native = state(reasoning_items=[{"type": "reasoning", "encrypted_content": PRIVATE + "密" * 400}])
         messages = (Message("assistant", (TextPart("answer"),), native_assistant=native),)
@@ -591,8 +591,10 @@ def test_litellm_state_counts_toward_context_archive_tokens_and_output_limits():
         assert PRIVATE not in encoded_messages(messages).decode()
         async def model(req):
             return ModelCompletion("answer", native_assistant=native)
-        bounded = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(max_action_output_bytes=100))
-        with pytest.raises(AgentLimitError, match="action output"):
+        accepted = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(max_action_output_bytes=100))
+        assert (await accepted.complete(request())).text == "answer"
+        bounded = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(max_protocol_output_bytes=100))
+        with pytest.raises(AgentLimitError, match="protocol output"):
             await bounded.complete(request())
         assert bounded.history_snapshot[-1].messages[0].native_assistant == native
     asyncio.run(run())

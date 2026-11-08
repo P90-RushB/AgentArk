@@ -99,6 +99,10 @@ class SimpleRuntimeConfig:
     max_model_calls: int = 4_096
     timeout_seconds: float = 1800.0
     compaction_policy: str = "tool_rounds_v1"
+    # Single-response replay data has its own byte budget. It still contributes
+    # in full to working-context, token-estimate and immutable-archive budgets.
+    max_protocol_output_bytes: int = 1024 * 1024
+    output_budget_policy: str = "separate_native_v1"
 
     def __post_init__(self) -> None:
         for name in self.__dataclass_fields__:
@@ -106,6 +110,10 @@ class SimpleRuntimeConfig:
             if name == "compaction_policy":
                 if value not in ("whole_turn_v1", "message_chunks_v1", "tool_rounds_v1"):
                     raise ValueError("unsupported compaction_policy")
+                continue
+            if name == "output_budget_policy":
+                if value not in ("legacy_v1", "separate_native_v1"):
+                    raise ValueError("unsupported output budget policy")
                 continue
             if name == "timeout_seconds":
                 if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
@@ -151,6 +159,39 @@ def _metrics(messages: tuple[Message, ...]) -> tuple[int, int, int, int]:
                        + len(message.native_assistant.scope.encode("utf-8"))
                        for message in messages if message.native_assistant is not None)
     return characters, len(encoded_messages(messages)) + native_bytes, images, image_bytes
+
+
+def _output_cost(completion: ModelCompletion, context: tuple[Message, ...]) -> tuple[int, int, int]:
+    """Count executable content once, separately from bounded replay data.
+
+    ``context_messages`` is a trusted adapter's closed submission pair. Its
+    assistant text and complete original arguments are model output; the
+    acknowledgement is not. Compare the whole original model output with the
+    translated action, so both representations fit without adding the original
+    rationale to the translated representation a second time. No provider-
+    specific ID or reasoning format is inspected.
+    """
+    if completion.context_messages:
+        assistant = completion.context_messages[0]
+        texts = [part.text for part in assistant.parts if isinstance(part, TextPart)]
+        arguments = [value for call in assistant.tool_calls for value in (call.name, call.arguments_json)]
+        originals = [*texts, *arguments]
+        characters = max(sum(map(len, originals)), len(completion.text))
+        byte_count = max(sum(len(value.encode("utf-8")) for value in originals),
+                         len(completion.text.encode("utf-8")))
+    else:
+        values = [completion.text, *(value for call in completion.tool_calls
+                                    for value in (call.name, call.arguments_json))]
+        characters = sum(map(len, values))
+        byte_count = sum(len(value.encode("utf-8")) for value in values)
+    protocol_bytes = sum(len(call.call_id.encode("utf-8"))
+                         for message in context for call in message.tool_calls)
+    protocol_bytes += sum(len(message.tool_call_id.encode("utf-8"))
+                          for message in context if message.tool_call_id is not None)
+    protocol_bytes += sum(len(message.native_assistant.message_json.encode("utf-8"))
+                          + len(message.native_assistant.scope.encode("utf-8"))
+                          for message in context if message.native_assistant is not None)
+    return characters, byte_count, protocol_bytes
 
 
 class SimpleRuntime:
@@ -1432,14 +1473,25 @@ class SimpleRuntime:
             native = completion.native_assistant
             context = completion.context_messages or (Message("assistant", (TextPart(completion.text),),
                        completion.tool_calls, native_assistant=native),)
-            native_json = "".join(message.native_assistant.message_json
-                                  for message in context if message.native_assistant is not None)
-            if (len(completion.text) + len(native_json) > self.config.max_action_output_characters
-                or len(completion.text.encode("utf-8")) + len(native_json.encode("utf-8")) > self.config.max_action_output_bytes):
+            if self.config.output_budget_policy == "legacy_v1":
+                native_json = "".join(message.native_assistant.message_json
+                                      for message in context if message.native_assistant is not None)
+                characters = len(completion.text) + len(native_json)
+                output_bytes = len(completion.text.encode("utf-8")) + len(native_json.encode("utf-8"))
+                protocol_bytes = 0
+            else:
+                characters, output_bytes, protocol_bytes = _output_cost(completion, context)
+            output_error = None
+            if (characters > self.config.max_action_output_characters
+                or output_bytes > self.config.max_action_output_bytes):
+                output_error = "action output exceeds its hard bounds"
+            elif protocol_bytes > self.config.max_protocol_output_bytes:
+                output_error = "protocol output exceeds its hard byte bound"
+            if output_error is not None:
                 self._append_archive(ArchiveEntry(len(self._archive) + 1, "completion", request.identity,
                                                 messages=context,
                                                 text=completion.text, usage=completion.usage))
-                raise AgentLimitError("action output exceeds its hard bounds")
+                raise AgentLimitError(output_error)
             if not completion.tool_calls:
                 break
             if session is None:
