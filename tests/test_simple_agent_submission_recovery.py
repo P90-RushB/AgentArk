@@ -115,7 +115,8 @@ def test_entire_mixed_batch_is_charged_before_any_feedback_or_host_dispatch():
 
 def test_recovery_context_limit_does_not_compact_or_issue_another_request():
     async def run():
-        agent, backend, state = make_agent([invalid(), valid()])
+        agent, backend, state = make_agent([invalid(), valid()],
+            context={"compaction_policy": "message_chunks_v1"})
         runtime = state.runtime
         first_cost = _metrics(request().messages + (runtime._tool_budget_message(),))[0]
         # Preserve all other bounds while fitting exactly the initial request.

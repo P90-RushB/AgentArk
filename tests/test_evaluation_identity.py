@@ -197,11 +197,11 @@ def test_sequential_and_parallel_creation_record_same_identity():
 
 @pytest.mark.parametrize('config,expected', [
     ({'agent_type': 'simple', 'provider': 'openai', 'model': 'test-model'},
-     '047216dbe08c318aec600d7b3903e8f3d22bb7d5bc41f8007199527ffa4a6694'),
+     'a39bc9d739968a2564b029e6a3f9bba984b066e5c0a47cf616309e82306a8fb2'),
     ({'provider': 'openai', 'model': 'test-model'},
      '0b8894134cb4283560e4351ec01f6d99dde337f442701cf3d6c999e418a01bcf'),
     ({'agent_type': 'simple', 'provider': 'codex', 'model': 'gpt-6.1-sol'},
-     'd4f812358261971c9a2379b713cce25854bb1ea95a86e83570b1a9e42255316b'),
+     '8d953341101e328c32882dd86ff92dd17d9ff6fdd6080f6833f2c16d4d50e69e'),
 ])
 def test_optional_litellm_does_not_change_existing_identity(config, expected):
     assert build_evaluation_identity(config)['config_sha256'] == expected
@@ -209,6 +209,19 @@ def test_optional_litellm_does_not_change_existing_identity(config, expected):
         explicit = deepcopy(config)
         explicit.setdefault('simple_agent', {})['backend'] = 'native'
         assert build_evaluation_identity(explicit) == build_evaluation_identity(config)
+
+
+@pytest.mark.parametrize('config,old_hash', [
+    ({'agent_type': 'simple', 'provider': 'openai', 'model': 'test-model'},
+     '047216dbe08c318aec600d7b3903e8f3d22bb7d5bc41f8007199527ffa4a6694'),
+    ({'agent_type': 'simple', 'provider': 'codex', 'model': 'gpt-6.1-sol'},
+     'd4f812358261971c9a2379b713cce25854bb1ea95a86e83570b1a9e42255316b'),
+])
+def test_explicit_message_chunks_retains_its_identity_after_default_migration(config, old_hash):
+    historical = deepcopy(config)
+    historical['simple_agent'] = {'context': {'compaction_policy': 'message_chunks_v1'}}
+    assert build_evaluation_identity(historical)['config_sha256'] == old_hash
+    assert build_evaluation_identity(config)['config_sha256'] != old_hash
 
 
 def test_litellm_identity_distinguishes_protocol_model_and_provider_default_url():

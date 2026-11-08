@@ -22,6 +22,11 @@ USAGE = {"prompt_tokens": 21, "completion_tokens": 39, "total_tokens": 60,
          "completion_tokens_details": {"reasoning_tokens": 31}}
 CONTEXT = {"max_context_characters": 1000, "max_context_tokens": 10000,
            "output_reserve_tokens": 64, "recent_turns": 1, "summary_output_tokens": 256}
+SUMMARY_PREFIXES = (
+    "Summarize this agent's earlier complete conversation turns.",
+    "Summarize these chronological historical conversation fragments.",
+    "Combine these model-generated partial notes into one coherent memory.",
+)
 
 
 def reply(content=SUMMARY, *, finish="stop", **fields):
@@ -44,7 +49,7 @@ class FakeClient:
 
     async def create(self, **kwargs):
         self.requests.append(kwargs)
-        if wire_text(kwargs["messages"]).startswith("Summarize this agent's earlier complete conversation turns."):
+        if wire_text(kwargs["messages"]).startswith(SUMMARY_PREFIXES):
             result = next(self.summaries)
             if isinstance(result, BaseException):
                 raise result
@@ -55,7 +60,9 @@ class FakeClient:
         pass
 
 
-def make_agent(summaries, **context):
+def make_agent(summaries, *, compaction_policy=None, **context):
+    if compaction_policy is not None:
+        context["compaction_policy"] = compaction_policy
     agent = SimpleAgent(api_key="unused-fake-key", provider="openai", simple_agent_config={
         "context": {**CONTEXT, **context}})
     client = FakeClient(summaries)
@@ -76,8 +83,9 @@ def accepted_three(runtime):
 
 @pytest.mark.parametrize("first,reason", [(reply(None), "no summary content"),
                                          (reply(BAD_BODY, finish="length"), "output token limit")])
-def test_provider_summary_failure_recovers_in_harness_and_retains_all_billed_usage(first, reason):
-    agent, client = make_agent([first, reply()], max_context_characters=2100)
+@pytest.mark.parametrize("compaction_policy", [None, "message_chunks_v1", "whole_turn_v1"])
+def test_provider_summary_failure_recovers_in_harness_and_retains_all_billed_usage(first, reason, compaction_policy):
+    agent, client = make_agent([first, reply()], compaction_policy=compaction_policy, max_context_characters=2100)
     try:
         trace = None
         for turn in range(7):
@@ -110,9 +118,10 @@ def test_provider_summary_failure_recovers_in_harness_and_retains_all_billed_usa
         agent.close()
 
 
-def test_four_failed_attempts_exhaust_existing_budget_without_action_or_working_changes():
+@pytest.mark.parametrize("compaction_policy", [None, "message_chunks_v1", "whole_turn_v1"])
+def test_four_failed_attempts_exhaust_existing_budget_without_action_or_working_changes(compaction_policy):
     async def run():
-        agent, client = make_agent([reply(None)] * 4)
+        agent, client = make_agent([reply(None)] * 4, compaction_policy=compaction_policy)
         state = agent._state(0)
         current = accepted_three(state.runtime)
         before = state.runtime.working_snapshot
@@ -146,7 +155,8 @@ def test_four_failed_attempts_exhaust_existing_budget_without_action_or_working_
     (BAD_BODY * 4, {"summary_output_tokens": 16}, "exceeded its output bounds"),
     (BAD_BODY * 30, {"summary_output_tokens": 1024}, "did not reduce the source records"),
 ])
-def test_runtime_invalid_summary_text_is_audited_and_retried_without_replaying_it(bad, limits, reason):
+@pytest.mark.parametrize("compaction_policy", [None, "message_chunks_v1", "whole_turn_v1"])
+def test_runtime_invalid_summary_text_is_audited_and_retried_without_replaying_it(bad, limits, reason, compaction_policy):
     async def run():
         seen = []
         replies = iter((bad, "Facts."))
@@ -155,7 +165,8 @@ def test_runtime_invalid_summary_text_is_audited_and_retried_without_replaying_i
             seen.append(value)
             return ModelCompletion(next(replies) if value.purpose == "summary" else ACTION, ModelUsage(2, 3, 5))
 
-        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(**{**CONTEXT, **limits}))
+        policy = {"compaction_policy": compaction_policy} if compaction_policy is not None else {}
+        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(**{**CONTEXT, **limits, **policy}))
         current = accepted_three(runtime)
         await runtime.complete(current)
         assert [value.purpose for value in seen] == ["summary", "summary", "action"]
@@ -178,13 +189,16 @@ def test_retry_feedback_is_budgeted_and_shrinks_only_complete_source_prefixes(bo
     async def run():
         source = [request(1, "FIRST_OLD_RECORD " * 40), request(2, "SECOND_OLD_RECORD " * 40),
                   request(3, "CURRENT_VISIBLE_RECORD " * 10)]
-        probe = SimpleRuntime(CallableModel(lambda _: None), SimpleRuntimeConfig(**CONTEXT))
+        # This regression checks whole-prefix shrinking in the message-chunk
+        # policy's established one-call path, rather than fixed leaf retries.
+        probe = SimpleRuntime(CallableModel(lambda _: None), SimpleRuntimeConfig(
+            **CONTEXT, compaction_policy="message_chunks_v1"))
         for value in source:
             probe.accept_input(value)
         initial = probe._summary_messages(tuple(probe._working[:2]))
         budget = {"characters": sum(len(part.text) for message in initial for part in message.parts),
                   "bytes": len(encoded_messages(initial)), "tokens": probe._tokens(initial, len(encoded_messages(initial)))}[bound]
-        agent, client = make_agent([reply(None), reply()], max_context_characters=1200,
+        agent, client = make_agent([reply(None), reply()], compaction_policy="message_chunks_v1", max_context_characters=1200,
                                    **{"summary_input_" + bound: budget})
         runtime = agent._state(0).runtime
         for value in source:
@@ -220,9 +234,10 @@ def test_retry_feedback_is_budgeted_and_shrinks_only_complete_source_prefixes(bo
     reply(finish="length", tool_calls=[{"id": "call", "type": "function", "function": {"name": "tool", "arguments": "{}"}}]),
     {**reply(finish="length"), "usage": {"completion_tokens": -1}},
 ])
-def test_unrecoverable_provider_or_program_errors_are_never_retried(failure):
+@pytest.mark.parametrize("compaction_policy", [None, "message_chunks_v1", "whole_turn_v1"])
+def test_unrecoverable_provider_or_program_errors_are_never_retried(failure, compaction_policy):
     async def run():
-        agent, client = make_agent([failure, reply()])
+        agent, client = make_agent([failure, reply()], compaction_policy=compaction_policy)
         runtime = agent._state(0).runtime
         current = accepted_three(runtime)
         before = runtime.working_snapshot
@@ -241,9 +256,10 @@ def test_unrecoverable_provider_or_program_errors_are_never_retried(failure):
     asyncio.run(run())
 
 
-def test_archive_capacity_failure_stops_without_retrying_completed_summary():
+@pytest.mark.parametrize("compaction_policy", [None, "message_chunks_v1", "whole_turn_v1"])
+def test_archive_capacity_failure_stops_without_retrying_completed_summary(compaction_policy):
     async def run():
-        agent, client = make_agent([reply(BAD_BODY * 20), reply()], max_archive_entries=3)
+        agent, client = make_agent([reply(BAD_BODY * 20), reply()], compaction_policy=compaction_policy, max_archive_entries=3)
         runtime = agent._state(0).runtime
         current = accepted_three(runtime)
         before = runtime.working_snapshot
@@ -259,9 +275,10 @@ def test_archive_capacity_failure_stops_without_retrying_completed_summary():
     asyncio.run(run())
 
 
-def test_lifetime_model_budget_stops_recovery_before_an_extra_provider_call():
+@pytest.mark.parametrize("compaction_policy", [None, "message_chunks_v1", "whole_turn_v1"])
+def test_lifetime_model_budget_stops_recovery_before_an_extra_provider_call(compaction_policy):
     async def run():
-        agent, client = make_agent([reply(None)] * 4, max_model_calls=2)
+        agent, client = make_agent([reply(None)] * 4, compaction_policy=compaction_policy, max_model_calls=2)
         runtime = agent._state(0).runtime
         current = accepted_three(runtime)
         before = runtime.working_snapshot
@@ -277,9 +294,10 @@ def test_lifetime_model_budget_stops_recovery_before_an_extra_provider_call():
     asyncio.run(run())
 
 
-def test_elapsed_deadline_cannot_be_swallowed_by_a_recoverable_provider_response():
+@pytest.mark.parametrize("compaction_policy", [None, "message_chunks_v1", "whole_turn_v1"])
+def test_elapsed_deadline_cannot_be_swallowed_by_a_recoverable_provider_response(compaction_policy):
     async def run():
-        agent, client = make_agent([], timeout_seconds=0.01)
+        agent, client = make_agent([], compaction_policy=compaction_policy, timeout_seconds=0.01)
 
         async def slow_create(**kwargs):
             client.requests.append(kwargs)
@@ -317,10 +335,12 @@ def test_generic_chat_adapter_exposes_only_typed_summary_generation_failures(fir
 
 
 @pytest.mark.parametrize("first", [reply(None), reply(BAD_BODY, finish="length")])
-def test_generic_backend_summary_recovery_trace_keeps_usage_from_failed_typed_response(first):
+@pytest.mark.parametrize("compaction_policy", [None, "message_chunks_v1", "whole_turn_v1"])
+def test_generic_backend_summary_recovery_trace_keeps_usage_from_failed_typed_response(first, compaction_policy):
     client = FakeClient([first, reply()])
     agent = SimpleAgent(provider="openai", model_backend=ChatCompletionsModel(client, "fake-model"),
-                        simple_agent_config={"context": {**CONTEXT, "max_context_characters": 2100}})
+                        simple_agent_config={"context": {**CONTEXT, "max_context_characters": 2100,
+                            **({"compaction_policy": compaction_policy} if compaction_policy is not None else {})}})
     try:
         trace = None
         for turn in range(7):

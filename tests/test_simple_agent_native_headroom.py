@@ -1,4 +1,4 @@
-"""Offline fresh-decision headroom; no HTTP, Player, SDK or model access."""
+"""Legacy message-chunk native headroom; no HTTP, Player, SDK or model access."""
 from __future__ import annotations
 
 import asyncio
@@ -90,7 +90,8 @@ def test_recorded_pressure_values_compact_before_valid_native_host_rounds(
                 return ModelCompletion("Earlier complete observations and actions retained.", USAGE)
             return next(replies)
 
-        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(), tools=registry(results))
+        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
+            compaction_policy="message_chunks_v1"), tools=registry(results))
         image = ImagePart(b"i" * image_bytes) if image_bytes else None
         # Rehydrate only complete old decisions under their original admission
         # policy. No failed partial tool prefix enters the new decision.
@@ -139,7 +140,8 @@ def test_recorded_pressure_values_compact_before_valid_native_host_rounds(
 
 @pytest.mark.parametrize("metric", [0, 1])
 def test_native_watermark_is_inclusive_and_keeps_hard_caps(metric):
-    runtime = SimpleRuntime(CallableModel(lambda _: asyncio.sleep(0)), tools=registry())
+    runtime = SimpleRuntime(CallableModel(lambda _: asyncio.sleep(0)), SimpleRuntimeConfig(
+        compaction_policy="message_chunks_v1"), tools=registry())
     messages = request(1, "text").messages
     cost = metrics(runtime, messages)[metric]
     # Choose a hard cap whose integer 75% watermark is exactly this cost.
@@ -163,7 +165,8 @@ def test_protected_first_input_above_watermark_falls_back_without_summary(summar
         async def model(value):
             seen.append(value)
             return ModelCompletion("done")
-        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(max_summary_calls=summary_calls), tools=registry())
+        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
+            compaction_policy="message_chunks_v1", max_summary_calls=summary_calls), tools=registry())
         current = request(1, "p" * 800)
         exact = metrics(runtime, current.messages)[0]
         runtime.config = replace(runtime.config, max_context_characters=exact)
@@ -182,7 +185,7 @@ def test_soft_summary_allowance_is_best_effort_but_hard_overflow_still_fails(sum
             seen.append(value.purpose)
             return ModelCompletion("" if value.purpose == "summary" else "done")
         runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
-            max_summary_calls=summary_calls, recent_turns=1), tools=registry())
+            compaction_policy="message_chunks_v1", max_summary_calls=summary_calls, recent_turns=1), tools=registry())
         with patch.object(runtime, "_fresh_decision_fits", runtime._fits):
             await runtime.complete(request(1, "old " + "o" * 1_000))
         current = request(2, "current " + "c" * 1_000)
@@ -208,7 +211,8 @@ def test_below_pressure_wire_prefix_and_tools_disabled_policy_are_unchanged(tool
         async def model(value):
             seen.append(value)
             return ModelCompletion("answer", native_assistant=native("answer"))
-        runtime = SimpleRuntime(CallableModel(model), tools=registry() if tools_enabled else None)
+        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
+            compaction_policy="message_chunks_v1"), tools=registry() if tools_enabled else None)
         with patch.object(runtime, "_fresh_decision_fits", policy(runtime)):
             await runtime.complete(request(1))
             await runtime.complete(request(2))
@@ -232,7 +236,8 @@ def test_native_continuation_crosses_soft_watermark_without_compaction_or_prefix
             calls.append(value)
             assert value.purpose == "action"
             return next(replies)
-        runtime = SimpleRuntime(CallableModel(model), tools=registry({0: result}))
+        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
+            compaction_policy="message_chunks_v1"), tools=registry({0: result}))
         current = request(1)
         initial_cost = metrics(runtime, current.messages)[0]
         runtime.config = replace(runtime.config, max_context_characters=initial_cost + 1_010)
@@ -265,7 +270,7 @@ def test_successful_summary_above_soft_watermark_commits_after_summary_allowance
                 return ModelCompletion("a", USAGE, native_assistant=native("a"))
             return ModelCompletion("finished", USAGE)
         runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
-            max_summary_calls=1, recent_turns=2), tools=registry())
+            compaction_policy="message_chunks_v1", max_summary_calls=1, recent_turns=2), tools=registry())
         with patch.object(runtime, "_fresh_decision_fits", runtime._fits):
             await runtime.complete(request(1, "old " + "o" * 800))
             await runtime.complete(request(2, "retained " + "r" * 1_000))

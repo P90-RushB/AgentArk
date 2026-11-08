@@ -387,7 +387,8 @@ def test_summary_await_new_input_does_not_rebind_original_model_request():
     asyncio.run(run())
 
 
-def test_summary_transaction_rolls_back_after_second_summary_failure():
+@pytest.mark.parametrize("policy", ["tool_rounds_v1", "message_chunks_v1"])
+def test_summary_transaction_rolls_back_after_second_summary_failure(policy):
     async def run():
         summaries = 0
 
@@ -399,9 +400,11 @@ def test_summary_transaction_rolls_back_after_second_summary_failure():
                 raise RuntimeError("second summary failed")
             return ModelCompletion("Facts retained.")
 
-        runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=700))
-        instruction_characters = len(texts(runtime._summary_messages(())))
-        runtime.config = replace(runtime.config, summary_input_characters=instruction_characters + 350)
+        runtime = SimpleRuntime(CallableModel(model), config(compaction_policy=policy, max_context_characters=700))
+        instruction_characters = len(texts(runtime._chunk_messages(()) if policy == "tool_rounds_v1"
+                                           else runtime._summary_messages(())))
+        runtime.config = replace(runtime.config, summary_input_characters=instruction_characters +
+                                 (700 if policy == "tool_rounds_v1" else 350))
         for number in range(1, 5):
             runtime.accept_input(request(number, "x" * 300))
         before = runtime.working_snapshot
@@ -454,7 +457,9 @@ def test_interleaved_capture_and_late_completion_cannot_be_partially_summarized(
                 await release.wait()
             return ModelCompletion("a" * 300 if value.purpose == "action" else "Facts retained.")
 
-        runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=650))
+        # This regression specifies the historical complete-turn boundary;
+        # the generic policy deliberately permits completed-history segments.
+        runtime = SimpleRuntime(CallableModel(model), config(compaction_policy="message_chunks_v1", max_context_characters=650))
         pending = asyncio.create_task(runtime.complete(request(1, "A" * 120)))
         await asyncio.wait_for(entered.wait(), 1)
         replacement = request(2, "B" * 300)
@@ -499,18 +504,19 @@ def test_action_cancellation_cannot_repeat_the_same_model_call():
     asyncio.run(run())
 
 
-def test_summary_output_bound_archives_raw_text_and_preserves_original_context():
+@pytest.mark.parametrize("policy", ["tool_rounds_v1", "message_chunks_v1"])
+def test_summary_output_bound_archives_raw_text_and_preserves_original_context(policy):
     async def run():
         async def model(value):
             return ModelCompletion("too long summary text" if value.purpose == "summary" else "a" * 280)
 
-        runtime = SimpleRuntime(CallableModel(model), config(summary_output_characters=5))
+        runtime = SimpleRuntime(CallableModel(model), config(compaction_policy=policy, summary_output_characters=5))
         await runtime.complete(request(1, "x" * 400))
         await runtime.complete(request(2, "x" * 400))
         source = request(3, "x" * 400)
         runtime.accept_input(source)
         before = runtime.working_snapshot
-        with pytest.raises(AgentLimitError, match="summary output"):
+        with pytest.raises(AgentLimitError, match="summary (?:output|call bound)"):
             await runtime.complete(source)
         assert runtime.working_snapshot == before
         assert runtime.history_snapshot[-1].kind == "summary_completion"
@@ -594,7 +600,7 @@ def test_scope_change_during_multiple_summaries_keeps_original_required_feedback
                 return ModelCompletion("Earlier observation facts. " * 4)
             return ModelCompletion("K")
 
-        runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=1_000, summary_input_characters=2_000))
+        runtime = SimpleRuntime(CallableModel(model), config(compaction_policy="message_chunks_v1", max_context_characters=1_000, summary_input_characters=2_000))
         runtime.accept_input(request(1, "old observation " + "x" * 280))
         runtime.accept_input(request(2, "old observation " + "y" * 280))
         event = AgentEvent(identity(2), "must-retain", "action.result", "mandatory original feedback " + "f" * 780)
@@ -616,6 +622,28 @@ def test_scope_change_during_multiple_summaries_keeps_original_required_feedback
         assert "B current observation" in texts(runtime.working_snapshot)
         assert runtime.usage.action_calls == 0
         assert next(entry for entry in runtime.history_snapshot if entry.event_id == "must-retain").identity == identity(2)
+
+    asyncio.run(run())
+
+
+def test_generic_preflight_rejects_impossible_protected_input_without_summarizing_feedback():
+    async def run():
+        async def model(value):
+            raise AssertionError("Protected feedback cannot be summarized to make the input fit")
+
+        runtime = SimpleRuntime(CallableModel(model), config(max_context_characters=1000))
+        runtime.accept_input(request(1, "old observation " + "x" * 280))
+        runtime.accept_input(request(2, "old observation " + "y" * 280))
+        feedback = AgentEvent(identity(2), "must-retain", "action.result", "required original feedback " + "f" * 780)
+        runtime.observe_result(feedback)
+        source = request(3, "current observation " + "a" * 580)
+        runtime.accept_input(source)
+        original = runtime.working_snapshot
+        with pytest.raises(AgentLimitError, match="current input, required feedback"):
+            await runtime.complete(source)
+        assert runtime.working_snapshot == original
+        assert runtime.usage.action_calls == runtime.usage.summary_calls == 0
+        assert "required original feedback" in texts(runtime.working_snapshot)
 
     asyncio.run(run())
 
@@ -1297,7 +1325,8 @@ def test_native_submission_pairs_are_plain_records_in_summary_model_requests():
         for number in range(1, 5):
             await runtime.complete(request(number, "observation " + "x" * 360))
         assert summaries and "submit_action" in texts(summaries[0].messages)
-        assert "Exact original arguments JSON follows:" in texts(summaries[0].messages)
+        expected_arguments = native_submission_context("action " + "A" * 280, call_id="1")[0].tool_calls[0].arguments_json
+        assert any(TextPart(expected_arguments) in message.parts for summary in summaries for message in summary.messages)
         assert "Model notes; not environment facts" in texts(runtime.working_snapshot)
         originals = [entry for entry in runtime.history_snapshot if entry.kind == "completion"]
         assert len(originals) == 4 and all(len(entry.messages) == 2 for entry in originals)
@@ -1371,8 +1400,8 @@ def test_actual_summary_model_receives_plain_tool_records_and_original_image_pay
                 assert any(part == TextPart(arguments) for message in value.messages for part in message.parts)
                 assert any(part == TextPart(raw_reply) for message in value.messages for part in message.parts)
                 assert any(part is image for message in value.messages for part in message.parts)
-                assert "submit_action" in texts(value.messages)
-                assert "not executed yet" in texts(value.messages)
+                # A generic summary may cover a completed host exchange before
+                # the later action submission exists; no terminal-tool boundary.
                 return ModelCompletion("Earlier observed orange frames and selected source were recorded.")
             rounds += 1
             if rounds % 2:
@@ -1388,6 +1417,8 @@ def test_actual_summary_model_receives_plain_tool_records_and_original_image_pay
         assert all(entry.messages[0].tool_calls[0].arguments_json == arguments for entry in exchanges)
         assert all(entry.messages[1].parts == (TextPart(raw_reply), image) for entry in exchanges)
         assert all(entry.text == code and entry.messages[0].tool_calls for entry in completions)
+        assert all(entry.messages[0].tool_calls[0].name == "submit_action" for entry in completions)
+        assert all("not executed yet" in texts(entry.messages) for entry in completions)
     asyncio.run(run())
 
 

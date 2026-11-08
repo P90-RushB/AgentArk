@@ -672,10 +672,12 @@ def test_compaction_strips_retained_sidecars_but_preserves_immutable_archive_and
         cfg = SimpleRuntimeConfig(max_context_characters=1800, max_context_tokens=20000,
             output_reserve_tokens=64, recent_turns=1, summary_output_tokens=128)
         runtime = SimpleRuntime(CallableModel(model), cfg)
-        await runtime.complete(request(1, "old " + "x" * 500))
-        await runtime.complete(request(2, "recent " + "x" * 500))
+        # Visible text alone exceeds the cap, so retiring native sidecars is
+        # insufficient and the default policy must exercise the summarizer.
+        await runtime.complete(request(1, "old " + "x" * 650))
+        await runtime.complete(request(2, "recent " + "x" * 650))
         saved = next(e for e in runtime.history_snapshot if e.kind == "completion")
-        await runtime.complete(request(3, "current " + "x" * 500))
+        await runtime.complete(request(3, "current " + "x" * 650))
         assert any(req.purpose == "summary" for req in seen)
         after_compaction = seen[-1]
         assert after_compaction.purpose == "action"
@@ -722,7 +724,7 @@ def test_current_tool_continuation_cannot_compact_away_native_prefix_to_fit():
             assert req.purpose == "action"
             return ModelCompletion("", tool_calls=(tool,), native_assistant=state(None, calls=(tool,)))
         runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
-            max_context_characters=1800, max_context_tokens=20000,
+            compaction_policy="message_chunks_v1", max_context_characters=1800, max_context_tokens=20000,
             output_reserve_tokens=64, recent_turns=1), tools=registry)
         with pytest.raises(AgentLimitError, match="(?i)native.*(continuation|prefix)|(?i:continuation).*native"):
             await runtime.complete(request())

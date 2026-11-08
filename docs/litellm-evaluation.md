@@ -88,7 +88,7 @@ models:
         api: responses
       tool_choice: required
       context:
-        compaction_policy: message_chunks_v1
+        compaction_policy: tool_rounds_v1
         output_reserve_tokens: 30000
       tools:
         enabled: true
@@ -330,8 +330,24 @@ content becomes model memory. Successful compaction clears **all working native
 state**, including state attached to retained recent messages. Immutable archives
 keep the original bounded state. This existing policy can remove reasoning
 before its first replay; it does not imply an unexplained transport loss.
-An unfinished native host-tool continuation protects its prefix from rewriting;
-if it cannot fit, the decision fails within the existing limits.
+With explicit `whole_turn_v1` or `message_chunks_v1`, an unfinished native
+host-tool continuation protects its prefix from rewriting; if it cannot fit,
+the decision fails within the existing limits.
+
+The default `simple_agent.context.compaction_policy: tool_rounds_v1` can restart
+inside that continuation at a closed assistant call batch and all its results,
+without waiting for `submit_action`. It first preserves visible tool history,
+including original arguments, result text and images, while retiring opaque
+provider state with an audit event. The latest unread batch reaches the next main
+model request intact; only older eligible history may be summarized. A restart
+may require no model-summary call. Protected inputs/events plus new results that cannot
+fit fail explicitly. This evaluation condition leaves the action-output,
+native-state and byte caps unchanged; an individually oversized response or call
+ID can still fail. See the
+[three-policy comparison and configuration snippet](evaluation-guide.md#recommended-simpleagent-context-compaction-and-host-tools)
+for the session, budget and immutable-record guarantees.
+The provider evidence below does not validate this new policy on cloud Gemini
+or a full packaged task.
 
 Saved model requests identify `request_transport.kind: logical_sdk_request` and the
 `acompletion` or `aresponses` method. They show what AgentArk supplied to LiteLLM,
@@ -348,9 +364,12 @@ the existing harness settings. Use a new output path when changing conditions;
 native results cannot silently satisfy LiteLLM resume checks. An accepted
 Responses alias normalizes to the same SDK-model identity.
 
-Omitting `backend` and explicitly selecting `backend: native` retain the
-existing native fingerprints and paths. APIAgent, CodexAgent, SimpleAgent's
-native OpenRouter handling and RL integration retain their existing behavior.
+Omitting `backend` and explicitly selecting `backend: native` retain the native
+transport. SimpleAgent's new `tool_rounds_v1` default intentionally changes its
+fingerprint; explicitly select `message_chunks_v1` or `whole_turn_v1` to reproduce
+the corresponding older behavior and identity. APIAgent, CodexAgent,
+SimpleAgent's native OpenRouter handling and RL integration retain their
+existing behavior.
 Historical records remain readable. Saved-action replay uses `ReplayAgent` and
 calls no model backend; it does not require the LiteLLM extra or restore private
 model working state. Compatible task/runtime artifacts, seeds and parameters are

@@ -12,8 +12,22 @@ round or arbitrarily large batch will fit. Protected inputs, instructions,
 required feedback or the existing summary allowance may prevent reaching it;
 if the context still fits every hard bound, the new decision proceeds. A native
 continuation that later exceeds a hard bound still stops without compacting its
-signature-bound prefix. Compaction uses the existing native-state invalidation
-and immutable-archive rules.
+signature-bound prefix under explicit `whole_turn_v1` or `message_chunks_v1`.
+Compaction uses the existing native-state invalidation and immutable-archive
+rules.
+
+The default `tool_rounds_v1` policy can restart at closed tool batches during an
+unfinished decision without waiting for `submit_action`. It preserves visible
+tool history before considering summaries of older eligible history. The latest
+unread results keep their original text/images for the next main model request;
+protected inputs/events plus new results that cannot fit fail explicitly. Retiring
+opaque provider state alone may require no model-summary call. Action-output,
+native-state and byte caps stay unchanged, so a single response with an oversized
+native ID can still fail before any round is eligible for compaction. See the
+[policy comparison and configuration snippet](evaluation-guide.md#recommended-simpleagent-context-compaction-and-host-tools)
+for context restart and record/session guarantees.
+The historical offline results below describe the headroom change, not cloud
+Gemini or full packaged-task validation of `tool_rounds_v1`.
 
 For offline restoration of a recorded old-policy prefix only, an instance may
 set `_fresh_decision_fits = runtime._fits`. Delete that instance override before

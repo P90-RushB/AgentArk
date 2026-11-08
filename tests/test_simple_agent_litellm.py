@@ -503,17 +503,23 @@ def test_scope_mismatch_fails_closed_and_summaries_exclude_all_opaque_state(monk
         agent.close()
 
 
-def test_summary_failure_retries_with_usage_and_without_failed_or_opaque_content(monkeypatch):
+@pytest.mark.parametrize("compaction_policy", [None, "message_chunks_v1", "whole_turn_v1"])
+def test_summary_failure_retries_with_usage_and_without_failed_or_opaque_content(monkeypatch, compaction_policy):
     seen_summaries = []
     def respond(kwargs):
-        if wire_text(kwargs["messages"]).startswith("Summarize this agent's earlier complete conversation turns."):
+        if wire_text(kwargs["messages"]).startswith((
+            "Summarize this agent's earlier complete conversation turns.",
+            "Summarize these chronological historical conversation fragments.",
+            "Combine these model-generated partial notes into one coherent memory.",
+        )):
             seen_summaries.append(kwargs)
             return reply("FAILED_SUMMARY" if len(seen_summaries) == 1 else "Earlier useful facts.",
                          finish="length" if len(seen_summaries) == 1 else "stop", thinking_blocks=THINKING_BLOCKS)
         return reply(reasoning_items=REASONING_ITEMS)
     agent, _ = make_agent(monkeypatch, respond, config={"context": {
         "max_context_characters": 2400, "max_context_tokens": 10000, "output_reserve_tokens": 64,
-        "recent_turns": 1, "summary_output_tokens": 256}})
+        "recent_turns": 1, "summary_output_tokens": 256,
+        **({"compaction_policy": compaction_policy} if compaction_policy is not None else {})}})
     try:
         trace = None
         for turn in range(8):
@@ -592,7 +598,8 @@ def test_litellm_state_counts_toward_context_archive_tokens_and_output_limits():
     asyncio.run(run())
 
 
-def test_compaction_strips_litellm_working_state_preserves_archive_and_summary_boundary():
+@pytest.mark.parametrize("compaction_policy", [None, "message_chunks_v1", "whole_turn_v1"])
+def test_compaction_strips_litellm_working_state_preserves_archive_and_summary_boundary(compaction_policy):
     async def run():
         seen = []
         async def model(req):
@@ -604,11 +611,16 @@ def test_compaction_strips_litellm_working_state_preserves_archive_and_summary_b
             return ModelCompletion("answer", native_assistant=state("answer"))
         runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
             max_context_characters=1800, max_context_tokens=20000, output_reserve_tokens=64,
-            recent_turns=1, summary_output_tokens=128))
-        for number in range(1, 4):
+            recent_turns=1, summary_output_tokens=128,
+            **({"compaction_policy": compaction_policy} if compaction_policy is not None else {})))
+        # Portable visible history alone must exceed the action bound so this
+        # checks model summarization after any lossless opaque-state retirement.
+        for number in range(1, 5):
             await runtime.complete(request(number, str(number) + "x" * 500))
         assert any(req.purpose == "summary" for req in seen)
-        assert all(message.native_assistant is None for message in seen[-1].messages)
+        action_after_summary = next(current for previous, current in zip(seen, seen[1:])
+                                    if previous.purpose == "summary" and current.purpose == "action")
+        assert all(message.native_assistant is None for message in action_after_summary.messages)
         assert any(entry.kind == "completion" and entry.messages[0].native_assistant is not None
                    for entry in runtime.history_snapshot)
         assert all(not entry.messages for entry in runtime.history_snapshot if entry.kind == "summary_completion")
@@ -626,7 +638,8 @@ def test_current_litellm_tool_continuation_cannot_strip_opaque_prefix_to_fit():
             seen.append(req)
             return ModelCompletion("", tool_calls=(call,), native_assistant=state(None, calls=(call,)))
         runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
-            max_context_characters=1800, max_context_tokens=20000, output_reserve_tokens=64, recent_turns=1), tools=tools)
+            compaction_policy="message_chunks_v1", max_context_characters=1800,
+            max_context_tokens=20000, output_reserve_tokens=64, recent_turns=1), tools=tools)
         with pytest.raises(AgentLimitError, match="(?i)(native.*continuation|continuation.*native|native.*prefix)"):
             await runtime.complete(request())
         assert len(seen) == 1 and runtime.usage.summary_calls == 0

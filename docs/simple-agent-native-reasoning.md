@@ -98,6 +98,9 @@ Native state has a 1 MiB per-message hard bound and participates in action
 output, working-context and immutable-archive limits. Token accounting includes
 a conservative allowance for this API-only state, including when a portable
 custom counter is supplied; the request then reports its count as estimated.
+This local estimate, local character counts and encoded-byte checks are distinct
+from provider usage. A large opaque call ID is not evidence of an equally large
+model-visible text sequence; Kaggle's internal decoding is not established here.
 
 Successful compaction starts a new working prefix and removes native replay
 state from retained messages as well as summarized messages. The immutable
@@ -105,11 +108,25 @@ originals remain available in the archive and audit records. Failed or
 cancelled summaries do not commit this change. Summaries retain only their
 ordinary response content as model notes.
 
-Once an unfinished host-tool turn has produced native state, the runtime keeps
-that turn's prefix unchanged through its continuation. If it exceeds the
-context budget, it raises a bounded limit error instead of rewriting a prefix
-that an opaque signature may depend on. A new case/reset clears working state;
-an attempt that carries an unchanged history can retain native state.
+With explicit `whole_turn_v1` or `message_chunks_v1`, once an unfinished
+host-tool turn has produced native state, the runtime keeps that turn's prefix
+unchanged through its continuation. If it exceeds the context budget, it raises
+a bounded limit error instead of rewriting a prefix that an opaque signature
+may depend on.
+
+The default `tool_rounds_v1` can restart after a complete assistant call batch
+and all its results arrive, even before `submit_action`. It first preserves
+visible tool history, including original arguments, result text and images,
+and audits retirement of opaque provider state. The latest unread batch remains
+intact for the next main model request; only older eligible history may be
+summarized. A projection-only restart makes no model-summary call. If protected
+inputs/events plus new results cannot fit, it fails explicitly. This does not change
+per-response action-output/native-state/byte caps or solve a single oversized
+native ID.
+See the [policy comparison and configuration snippet](evaluation-guide.md#recommended-simpleagent-context-compaction-and-host-tools)
+for the session, budget and immutable-record guarantees.
+A new case/reset clears working state; an attempt that carries an unchanged
+history can retain native state.
 
 APIAgent's existing response parsing and history behavior are unchanged.
 Offline fake-client tests check HTTP request fields, tool continuation,

@@ -171,7 +171,7 @@ path, `provider` selects the HTTP provider mapping or Codex transport; on the
 LiteLLM path, the qualified `simple_agent.litellm.model` selects the SDK vendor.
 Without `agent_type`, the existing behavior is
 unchanged: `provider: codex` selects CodexAgent, other providers select APIAgent.
-The existing agents retain their implementation and configuration defaults. New
+APIAgent and CodexAgent retain their implementation and configuration defaults. New
 seed, parallel and Colab examples explicitly choose SimpleAgent with host tools
 enabled; no global missing-key default or task configuration is rewritten. To
 retain the baseline, explicitly select `agent_type: api` and omit `simple_agent`.
@@ -202,6 +202,10 @@ Token counting uses a configurable image/text estimate alongside encoded-byte,
 image-count, and raw-image-byte limits.
 Working-context and summary-input encoded bytes each default to 16,000,000,
 including base64 images, leaving room for the API request envelope.
+Local character counts, encoded request bytes and estimated tokens are separate
+admission checks. Opaque native state adds estimated token overhead; this is not
+provider-reported token usage or proof that an opaque call ID is model-readable
+text. The repository does not establish how Kaggle decodes those IDs internally.
 
 The shared defaults allow 262,144 (256 * 1024) estimated context tokens, including a
 20,480 action-output reserve, up to 256 working images, and two protected recent inputs
@@ -213,28 +217,68 @@ truncation, overlong summaries and summaries that do not reduce the source are
 recoverable generation failures. The next summary request receives a short
 failure explanation and asks for a corrected final summary. These retries share
 the existing per-decision `max_summary_calls` limit (default 4), lifetime call
-budget and decision deadline; successful compactions count toward the same
-limit. Invalid summaries never replace working history. There is no separate
+budget and decision deadline; successful model-generated summaries count toward
+the same limit. Invalid summaries never replace working history. There is no separate
 summary-length target.
 These are configurable upper bounds, not a fixed compression ratio or a guarantee
 that a model's native context window is large enough.
 
-`context.compaction_policy` selects `message_chunks_v1` (new-run default) or
-`whole_turn_v1` (legacy). The new policy keeps normal complete-turn summaries
-when they fit, and can split an oversized old ordinary text/multi-image message
-into bounded summary requests before merging the notes. Whole images retain
-their bytes and order; text fragments carry source ranges. Closed tool-call
-batches and their results remain indivisible, and an oversized tool group fails
-explicitly. Current/protected inputs and in-progress native tool prefixes are
-never split. Leaves, merges and invalid-output retries all share the existing
-four-call default; a larger history is not guaranteed to fit that finite budget.
-Working history changes only after the complete plan succeeds, while original
-archives remain immutable. Summary request/event traces include the policy,
-stage and fragment provenance. All numeric defaults above are unchanged.
+`simple_agent.context.compaction_policy` selects one of three evaluation conditions:
 
-The new policy is a distinct evaluation condition and gets a new fingerprint.
-Set `compaction_policy: whole_turn_v1` to retain the historical SimpleAgent
-fingerprint and completed-case resume behavior. Saved-action replay does not
+| Policy | Compaction boundary |
+| --- | --- |
+| `whole_turn_v1` | Legacy complete-turn summaries; an in-progress native tool prefix stays protected. |
+| `message_chunks_v1` | Prior default. Also splits oversized old ordinary text/multi-image messages; complete tool batches stay indivisible and in-progress native prefixes stay protected. |
+| `tool_rounds_v1` | Default. Can restart protocol state at a completed tool batch within an unfinished decision, preserve its visible history, then summarize only older eligible history as needed; no `submit_action` boundary is required. |
+
+`message_chunks_v1` keeps complete-turn summaries when they fit, otherwise
+splitting old ordinary messages into bounded requests before merging the notes.
+Whole images retain their bytes and order; text fragments carry source ranges.
+Current/protected inputs are never split. Leaves, merges and invalid-output
+retries share the existing four-call default; a larger history is not guaranteed
+to fit that finite budget. An oversized indivisible tool group fails explicitly
+under either older policy.
+
+New SimpleAgent runs use completed-tool-round compaction by default across model
+transports. To record the selection explicitly, add this under a model:
+
+```yaml
+simple_agent:
+  context:
+    compaction_policy: tool_rounds_v1
+```
+
+`tool_rounds_v1` treats an assistant call batch plus all its results as a closed
+unit; pending batches are never projected. Under pressure it first projects all
+completed protocol batches into
+labelled visible history: bounded source aliases, execution/rejection status,
+verbatim `arguments_json` strings, and original result text/image parts in order.
+Ordinary assistant messages also retain their visible parts. Opaque provider
+sidecars are retired at an explicit fresh-context boundary with a restart audit
+event; original IDs and native records remain unchanged in the raw archive.
+This leaves no orphaned native calls/results and never re-executes a tool.
+
+The latest unread batch in the current decision retains its original text and
+images through at least the next main model request. To fit that request, only
+an older eligible prefix of complete entries may be summarized. If the visible
+projection already fits, the restart makes zero model-summary calls. If protected
+inputs, required events and the latest unread results cannot fit, the runtime
+fails explicitly rather than summarizing those new results before the model sees
+them. The same tool session, exactly-once execution, call budgets and decision
+deadline continue. Audit traces
+distinguish the protocol restart from any model-generated summaries. All numeric
+defaults above remain unchanged.
+
+This policy does not fix a single response rejected by the action-output
+cap because of a long native call ID. Action-output, native-state and byte limits
+are unchanged. Cloud Gemini and full packaged-task validation of this policy
+have not been established by the historical provider evidence.
+
+Each policy has a distinct fingerprint. The new `tool_rounds_v1` default
+intentionally changes SimpleAgent's evaluation identity. Explicitly select
+`message_chunks_v1` or `whole_turn_v1` to reproduce that older policy's behavior,
+fingerprint and completed-case resume checks. APIAgent and CodexAgent are
+unaffected. Saved-action replay does not
 run compaction. Loading a trajectory history prefix is not restoration of the
 private model working context or its compaction state. Existing Kaggle tasks
 keep their immutable wrapper pin and evaluation conditions.
@@ -252,7 +296,8 @@ Install `python -m pip install -e ".[litellm]"` in the existing Python environme
 then set `simple_agent.backend: litellm` with an explicit qualified SDK model.
 `api: chat_completions` (default) calls `acompletion`; `api: responses` calls native
 `aresponses`, currently through an `openai/` model, including compatible proxies.
-Existing configurations keep the native transport and identity. See the
+Backend selection retains the native transport when omitted; compaction policy
+independently determines the SimpleAgent evaluation condition. See the
 [LiteLLM evaluation guide](litellm-evaluation.md) for complete configuration,
 credentials, OpenRouter/OpenAI/Kaggle recipes, supported reasoning history,
 validation scope and troubleshooting. The native `thinking` table above does

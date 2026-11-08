@@ -12,7 +12,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from .encoding import encoded_messages, tool_declarations
-from .compaction import SourceReference, SummaryAtom, image_atom, metadata as compaction_metadata, pack_atoms, text_atom
+from .compaction import (SourceReference, SummaryAtom, image_atom, metadata as compaction_metadata,
+                         pack_atoms, restart_metadata, text_atom)
 from .models import SubmissionResponseError, SummaryResponseError
 from .tools import FileWorkspace, ToolRegistry
 from .types import (
@@ -97,13 +98,13 @@ class SimpleRuntimeConfig:
     max_action_output_bytes: int = 512_000
     max_model_calls: int = 4_096
     timeout_seconds: float = 1800.0
-    compaction_policy: str = "message_chunks_v1"
+    compaction_policy: str = "tool_rounds_v1"
 
     def __post_init__(self) -> None:
         for name in self.__dataclass_fields__:
             value = getattr(self, name)
             if name == "compaction_policy":
-                if value not in ("whole_turn_v1", "message_chunks_v1"):
+                if value not in ("whole_turn_v1", "message_chunks_v1", "tool_rounds_v1"):
                     raise ValueError("unsupported compaction_policy")
                 continue
             if name == "timeout_seconds":
@@ -425,8 +426,9 @@ class SimpleRuntime:
 
         This is a best-effort watermark, not a guarantee for all tool rounds or
         unbounded batches. Native continuations still use the unchanged hard
-        limits and must never compact their signature-bound prefix. Tools-free
-        runtimes retain their existing hard-fit policy.
+        limits. Legacy policies never rewrite a native continuation's prefix;
+        tool_rounds_v1 can instead start a fresh context at a closed batch.
+        Tools-free runtimes retain their existing hard-fit policy.
 
         Offline legacy-prefix rehydration may override this method to delegate
         to ``_fits``; restore the default before the next fresh decision.
@@ -828,6 +830,11 @@ class SimpleRuntime:
                         if merge else "\nThe ordered records below may be text or image fragments from larger turns. "
                         "A fragment boundary does not end the original message or turn. Preserve facts and ordering; "
                         "source labels are explanatory wrappers and are not original conversation text.")
+        if self.config.compaction_policy == "tool_rounds_v1":
+            instruction += ("\nRecords may include closed tool exchanges from the current unfinished decision. "
+                            "Preserve whether operations executed, failed, or were rejected without execution, and their useful results. "
+                            "A closed exchange does not imply execution. Do not repeat executed operations merely to recover context. "
+                            "Tool aliases identify historical records, not live call IDs.")
         return (Message.text("system", instruction), *(message for atom in atoms for message in atom.messages))
 
     def _summary_retry(self, reason: str) -> str:
@@ -902,7 +909,9 @@ class SimpleRuntime:
                 messages = self._chunk_messages(leaf, retry_instruction=retry_instruction)
                 audit = compaction_metadata(self.config.compaction_policy, "leaf", plan_id,
                     tuple(reference for atom in leaf for reference in atom.references), leaf_index=index, leaf_count=count)
-                originals = tuple(message for atom in leaf for message in atom.originals)
+                originals = (tuple(message for entry in span for message in entry.messages)
+                             if count == 1 and self.config.compaction_policy == "tool_rounds_v1"
+                             else tuple(message for atom in leaf for message in atom.originals))
                 leaf_sources = tuple(dict.fromkeys(reference.archive_sequence for atom in leaf for reference in atom.references))
                 # Intermediate notes may need explanatory context for a tiny
                 # tail fragment. The final labelled result must still reduce
@@ -938,8 +947,328 @@ class SimpleRuntime:
             retry_instruction = self._summary_retry(reason)
         raise AgentLimitError("summary call bound exhausted before the complete merge succeeded")
 
+    @staticmethod
+    def _closed_tool_batch(messages: tuple[Message, ...]):
+        assistant, replies = messages[0], messages[1:]
+        calls = assistant.tool_calls
+        if (assistant.role != "assistant" or not calls or len(replies) != len(calls)
+            or any(message.role != "tool" or message.tool_calls for message in replies)
+            or {message.tool_call_id for message in replies} != {call.call_id for call in calls}):
+            raise AgentError("fresh context requires closed assistant/result tool batches")
+        return assistant, replies
+
+    @staticmethod
+    def _tool_round_status(replies: tuple[Message, ...]) -> str:
+        rejected = True
+        for reply in replies:
+            try:
+                feedback = json.loads(reply.parts[0].text) if (len(reply.parts) == 1
+                            and isinstance(reply.parts[0], TextPart)) else None
+            except (ValueError, TypeError, RecursionError):
+                feedback = None
+            rejected = rejected and isinstance(feedback, dict) and feedback.get("batch_rejected") is True and feedback.get("executed") is False
+        return ("Recorded batch feedback: rejected; executed=false." if rejected else
+                "Execution status is described by the recorded result; closure does not imply execution or success.")
+
+    def _tool_round_projection(self, entry: _WorkingEntry) -> _WorkingEntry:
+        """Retire a complete protocol group without losing visible content."""
+        if not any(message.tool_calls or message.role == "tool" for message in entry.messages):
+            return replace(entry, messages=tuple(replace(message, native_assistant=None)
+                           if message.native_assistant is not None else message for message in entry.messages))
+        assistant, replies = self._closed_tool_batch(entry.messages)
+        sequence = entry.origin_sequence or entry.sequence
+        status = self._tool_round_status(replies)
+        parts = [TextPart(f"Historical closed tool batch from archive entry {sequence}; not an execution request. {status}")]
+        parts.extend(assistant.parts)
+        for index, call in enumerate(assistant.tool_calls):
+            parts.append(TextPart(f"Recorded tool alias record-{sequence}-call-{index}; tool name {json.dumps(call.name)}. "
+                                  "Exact arguments JSON follows:"))
+            parts.append(TextPart(call.arguments_json))
+        indices = {call.call_id: index for index, call in enumerate(assistant.tool_calls)}
+        for reply in replies:
+            parts.append(TextPart(f"Exact result/feedback for historical tool alias record-{sequence}-call-{indices[reply.tool_call_id]} follows:"))
+            parts.extend(reply.parts)
+        return replace(entry, kind="tool_history", messages=(Message("user", tuple(parts)),), origin_sequence=sequence)
+
+    def _tool_round_atoms(self, span: tuple[_WorkingEntry, ...]) -> tuple[SummaryAtom, ...]:
+        """Historical fragments; opaque call IDs never become summary text.
+
+        Live batches are checked as closed units before their plain historical
+        arguments/results may be split across bounded summary requests.
+        """
+        atoms = []
+        for entry in span:
+            if entry.kind == "tool_history":
+                # Projected wrappers have a different layout. Resolve exact
+                # text/image/argument references against immutable originals.
+                sequence = entry.origin_sequence or entry.sequence
+                if not 0 < sequence <= len(self._archive):
+                    raise AgentError("historical tool projection has no immutable source")
+                entry = replace(entry, messages=self._archive[sequence - 1].messages)
+            messages = entry.messages
+            if not any(message.tool_calls or message.role == "tool" for message in messages):
+                sequence = entry.origin_sequence or entry.sequence
+                if not 0 < sequence <= len(self._archive):
+                    raise AgentError("historical content has no immutable source")
+                archived = self._archive[sequence - 1]
+                if entry.kind == "summary" and archived.kind == "summary_completion":
+                    atoms.append(text_atom(archived.text, "user", SourceReference(sequence, -1, 0, "model_notes", "", 0)))
+                    continue
+                if entry.kind == "completion" and not archived.messages:
+                    if messages != (Message.text("assistant", archived.text),):
+                        raise AgentError("historical completion differs from its immutable source")
+                    atoms.append(text_atom(archived.text, "assistant", SourceReference(sequence, -1, 0, "completion_text", "", 0)))
+                    continue
+                cursor = 0
+                for message in messages:
+                    # Inputs archive pinned instructions as well as dynamic
+                    # messages. Resolve their actual original indices, and
+                    # ignore only API-only state when matching completions.
+                    portable = replace(message, native_assistant=None)
+                    message_index = next((index for index in range(cursor, len(archived.messages))
+                        if replace(archived.messages[index], native_assistant=None) == portable), None)
+                    if message_index is None:
+                        raise AgentError("historical message differs from its immutable source")
+                    cursor = message_index + 1
+                    for part_index, part in enumerate(message.parts):
+                        reference = SourceReference(sequence, message_index, part_index,
+                            "text" if isinstance(part, TextPart) else "image", "", 0 if isinstance(part, TextPart) else None)
+                        atoms.append(text_atom(part.text, message.role, reference) if isinstance(part, TextPart)
+                                     else image_atom(part, message.role, reference))
+                continue
+            assistant, replies = self._closed_tool_batch(messages)
+            calls = assistant.tool_calls
+            sequence = entry.origin_sequence or entry.sequence
+            status = self._tool_round_status(replies)
+
+            def parts(message, message_index, *, call_index=None):
+                for part_index, part in enumerate(message.parts):
+                    kind = "text" if isinstance(part, TextPart) else "image"
+                    if call_index is not None:
+                        kind = "tool_result_" + kind
+                    reference = SourceReference(sequence, message_index, part_index, kind, "",
+                                                0 if isinstance(part, TextPart) else None,
+                                                call_index=call_index)
+                    atoms.append(text_atom(part.text, "user", reference) if isinstance(part, TextPart)
+                                 else image_atom(part, "user", reference))
+
+            parts(assistant, 0)
+            for index, call in enumerate(calls):
+                value = json.dumps({"call_id": call.call_id, "name": call.name,
+                                    "arguments_json": call.arguments_json}, ensure_ascii=False, separators=(",", ":"))
+                reference = SourceReference(sequence, 0, -1, "tool_call",
+                    hashlib.sha256(value.encode("utf-8")).hexdigest(), call_index=index)
+                label = (f"Closed historical tool alias record-{sequence}-call-{index}; "
+                         f"tool name {json.dumps(call.name)}. {status} This is not an execution request.")
+                atoms.append(SummaryAtom((Message.text("user", label),),
+                    (Message("assistant", (), (call,)),), (reference,)))
+                reference = SourceReference(sequence, 0, -1, "tool_arguments", "", 0, call_index=index)
+                atoms.append(text_atom(call.arguments_json, "user", reference))
+            call_indices = {call.call_id: index for index, call in enumerate(calls)}
+            for message_index, reply in enumerate(replies, 1):
+                parts(reply, message_index, call_index=call_indices[reply.tool_call_id])
+        # A bounded adjacent caption may carry an image's identity/timestamp.
+        # Keep that association inside a leaf, as for ordinary image history.
+        grouped = []
+        position = 0
+        while position < len(atoms):
+            atom = atoms[position]
+            if (atom.text is not None and len(atom.text) <= 512 and len(atom.text.encode("utf-8")) <= 2048
+                and position + 1 < len(atoms)):
+                following = atoms[position + 1]
+                source, target = atom.references[0], following.references[0]
+                if (len(following.references) == 1 and target.image_whole
+                    and source.archive_sequence == target.archive_sequence
+                    and source.message_index == target.message_index and source.part_index + 1 == target.part_index):
+                    grouped.append(SummaryAtom((*atom.messages, *following.messages),
+                        (*atom.originals, *following.originals), (*atom.references, *following.references)))
+                    position += 2
+                    continue
+            grouped.append(atom)
+            position += 1
+        return tuple(grouped)
+
+    async def _compact_tool_rounds(self, identity: AgentInputIdentity, *, original=None, pinned=None,
+                                 required_events=None, fresh_decision: bool = False):
+        """Transactionally restart at closed tool boundaries, preserving barriers.
+
+        First retire opaque state through lossless visible history projections.
+        The latest unread tool batch stays verbatim for the next main request;
+        only older eligible prefixes may be summarized. Every staged change is
+        committed together, preserving input/feedback chronology and originals.
+        """
+        original = tuple(self._working) if original is None else tuple(original)
+        pinned = (self._pinned or ()) if pinned is None else pinned
+        required_events = frozenset(self._required_events) if required_events is None else required_events
+        target_fits = self._fresh_decision_fits if fresh_decision else self._fits
+        initial = pinned + tuple(message for entry in original for message in entry.messages)
+        if target_fits(initial):
+            return initial, original
+        projected = tuple(self._tool_round_projection(entry) for entry in original)
+        projected_indices = {index for index, entry in enumerate(projected) if entry != original[index]}
+        inputs = [entry for entry in original if entry.kind == "input"]
+        protected = {entry.identity for entry in inputs[-max(1, self.config.recent_turns):]}
+        protected.add(identity)
+        if self._current is not None:
+            protected.add(self._current)
+        latest = next((index for index in range(len(original) - 1, -1, -1)
+                       if original[index].kind == "tool_exchange" and original[index].identity == identity), None)
+        barriers = {index for index, entry in enumerate(projected)
+                    if entry.kind == "input" and entry.identity in protected or entry.sequence in required_events}
+        if latest is not None:
+            barriers.add(latest)
+        protected_messages = pinned + tuple(message for index in sorted(barriers) for message in projected[index].messages)
+        if self._monotone_limit_excess(protected_messages):
+            if fresh_decision and self._fits(initial):
+                return initial, original
+            raise AgentLimitError("current input, required feedback, or latest tool result cannot fit context bounds")
+        spans = []
+        start = None
+        for index in range(len(projected) + 1):
+            barrier = index == len(projected) or index in barriers
+            if not barrier and start is None:
+                start = index
+            if barrier and start is not None:
+                spans.append((start, index))
+                start = None
+        plan_id = hashlib.sha256((repr(identity) + repr(tuple(e.sequence for e in original)) +
+                   str(self._summary_attempts.get(identity, 0))).encode("utf-8")).hexdigest()[:24]
+        replacements = {}
+        summary_sequences = []
+        changed_indices = set(projected_indices)
+
+        def snapshot():
+            staged = []
+            index = 0
+            while index < len(projected):
+                if index in replacements:
+                    stop, entry = replacements[index]
+                    staged.append(entry)
+                    index = stop
+                else:
+                    staged.append(projected[index])
+                    index += 1
+            return pinned + tuple(m for e in staged for m in e.messages), tuple(staged)
+
+        def plan(span, allowance):
+            if allowance <= 0:
+                raise AgentLimitError("summary call bound exhausted before fresh context could be planned")
+            atoms = self._tool_round_atoms(projected[span[0]:span[1]])
+            if not atoms:
+                raise AgentLimitError("historical span has no summarizable visible content")
+            def provenance_fits(chunk):
+                try:
+                    compaction_metadata(self.config.compaction_policy, "leaf", plan_id,
+                        tuple(reference for atom in chunk for reference in atom.references), leaf_index=0, leaf_count=3)
+                    return True
+                except AgentLimitError:
+                    return False
+            def leaf_fits(chunk):
+                return provenance_fits(chunk) and self._fits(self._chunk_messages(chunk), summary=True)
+            if leaf_fits(atoms):
+                leaves = (atoms,)
+            else:
+                leaves = pack_atoms(atoms,
+                    leaf_fits,
+                    lambda chunk: provenance_fits(chunk) and not self._monotone_limit_excess(self._chunk_messages(chunk), summary=True),
+                    min(3, allowance - 1))
+            cost = len(leaves) + (len(leaves) > 1)
+            if cost > allowance:
+                raise AgentLimitError("summary call bound exhausted before fresh context could be planned")
+            for index, leaf in enumerate(leaves):
+                compaction_metadata(self.config.compaction_policy, "leaf", plan_id,
+                    tuple(reference for atom in leaf for reference in atom.references),
+                    leaf_index=index, leaf_count=len(leaves))
+            return leaves, cost
+
+        while not target_fits(snapshot()[0]):
+            allowance = self.config.max_summary_calls - self._summary_attempts.get(identity, 0)
+            selected = None
+            last_failure = None
+            # A huge ordinary span need not all enter one summary plan. Select
+            # the largest feasible complete-entry prefix, keeping chronology
+            # and leaving its untouched tail available for later compaction.
+            for span_index, (start, stop) in enumerate(spans):
+                for end in range(stop, start, -1):
+                    span = (start, end)
+                    try:
+                        leaves, _ = plan(span, allowance)
+                    except AgentLimitError as error:
+                        last_failure = error
+                        continue
+                    selected = span_index, span, leaves
+                    break
+                if selected is not None:
+                    break
+            if selected is None:
+                if fresh_decision and self._fits(snapshot()[0]):
+                    break
+                if fresh_decision and self._fits(initial):
+                    return initial, original
+                raise last_failure or AgentLimitError("current input, required feedback, latest tool result, or summary notes cannot fit context bounds")
+            span_index, span, leaves = selected
+            entries = projected[span[0]:span[1]]
+            try:
+                note, sequence = await self._summarize_chunk_plan(identity, entries, leaves, plan_id)
+            except AgentLimitError as error:
+                # Soft admission may keep its original hard-fitting prefix;
+                # deadline/model-call/archive failures never enter this path.
+                if fresh_decision and str(error).startswith("summary call bound exhausted"):
+                    if self._fits(initial):
+                        return initial, original
+                    if self._fits(snapshot()[0]):
+                        break
+                raise
+            originals = tuple(message for entry in entries for message in entry.messages)
+            if _metrics((note,))[1] >= _metrics(originals)[1]:
+                if fresh_decision and self._fits(initial):
+                    return initial, original
+                if fresh_decision and self._fits(snapshot()[0]):
+                    break
+                raise AgentLimitError("summary did not reduce its complete historical span")
+            sources = tuple(number for entry in entries for number in entry.source_sequences)
+            replacements[span[0]] = (span[1], _WorkingEntry(entries[0].sequence, "summary", entries[0].identity,
+                                                          (note,), sources, sequence))
+            summary_sequences.append(sequence)
+            changed_indices.update(range(*span))
+            _, stop = spans[span_index]
+            if span[1] == stop:
+                spans.pop(span_index)
+            else:
+                spans[span_index] = (span[1], stop)
+        messages, staged = snapshot()
+        if not replacements and not projected_indices:
+            return initial, original
+        if any(message.native_assistant is not None or message.tool_calls or message.role == "tool"
+               for message in messages):
+            raise AgentError("fresh context still contains native or tool protocol state")
+        if not self._fits(messages):
+            raise AgentLimitError("fresh conversation cannot fit context bounds")
+        if self._deadline is not None:
+            self._deadline.check()
+        native_records = tuple((entry.sequence, index, message.native_assistant.scope,
+                               hashlib.sha256(message.native_assistant.message_json.encode("utf-8")).hexdigest())
+            for entry in original for index, message in enumerate(entry.messages) if message.native_assistant is not None)
+        selected_sources = tuple(number for index, entry in enumerate(original) if index in changed_indices
+                                 for number in entry.source_sequences)
+        projected_sequences = tuple(original[index].sequence for index in sorted(projected_indices)
+                                    if projected[index].kind == "tool_history")
+        audit = restart_metadata(plan_id, selected_sources, tuple(summary_sequences), native_records, projected_sequences)
+        sequence = len(self._archive) + 1
+        self._append_archive(ArchiveEntry(sequence, "event", identity, text="Working conversation restarted after compaction.",
+                                         event_id=f"context-restart-{sequence}", compaction_json=audit))
+        # Compare against raw originals, not the staged visible projections.
+        # Concurrent appended inputs/events remain intact; scope resets can
+        # remove this prefix, in which case only the private snapshot changes.
+        if tuple(self._working[:len(original)]) == original:
+            self._working = [*staged, *self._working[len(original):]]
+        return messages, staged
+
     async def _compact(self, identity: AgentInputIdentity, *, original=None, pinned=None, required_events=None,
                        fresh_decision: bool = False):
+        if self.config.compaction_policy == "tool_rounds_v1":
+            return await self._compact_tool_rounds(identity, original=original, pinned=pinned,
+                required_events=required_events, fresh_decision=fresh_decision)
         if self.config.compaction_policy == "whole_turn_v1":
             return await self._compact_whole_turn(identity, original=original, pinned=pinned,
                 required_events=required_events, fresh_decision=fresh_decision)
@@ -1082,7 +1411,7 @@ class SimpleRuntime:
         rounds = self.tools.limits.max_model_rounds if self.tools is not None else 1
         for _ in range(rounds):
             if not self._fits(messages):
-                if native_tool_turn:
+                if native_tool_turn and self.config.compaction_policy != "tool_rounds_v1":
                     # The tool result continues the same assistant turn. Do
                     # not rewrite a prefix used to generate its native blocks.
                     raise AgentLimitError("native tool continuation cannot fit context bounds without changing its prefix")

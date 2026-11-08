@@ -53,7 +53,9 @@ models:
         api: responses
       tool_choice: required
       context:
-        compaction_policy: message_chunks_v1
+        # tool_rounds_v1: default, completed tool batches within a decision.
+        # message_chunks_v1: prior message chunks; whole_turn_v1: legacy turns.
+        compaction_policy: tool_rounds_v1
         output_reserve_tokens: 30000
       tools:
         enabled: true

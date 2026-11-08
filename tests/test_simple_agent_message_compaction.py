@@ -21,6 +21,11 @@ from agent_ark.agent.simple_agent.types import ArchiveEntry, NativeAssistantStat
 USAGE = ModelUsage(3, 5, 8)
 
 
+def message_chunk_config(**kwargs):
+    """Keep these fragment/provenance regressions on their authored policy."""
+    return SimpleRuntimeConfig(compaction_policy="message_chunks_v1", **kwargs)
+
+
 def request(number, *, text="observation", images=(), parts=None):
     if isinstance(images, int):
         images = tuple(ImagePart(f"image-{number}-{index:03}".encode()) for index in range(images))
@@ -71,7 +76,7 @@ def recorder(calls, *, summary="Concise earlier facts.", action="action"):
 
 def image_pressure(model, **config):
     """80 old images need two default-sized leaves and a merge."""
-    runtime = SimpleRuntime(model, SimpleRuntimeConfig(recent_turns=1, max_images=100, **config))
+    runtime = SimpleRuntime(model, message_chunk_config(recent_turns=1, max_images=100, **config))
     old = request(1, images=80)
     current = request(2, images=30)
     runtime.accept_input(old)
@@ -85,10 +90,16 @@ def native(text="answer"):
     }))
 
 
-def test_default_video_frames_now_fit_without_changing_summary_budgets_or_original_images():
+def test_default_compaction_policy_and_explicit_legacy_policies():
+    assert SimpleRuntimeConfig().compaction_policy == "tool_rounds_v1"
+    for policy in ("message_chunks_v1", "whole_turn_v1"):
+        assert SimpleRuntimeConfig(compaction_policy=policy).compaction_policy == policy
+
+
+def test_message_chunk_video_frames_fit_without_changing_summary_budgets_or_original_images():
     async def run():
         calls = []
-        runtime = SimpleRuntime(recorder(calls))
+        runtime = SimpleRuntime(recorder(calls), message_chunk_config())
         cfg = runtime.config
         assert cfg.compaction_policy == "message_chunks_v1"
         assert (cfg.summary_input_tokens, cfg.max_summary_calls) == (48_000, 4)
@@ -148,7 +159,7 @@ def test_multibyte_single_text_part_has_exact_unicode_range_coverage_and_hashes(
         calls = []
         source = "汉🙂e\u0301" * 700
         old, current = request(1, text=source), request(2, text="CURRENT_VISIBLE")
-        runtime = SimpleRuntime(recorder(calls), SimpleRuntimeConfig(
+        runtime = SimpleRuntime(recorder(calls), message_chunk_config(
             recent_turns=1, max_context_characters=1000,
             summary_input_characters=2300, summary_input_bytes=7000,
             summary_output_tokens=256))
@@ -186,7 +197,7 @@ def test_interleaved_text_and_images_keep_original_part_order_and_immutable_byte
         parts = (TextPart("before " + "汉" * 1300), pictures[0], TextPart("between " + "🙂" * 1300),
                  pictures[1], TextPart("after " + "z" * 900))
         old, current = request(1, parts=parts), request(2, text="current")
-        runtime = SimpleRuntime(recorder(calls), SimpleRuntimeConfig(recent_turns=1,
+        runtime = SimpleRuntime(recorder(calls), message_chunk_config(recent_turns=1,
             max_context_characters=1000, summary_input_characters=2600,
             summary_input_bytes=9000, summary_output_tokens=256))
         runtime.accept_input(old)
@@ -235,7 +246,7 @@ def test_each_video_leaf_keeps_the_frame_caption_with_its_associated_image():
         captions = tuple(f"Frame {index} @ time {index * 0.25:.2f}s: object position {index}." for index in range(5))
         parts = tuple(part for caption, picture in zip(captions, pictures) for part in (TextPart(caption), picture))
         old = request(1, parts=parts)
-        runtime = SimpleRuntime(recorder(calls), SimpleRuntimeConfig(recent_turns=1,
+        runtime = SimpleRuntime(recorder(calls), message_chunk_config(recent_turns=1,
             max_images=5, summary_input_tokens=2500, summary_output_tokens=256))
         runtime.accept_input(old)
         # A sixth current image creates pressure without lowering the action
@@ -267,7 +278,7 @@ def test_small_tail_in_a_second_text_part_does_not_block_an_overall_reducing_pla
         calls = []
         old = request(1, parts=(TextPart("x" * 1200), TextPart("tail")))
         current = request(2, text="current")
-        runtime = SimpleRuntime(recorder(calls, summary="Concise useful facts."), SimpleRuntimeConfig(
+        runtime = SimpleRuntime(recorder(calls, summary="Concise useful facts."), message_chunk_config(
             recent_turns=1, summary_input_characters=1501, max_context_characters=600,
             summary_output_tokens=256))
         runtime.accept_input(old)
@@ -291,7 +302,7 @@ def test_small_tail_in_a_second_text_part_does_not_block_an_overall_reducing_pla
 def test_many_small_turns_select_bounded_provenance_prefixes_and_keep_every_source():
     async def run():
         calls = []
-        runtime = SimpleRuntime(recorder(calls), SimpleRuntimeConfig(recent_turns=1,
+        runtime = SimpleRuntime(recorder(calls), message_chunk_config(recent_turns=1,
             max_context_characters=1000, summary_output_tokens=256))
         inputs = [request(number, text=f"TURN_{number:04}") for number in range(600)]
         for value in inputs:
@@ -316,7 +327,7 @@ def test_merge_reduction_uses_original_prefix_with_many_short_turns_and_large_vi
     async def run():
         calls = []
         runtime = SimpleRuntime(recorder(calls, summary="Concise useful facts."),
-                                SimpleRuntimeConfig(recent_turns=1, max_images=100))
+                                message_chunk_config(recent_turns=1, max_images=100))
         for number in range(100):
             runtime.accept_input(request(number, text=f"short old {number}"))
         old_video = request(100, images=80)
@@ -349,7 +360,7 @@ def test_merge_reduction_uses_original_prefix_with_many_short_turns_and_large_vi
 def test_one_indivisible_image_over_summary_byte_limit_fails_before_any_model_call():
     async def run():
         calls = []
-        runtime = SimpleRuntime(recorder(calls), SimpleRuntimeConfig(recent_turns=1,
+        runtime = SimpleRuntime(recorder(calls), message_chunk_config(recent_turns=1,
             max_images=1, summary_input_bytes=1500))
         runtime.accept_input(request(1, images=(ImagePart(b"x" * 3000),)))
         current = request(2, images=1)
@@ -372,7 +383,7 @@ def test_custom_nonmonotonic_counter_cannot_make_one_image_a_false_impossibility
             # source chunk fails; this is intentionally not a monotone counter.
             return 999_999 if count == 1 else count * 1024
 
-        runtime = SimpleRuntime(recorder(calls), SimpleRuntimeConfig(recent_turns=1, max_images=100),
+        runtime = SimpleRuntime(recorder(calls), message_chunk_config(recent_turns=1, max_images=100),
                                 token_counter=counter)
         old, current = request(1, images=80), request(2, images=30)
         runtime.accept_input(old)
@@ -396,7 +407,7 @@ async def completed_tool_batch(calls, *, input_characters=20, result_characters=
             return ModelCompletion("Closed batch facts retained.", USAGE)
         return next(replies, ModelCompletion("new action", USAGE))
 
-    runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
+    runtime = SimpleRuntime(CallableModel(model), message_chunk_config(
         recent_turns=1, max_context_characters=100_000, output_reserve_tokens=64), tools=registry)
     await runtime.complete(request(1, text="O" * input_characters))
     return runtime, batch
@@ -586,7 +597,7 @@ def test_pins_current_recent_and_required_feedback_survive_compaction_and_native
                 return ModelCompletion("Earlier useful facts.", USAGE)
             return ModelCompletion("answer", USAGE, native_assistant=native())
 
-        runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(max_context_characters=50_000,
+        runtime = SimpleRuntime(CallableModel(model), message_chunk_config(max_context_characters=50_000,
             recent_turns=2, summary_input_characters=3000, summary_output_tokens=256))
         old, recent = request(1, text="OLD_SOURCE_" + "o" * 4000), request(2, text="RECENT_KEEP_" + "r" * 100)
         await runtime.complete(old)
@@ -619,7 +630,7 @@ def test_pins_current_recent_and_required_feedback_survive_compaction_and_native
 def test_late_completion_after_protected_interleaved_input_does_not_allow_half_turn_summary():
     async def run():
         calls = []
-        runtime = SimpleRuntime(recorder(calls), SimpleRuntimeConfig(recent_turns=2,
+        runtime = SimpleRuntime(recorder(calls), message_chunk_config(recent_turns=2,
             max_context_characters=1000, summary_input_characters=2500, summary_output_tokens=256))
         first, second = request("A", text="A_" + "a" * 4000), request("B", text="B_PROTECTED")
         runtime.accept_input(first)
@@ -640,7 +651,7 @@ def test_late_completion_after_protected_interleaved_input_does_not_allow_half_t
 def test_eligible_interleaved_inputs_and_late_completion_are_summarized_as_one_closed_prefix():
     async def run():
         calls = []
-        runtime = SimpleRuntime(recorder(calls), SimpleRuntimeConfig(recent_turns=1,
+        runtime = SimpleRuntime(recorder(calls), message_chunk_config(recent_turns=1,
             max_context_characters=1000, summary_input_characters=3500, summary_output_tokens=256))
         first, second = request("A", text="A_" + "a" * 4000), request("B", text="B_" + "b" * 500)
         runtime.accept_input(first)

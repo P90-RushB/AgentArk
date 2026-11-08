@@ -44,7 +44,10 @@ def response(message, *, finish_reason="stop", usage=SUMMARY_USAGE):
     return {"choices": [{"finish_reason": finish_reason, "message": message}], "usage": usage}
 
 
-def fake_agent(respond, **kwargs):
+def fake_agent(respond, *, compaction_policy=None, **kwargs):
+    if compaction_policy is not None:
+        config = kwargs.setdefault("simple_agent_config", {})
+        config.setdefault("context", {})["compaction_policy"] = compaction_policy
     agent = SimpleAgent(api_key="unused-fake-key", provider="openai", **kwargs)
     client = FakeChatClient(respond)
     agent._backend.client = client
@@ -60,7 +63,11 @@ def wire_text(messages):
 
 
 def is_summary(kwargs):
-    return wire_text(kwargs["messages"]).startswith("Summarize this agent's earlier complete conversation turns.")
+    return wire_text(kwargs["messages"]).startswith((
+        "Summarize this agent's earlier complete conversation turns.",
+        "Summarize these chronological historical conversation fragments.",
+        "Combine these model-generated partial notes into one coherent memory.",
+    ))
 
 
 @pytest.mark.parametrize("reasoning_fields", [
@@ -115,12 +122,13 @@ def test_summary_preserves_literal_think_tags_in_content():
     (" \n\t ", {"reasoning_content": SUMMARY_REASONING}),
     ([], {"model_extra": {"reasoning": SUMMARY_REASONING}}),
 ])
-def test_reasoning_only_summary_rejects_without_changing_working_context_and_keeps_audit(content, reasoning_fields):
+@pytest.mark.parametrize("compaction_policy", [None, "message_chunks_v1", "whole_turn_v1"])
+def test_reasoning_only_summary_rejects_without_changing_working_context_and_keeps_audit(content, reasoning_fields, compaction_policy):
     async def run():
         agent, client = fake_agent(lambda kwargs: (
             response({"content": content, **reasoning_fields}) if is_summary(kwargs)
             else response({"content": ACTION}, usage=ACTION_USAGE)
-        ), simple_agent_config={"context": {
+        ), compaction_policy=compaction_policy, simple_agent_config={"context": {
             "max_context_characters": 1200, "max_context_tokens": 10000,
             "output_reserve_tokens": 64, "recent_turns": 1, "summary_output_tokens": 256,
             "max_summary_calls": 1,
@@ -138,7 +146,9 @@ def test_reasoning_only_summary_rejects_without_changing_working_context_and_kee
             third = request(3)
             runtime.accept_input(third)
             before_context, before_archive = runtime.working_snapshot, runtime.history_snapshot
-            with pytest.raises(AgentLimitError, match="summary call bound exhausted: chat client returned empty summary content"):
+            # Fragment plans report exhaustion at their plan boundary; the
+            # traced provider failure below retains the response diagnosis.
+            with pytest.raises(AgentLimitError, match="summary call bound exhausted"):
                 await runtime.complete(third)
             assert runtime.working_snapshot == before_context
             assert runtime.history_snapshot == before_archive
@@ -160,11 +170,12 @@ def test_reasoning_only_summary_rejects_without_changing_working_context_and_kee
     asyncio.run(run())
 
 
-def test_compacted_body_reaches_actual_later_action_requests_without_summary_reasoning():
+@pytest.mark.parametrize("compaction_policy", [None, "message_chunks_v1", "whole_turn_v1"])
+def test_compacted_body_reaches_actual_later_action_requests_without_summary_reasoning(compaction_policy):
     agent, client = fake_agent(lambda kwargs: (
         response({"content": SUMMARY, "model_extra": {"reasoning_content": SUMMARY_REASONING}})
         if is_summary(kwargs) else response({"content": ACTION, "reasoning": "Choose the visible tap."}, usage=ACTION_USAGE)
-    ), simple_agent_config={"context": {
+    ), compaction_policy=compaction_policy, simple_agent_config={"context": {
         "max_context_characters": 2100, "max_context_tokens": 10000,
         "output_reserve_tokens": 64, "recent_turns": 1,
         "summary_output_tokens": 256, "summary_output_characters": 512,

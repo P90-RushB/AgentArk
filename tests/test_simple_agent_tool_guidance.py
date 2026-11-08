@@ -128,9 +128,18 @@ def test_guidance_examples_reopen_actual_published_image_after_real_compaction(t
             # This is the original PNG returned as model-visible vision content,
             # although its observation was removed from the working request.
             assert images(value) == [original]
-            returned = next(message for message in reversed(value.messages) if message.role == "tool")
-            assert returned.parts[1] == ImagePart(original)
-            assert json.loads(returned.parts[0].text)["path"] == documented["view_image"]["path"]
+            returned = next(message for message in reversed(value.messages)
+                            if ImagePart(original) in message.parts)
+            # A fresh conversation carries the closed result as plain history,
+            # preserving its exact JSON and image instead of replaying tool IDs.
+            assert returned.role == "user" and not returned.tool_calls
+            assert returned.native_assistant is None and returned.tool_call_id is None
+            image_index = returned.parts.index(ImagePart(original))
+            original_result = next(message for entry in agent._states[0].runtime.history_snapshot
+                                   if entry.kind == "tool_exchange" for message in entry.messages
+                                   if ImagePart(original) in message.parts)
+            assert returned.parts[image_index - 1:image_index + 1] == original_result.parts
+            assert json.loads(returned.parts[image_index - 1].text)["path"] == documented["view_image"]["path"]
             return ModelCompletion("", tool_calls=(call("write_note", documented["write_note"], stage),))
         if stage == 6:
             note = last_result(value)

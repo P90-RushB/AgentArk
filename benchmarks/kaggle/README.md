@@ -39,8 +39,14 @@ The notebook and generated tasks explicitly use
 summarized in bounded pieces and their notes merged; tool-call batches and all
 their results remain intact. Leaves, merges, and retries share the configured
 summary-call budget. `whole_turn_v1` selects the legacy strategy and preserves
-its historical evaluation fingerprint. Change the strategy and budgets in
+its historical evaluation fingerprint. Current source defaults SimpleAgent to
+`tool_rounds_v1` for completed batches within a decision, with a distinct
+fingerprint. The published notebook pins still select older wrapper code and
+their explicit `message_chunks_v1` conditions remain unchanged; those notebooks
+do not yet enable the new default. Change the strategy and budgets in
 `_write_eval_config` before creating a new benchmark version.
+Using `tool_rounds_v1` also requires a published wrapper revision containing that
+policy; changing the policy value alone in an existing notebook is insufficient.
 For later wrapper revisions, generate with
 `--wrapper-commit <full-published-commit>`. Never replace a formal benchmark pin
 with `main` or an unpublished local commit.

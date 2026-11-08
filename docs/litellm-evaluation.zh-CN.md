@@ -81,7 +81,7 @@ models:
         api: responses
       tool_choice: required
       context:
-        compaction_policy: message_chunks_v1
+        compaction_policy: tool_rounds_v1
         output_reserve_tokens: 30000
       tools:
         enabled: true
@@ -283,8 +283,17 @@ Chat 已支持的状态包括 `reasoning_items`、`thinking_blocks`、`reasoning
 历史仍由 SimpleAgent 管理。摘要只接收可移植的图文及工具历史，不包含不透明的原生状态；
 只有摘要的最终正文成为模型记忆。成功压缩会清除**全部工作上下文中的原生状态**，包括
 保留的近期消息上的状态，原始有界归档仍保留原件。因此既有策略可能在首次回传前清除推理，
-这不等于未经解释的传输丢失。尚未结束的原生宿主工具续轮禁止重写其前缀；放不进预算时
-按现有限制明确失败。
+这不等于未经解释的传输丢失。显式选择 `whole_turn_v1` 或 `message_chunks_v1` 时，禁止重写尚未结束
+的原生宿主工具续轮前缀；放不进预算时按现有限制明确失败。
+
+默认的 `simple_agent.context.compaction_policy: tool_rounds_v1` 可在该续轮中完整的 assistant
+工具调用批次及全部结果边界重启，无需等待 `submit_action`。先保留含原始参数、结果文本
+和原图的可见工具历史，再退役不透明供应商状态并记录审计事件。最新未读批次完整送达
+下一次主模型请求，仅更早的可压缩历史可被摘要；重启也可能不调用摘要模型。受保护输入／事件
+加新结果仍放不下时明确失败。这属于独立评测条件，不改变动作输出／原生状态／字节上限，
+单个超限响应或调用 ID 仍可能失败。session、预算及不可变记录的
+保证见[三策略比较及配置示例](evaluation-guide.zh-CN.md#推荐-simpleagent上下文压缩与宿主工具)。
+下方供应商证据不代表该新策略已在云端 Gemini 或完整打包任务中验证通过。
 
 保存的模型请求通过 `request_transport.kind: logical_sdk_request` 标明逻辑 SDK 请求及所用的
 `acompletion` 或 `aresponses` 方法，表示 AgentArk 交给 LiteLLM 的输入，不冒充最终供应商
@@ -297,8 +306,10 @@ HumanView／回放可以展示保存的调用、摘要和事件，不能重建�
 设置一起参与结果指纹。变更条件时使用新输出路径，原生结果不会被静默当作 LiteLLM 完成结果。
 接受的 Responses 别名会规范化为同一 SDK 模型身份。
 
-省略 `backend` 或显式填写 `backend: native` 均保留原生路径和既有指纹。APIAgent、
-CodexAgent、SimpleAgent 原生 OpenRouter 处理和 RL 集成保留原有行为，旧记录继续可读。
+省略 `backend` 或显式填写 `backend: native` 均保留原生传输。SimpleAgent 默认改为
+`tool_rounds_v1` 会有意改变其指纹；显式选择 `message_chunks_v1` 或 `whole_turn_v1` 可复现
+对应旧策略的行为和身份。APIAgent、CodexAgent、SimpleAgent 原生 OpenRouter 处理和 RL
+集成保留原有行为，旧记录继续可读。
 保存动作的回放使用 `ReplayAgent`，不调用模型后端，因此不需要 LiteLLM extra，也不恢复模型
 私有工作上下文。回放仍要求兼容任务／运行时、种子和参数；依赖升级本身不证明远端模型行为
 或分数完全相同。

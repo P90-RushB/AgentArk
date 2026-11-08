@@ -356,10 +356,11 @@ def test_successful_compaction_clears_working_native_pair_and_keeps_original_arc
         runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
             max_context_characters=1800, max_context_tokens=20000, output_reserve_tokens=64,
             recent_turns=1, summary_output_tokens=128))
-        await runtime.complete(request(1, "old " + "x" * 500))
-        await runtime.complete(request(2, "recent " + "x" * 500))
+        # Require a genuine summary even after lossless native-state retirement.
+        await runtime.complete(request(1, "old " + "x" * 650))
+        await runtime.complete(request(2, "recent " + "x" * 650))
         originals = [entry for entry in runtime.history_snapshot if entry.kind == "completion"]
-        await runtime.complete(request(3, "current " + "x" * 500))
+        await runtime.complete(request(3, "current " + "x" * 650))
         assert any(req.purpose == "summary" for req in seen)
         assert seen[-1].purpose == "action"
         assert all(message.native_assistant is None for message in seen[-1].messages)
@@ -386,8 +387,8 @@ def test_only_encrypted_native_tool_turn_cannot_compact_its_prefix_mid_continuat
                 None, calls=(host,), encrypted_content=encrypted))
 
         runtime = SimpleRuntime(CallableModel(model), SimpleRuntimeConfig(
-            max_context_characters=1800, max_context_tokens=20000, output_reserve_tokens=64,
-            recent_turns=1), tools=registry)
+            compaction_policy="message_chunks_v1", max_context_characters=1800, max_context_tokens=20000,
+            output_reserve_tokens=64, recent_turns=1), tools=registry)
         with pytest.raises(AgentLimitError, match="(?i)native.*(continuation|prefix)"):
             await runtime.complete(request())
         assert len(calls) == 1 and runtime.usage.summary_calls == 0
